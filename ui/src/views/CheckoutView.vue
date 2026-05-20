@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import ScanInput from '../components/ScanInput.vue'
 import CartTable from '../components/CartTable.vue'
+import ItemBrowseDialog from '../components/ItemBrowseDialog.vue'
 import { useCart } from '../composables/useCart'
 import { useSessionStore } from '../stores/session'
 import type { CartAction, CommitResult, Item, User } from '../types'
@@ -14,6 +15,8 @@ const c = useCart()
 const SUCCESS_SCREEN_MS = 3000
 const success = ref<CommitResult | null>(null)
 const committing = ref(false)
+const browseOpen = ref(false)
+const browsePending = ref(false)
 
 async function onScan(raw: string) {
   let result
@@ -88,6 +91,26 @@ async function onCancel() {
     session.setFlash('info', 'Session ended')
   } catch (e) {
     session.setFlash('error', (e as Error).message)
+  }
+}
+
+async function onBrowsePick(code: string) {
+  if (!cart.value || browsePending.value) return
+  browsePending.value = true
+  try {
+    const line = await c.addItem(code)
+    if (line.warnings && line.warnings.length > 0) {
+      const first = line.warnings[0]
+      if (first.startsWith('cross_user_return:')) {
+        session.setFlash('warn', `Returning ${first.slice('cross_user_return:'.length)}'s ${line.item_name}`)
+      }
+    } else {
+      session.setFlash('info', `Added ${line.item_name}`)
+    }
+  } catch (e) {
+    session.setFlash('error', (e as Error).message)
+  } finally {
+    browsePending.value = false
   }
 }
 
@@ -188,6 +211,13 @@ const flashClasses = {
     <div class="mt-8 flex gap-3 justify-end">
       <button
         type="button"
+        class="px-6 py-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-lg mr-auto"
+        @click="browseOpen = true"
+      >
+        Browse items
+      </button>
+      <button
+        type="button"
         class="px-6 py-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-lg"
         @click="onCancel"
       >
@@ -203,4 +233,12 @@ const flashClasses = {
       </button>
     </div>
   </main>
+
+  <ItemBrowseDialog
+    :open="browseOpen"
+    :pending="browsePending"
+    @update:open="browseOpen = $event"
+    @pick="onBrowsePick"
+    @error="session.setFlash('error', $event)"
+  />
 </template>

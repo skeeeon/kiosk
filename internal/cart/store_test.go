@@ -67,11 +67,11 @@ func TestNoStackingForSerializedItems(t *testing.T) {
 	s, _ := newTestStore()
 	c := s.Start("u1", "EMP-1", "Alice")
 	_, _, _ = s.AddLine(c.ID, &Line{
-		ItemID: "item-a", TrackingMode: "serialized",
+		ItemID: "item-a", ItemType: "tool", TrackingMode: "serialized",
 		Action: "checkout", Qty: 1, Serial: "SN-1",
 	})
 	_, _, _ = s.AddLine(c.ID, &Line{
-		ItemID: "item-b", TrackingMode: "serialized",
+		ItemID: "item-b", ItemType: "tool", TrackingMode: "serialized",
 		Action: "checkout", Qty: 1, Serial: "SN-2",
 	})
 	if len(c.Lines) != 2 {
@@ -83,11 +83,11 @@ func TestNoStackingWhenActionDiffers(t *testing.T) {
 	s, _ := newTestStore()
 	c := s.Start("u1", "EMP-1", "Alice")
 	_, _, _ = s.AddLine(c.ID, &Line{
-		ItemID: "item-1", TrackingMode: "quantity",
+		ItemID: "item-1", ItemType: "tool", TrackingMode: "quantity",
 		Action: "checkout", Qty: 1,
 	})
 	_, _, _ = s.AddLine(c.ID, &Line{
-		ItemID: "item-1", TrackingMode: "quantity",
+		ItemID: "item-1", ItemType: "tool", TrackingMode: "quantity",
 		Action: "return", Qty: 1,
 	})
 	if len(c.Lines) != 2 {
@@ -99,11 +99,11 @@ func TestUpdateLineSetsQtyAndAction(t *testing.T) {
 	s, _ := newTestStore()
 	c := s.Start("u1", "EMP-1", "Alice")
 	_, line, _ := s.AddLine(c.ID, &Line{
-		ItemID: "item-1", TrackingMode: "quantity",
+		ItemID: "item-1", ItemType: "tool", TrackingMode: "quantity",
 		Action: "checkout", Qty: 1,
 	})
 	newQty := 5
-	newAction := "consume"
+	newAction := "return"
 	_, updated, err := s.UpdateLine(line.ID, &newQty, &newAction)
 	if err != nil {
 		t.Fatalf("update failed: %v", err)
@@ -111,8 +111,49 @@ func TestUpdateLineSetsQtyAndAction(t *testing.T) {
 	if updated.Qty != 5 {
 		t.Fatalf("qty: want 5, got %d", updated.Qty)
 	}
-	if updated.Action != "consume" {
-		t.Fatalf("action: want consume, got %s", updated.Action)
+	if updated.Action != "return" {
+		t.Fatalf("action: want return, got %s", updated.Action)
+	}
+}
+
+func TestUpdateLineRejectsInvalidAction(t *testing.T) {
+	s, _ := newTestStore()
+	c := s.Start("u1", "EMP-1", "Alice")
+	_, line, _ := s.AddLine(c.ID, &Line{
+		ItemID: "item-1", ItemType: "tool", TrackingMode: "quantity",
+		Action: "checkout", Qty: 1,
+	})
+	bad := "consume"
+	if _, _, err := s.UpdateLine(line.ID, nil, &bad); err != ErrInvalidAction {
+		t.Fatalf("want ErrInvalidAction, got %v", err)
+	}
+}
+
+func TestAddLineRejectsQtyOverMax(t *testing.T) {
+	s, _ := newTestStore()
+	c := s.Start("u1", "EMP-1", "Alice")
+	if _, _, err := s.AddLine(c.ID, &Line{
+		ItemID: "item-1", ItemType: "consumable", TrackingMode: "quantity",
+		Action: "consume", Qty: MaxQty + 1,
+	}); err != ErrQtyOutOfRange {
+		t.Fatalf("want ErrQtyOutOfRange, got %v", err)
+	}
+}
+
+func TestAddLineStackingRespectsMaxQty(t *testing.T) {
+	s, _ := newTestStore()
+	c := s.Start("u1", "EMP-1", "Alice")
+	if _, _, err := s.AddLine(c.ID, &Line{
+		ItemID: "item-1", ItemType: "consumable", TrackingMode: "quantity",
+		Action: "consume", Qty: MaxQty,
+	}); err != nil {
+		t.Fatalf("first add: %v", err)
+	}
+	if _, _, err := s.AddLine(c.ID, &Line{
+		ItemID: "item-1", ItemType: "consumable", TrackingMode: "quantity",
+		Action: "consume", Qty: 1,
+	}); err != ErrQtyOutOfRange {
+		t.Fatalf("second add: want ErrQtyOutOfRange, got %v", err)
 	}
 }
 
@@ -120,7 +161,7 @@ func TestDeleteLineRemovesIt(t *testing.T) {
 	s, _ := newTestStore()
 	c := s.Start("u1", "EMP-1", "Alice")
 	_, line, _ := s.AddLine(c.ID, &Line{
-		ItemID: "item-1", TrackingMode: "quantity",
+		ItemID: "item-1", ItemType: "consumable", TrackingMode: "quantity",
 		Action: "consume", Qty: 1,
 	})
 	if _, err := s.DeleteLine(line.ID); err != nil {
@@ -138,7 +179,7 @@ func TestAddLineExtendsExpiry(t *testing.T) {
 
 	*now = now.Add(2 * time.Minute)
 	_, _, _ = s.AddLine(c.ID, &Line{
-		ItemID: "item-1", TrackingMode: "quantity",
+		ItemID: "item-1", ItemType: "consumable", TrackingMode: "quantity",
 		Action: "consume", Qty: 1,
 	})
 	if !c.ExpiresAt.After(originalExpiry) {

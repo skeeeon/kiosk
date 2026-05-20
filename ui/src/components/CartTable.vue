@@ -8,11 +8,24 @@ const emit = defineEmits<{
   remove: [id: string]
 }>()
 
-const ACTIONS: { value: CartAction; label: string }[] = [
-  { value: 'checkout', label: 'Check out' },
-  { value: 'return', label: 'Return' },
-  { value: 'consume', label: 'Consume' },
-]
+// Keep in sync with cart.MaxQty in internal/cart/store.go.
+const MAX_QTY = 99
+
+// Tools can be checked out or returned; consumables can only be consumed.
+// Source of truth for this rule lives in cart.ValidActionForType (Go).
+const ACTIONS_BY_TYPE: Record<CartLine['item_type'], { value: CartAction; label: string }[]> = {
+  tool: [
+    { value: 'checkout', label: 'Check out' },
+    { value: 'return', label: 'Return' },
+  ],
+  consumable: [
+    { value: 'consume', label: 'Consume' },
+  ],
+}
+
+function actionsFor(line: CartLine): { value: CartAction; label: string }[] {
+  return ACTIONS_BY_TYPE[line.item_type] ?? []
+}
 
 function actionClasses(line: CartLine, action: CartAction): string {
   if (line.action === action) {
@@ -64,9 +77,12 @@ function warningLabel(w: string): string {
       </div>
 
       <div class="flex flex-wrap items-center gap-3">
-        <div class="inline-flex rounded-xl overflow-hidden border border-slate-700">
+        <div
+          v-if="actionsFor(line).length > 1"
+          class="inline-flex rounded-xl overflow-hidden border border-slate-700"
+        >
           <button
-            v-for="opt in ACTIONS"
+            v-for="opt in actionsFor(line)"
             :key="opt.value"
             type="button"
             class="px-4 py-3 text-base font-medium transition-colors"
@@ -76,8 +92,15 @@ function warningLabel(w: string): string {
             {{ opt.label }}
           </button>
         </div>
+        <span
+          v-else-if="actionsFor(line).length === 1"
+          class="px-4 py-3 rounded-xl text-base font-medium"
+          :class="actionClasses(line, line.action)"
+        >
+          {{ actionsFor(line)[0].label }}
+        </span>
 
-        <div class="inline-flex items-center gap-2 ml-auto">
+        <div v-if="line.tracking_mode !== 'serialized'" class="inline-flex items-center gap-2 ml-auto">
           <button
             type="button"
             class="w-12 h-12 rounded-xl bg-slate-800 text-2xl hover:bg-slate-700 disabled:opacity-40"
@@ -88,7 +111,8 @@ function warningLabel(w: string): string {
           <span class="w-12 text-center text-2xl tabular-nums">{{ line.qty }}</span>
           <button
             type="button"
-            class="w-12 h-12 rounded-xl bg-slate-800 text-2xl hover:bg-slate-700"
+            class="w-12 h-12 rounded-xl bg-slate-800 text-2xl hover:bg-slate-700 disabled:opacity-40"
+            :disabled="line.qty >= MAX_QTY"
             aria-label="Increase quantity"
             @click="emit('update', line.id, { qty: line.qty + 1 })"
           >+</button>

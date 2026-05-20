@@ -83,6 +83,13 @@ func Commit(app core.App, c *cart.Cart, id kioskctx.Identity, publish PublishFun
 			if err != nil {
 				return fmt.Errorf("find item %s: %w", l.ItemID, err)
 			}
+			itemType := itemRec.GetString("type")
+			if !cart.ValidActionForType(l.Action, itemType) {
+				return fmt.Errorf("item %s (%s) cannot %s", itemRec.GetString("code"), itemType, l.Action)
+			}
+			if l.Qty < 1 || l.Qty > cart.MaxQty {
+				return fmt.Errorf("item %s qty=%d out of range (1..%d)", itemRec.GetString("code"), l.Qty, cart.MaxQty)
+			}
 			if itemRec.GetString("tracking_mode") == "serialized" && l.Qty != 1 {
 				return fmt.Errorf("serialized item %s must have qty=1, got %d", itemRec.GetString("code"), l.Qty)
 			}
@@ -94,33 +101,26 @@ func Commit(app core.App, c *cart.Cart, id kioskctx.Identity, publish PublishFun
 
 			switch l.Action {
 			case "checkout":
-				if itemRec.GetString("type") == "tool" {
-					if err := openCheckoutsForLine(tx, openCol, lineRec, itemRec, c.UserID, completedAt, l.Qty); err != nil {
-						return err
-					}
+				if err := openCheckoutsForLine(tx, openCol, lineRec, itemRec, c.UserID, completedAt, l.Qty); err != nil {
+					return err
 				}
 				result.CheckedOut++
 
 			case "return":
-				if itemRec.GetString("type") == "tool" {
-					uncorrelated, err := closeCheckoutsForLine(tx, lineRec, itemRec, c.UserID, l.Qty)
-					if err != nil {
-						return err
-					}
-					if uncorrelated {
-						lineRec.Set("uncorrelated", true)
-						if err := tx.Save(lineRec); err != nil {
-							return fmt.Errorf("mark line uncorrelated: %w", err)
-						}
+				uncorrelated, err := closeCheckoutsForLine(tx, lineRec, itemRec, c.UserID, l.Qty)
+				if err != nil {
+					return err
+				}
+				if uncorrelated {
+					lineRec.Set("uncorrelated", true)
+					if err := tx.Save(lineRec); err != nil {
+						return fmt.Errorf("mark line uncorrelated: %w", err)
 					}
 				}
 				result.Returned++
 
 			case "consume":
 				result.Consumed++
-
-			default:
-				return fmt.Errorf("unknown action %q on line %s", l.Action, l.ItemCode)
 			}
 
 			lineEvents = append(lineEvents, lineEvent{

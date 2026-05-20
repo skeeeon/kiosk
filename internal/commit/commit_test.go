@@ -307,7 +307,7 @@ func TestConsume_Consumable_NoOpenCheckoutChange(t *testing.T) {
 	s := seedFixtures(t, app)
 
 	c := newCart(s.UserID, &cart.Line{
-		ItemID: s.ConsumableID, Action: "consume", Qty: 100,
+		ItemID: s.ConsumableID, Action: "consume", Qty: 99,
 		ItemType: "consumable", TrackingMode: "quantity",
 	})
 	if _, err := commit.Commit(app, c, testIdentity, (&captured{}).publish); err != nil {

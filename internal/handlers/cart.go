@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/pocketbase/dbx"
@@ -94,6 +96,12 @@ func (h *Handlers) CartAdd(re *core.RequestEvent) error {
 
 	c, added, err := h.Carts.AddLine(body.CartID, line)
 	if err != nil {
+		switch {
+		case errors.Is(err, cart.ErrQtyOutOfRange):
+			return re.BadRequestError(fmt.Sprintf("qty per line is capped at %d", cart.MaxQty), nil)
+		case errors.Is(err, cart.ErrInvalidAction):
+			return re.BadRequestError("action is not valid for this item type", nil)
+		}
 		return re.NotFoundError("cart not found or expired", nil)
 	}
 	return re.JSON(http.StatusOK, map[string]any{"cart": c, "line": added})
@@ -115,8 +123,8 @@ func (h *Handlers) CartUpdateLine(re *core.RequestEvent) error {
 	if body.Qty == nil && body.Action == nil {
 		return re.BadRequestError("at least one of qty, action is required", nil)
 	}
-	if body.Qty != nil && *body.Qty < 1 {
-		return re.BadRequestError("qty must be >= 1", nil)
+	if body.Qty != nil && (*body.Qty < 1 || *body.Qty > cart.MaxQty) {
+		return re.BadRequestError(fmt.Sprintf("qty must be between 1 and %d", cart.MaxQty), nil)
 	}
 	if body.Action != nil {
 		switch *body.Action {
@@ -128,6 +136,12 @@ func (h *Handlers) CartUpdateLine(re *core.RequestEvent) error {
 
 	c, line, err := h.Carts.UpdateLine(lineID, body.Qty, body.Action)
 	if err != nil {
+		switch {
+		case errors.Is(err, cart.ErrQtyOutOfRange):
+			return re.BadRequestError(fmt.Sprintf("qty must be between 1 and %d", cart.MaxQty), nil)
+		case errors.Is(err, cart.ErrInvalidAction):
+			return re.BadRequestError("action is not valid for this item type", nil)
+		}
 		return re.NotFoundError("line not found or cart expired", nil)
 	}
 	return re.JSON(http.StatusOK, map[string]any{"cart": c, "line": line})

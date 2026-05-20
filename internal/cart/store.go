@@ -42,10 +42,31 @@ type Cart struct {
 	Lines     []*Line   `json:"lines"`
 }
 
+// MaxQty caps a single cart line's quantity. Scan stacking, the +/- buttons,
+// and direct PATCH all share this ceiling. 99 covers any realistic crib
+// transaction (boxes of fasteners, packs of gloves) while catching fat-finger
+// runaway totals that would otherwise pass through to commit.
+const MaxQty = 99
+
 var (
-	ErrNotFound     = errors.New("cart not found or expired")
-	ErrLineNotFound = errors.New("cart line not found")
+	ErrNotFound        = errors.New("cart not found or expired")
+	ErrLineNotFound    = errors.New("cart line not found")
+	ErrQtyOutOfRange   = errors.New("qty must be between 1 and MaxQty")
+	ErrInvalidAction   = errors.New("action is not valid for this item type")
 )
+
+// ValidActionForType reports whether the action makes sense for the item type.
+// Tools accept checkout/return; consumables only consume. Anything else is a
+// client bug and is rejected at the cart and commit layers.
+func ValidActionForType(action, itemType string) bool {
+	switch itemType {
+	case "tool":
+		return action == "checkout" || action == "return"
+	case "consumable":
+		return action == "consume"
+	}
+	return false
+}
 
 type Store struct {
 	mu          sync.Mutex
@@ -109,10 +130,19 @@ func (s *Store) AddLine(cartID string, in *Line) (*Cart, *Line, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	if !ValidActionForType(in.Action, in.ItemType) {
+		return nil, nil, ErrInvalidAction
+	}
+	if in.Qty < 1 || in.Qty > MaxQty {
+		return nil, nil, ErrQtyOutOfRange
+	}
 
 	if in.TrackingMode == "quantity" {
 		for _, existing := range c.Lines {
 			if existing.ItemID == in.ItemID && existing.Action == in.Action {
+				if existing.Qty+in.Qty > MaxQty {
+					return nil, nil, ErrQtyOutOfRange
+				}
 				existing.Qty += in.Qty
 				s.touchLocked(c)
 				return c, existing, nil
@@ -141,9 +171,15 @@ func (s *Store) UpdateLine(lineID string, qty *int, action *string) (*Cart, *Lin
 		return nil, nil, ErrNotFound
 	}
 	if qty != nil {
+		if *qty < 1 || *qty > MaxQty {
+			return nil, nil, ErrQtyOutOfRange
+		}
 		line.Qty = *qty
 	}
 	if action != nil {
+		if !ValidActionForType(*action, line.ItemType) {
+			return nil, nil, ErrInvalidAction
+		}
 		line.Action = *action
 	}
 	s.touchLocked(c)
