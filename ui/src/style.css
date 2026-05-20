@@ -1,5 +1,17 @@
 @import "tailwindcss";
 
+/* Brand color slot. Tailwind 4's @theme block makes these names available
+   as utility classes (bg-brand-primary, text-brand-primary, etc.). Defaults
+   match the emerald accent the SPA had before branding existed.
+
+   Runtime override: useKioskIdentity writes the fetched primary_color into
+   the matching --color-brand-primary CSS variable on :root, which cascades
+   into every utility that references it. */
+@theme {
+  --color-brand-primary: #059669;
+  --color-brand-primary-hover: #10b981;
+}
+
 html, body, #app {
   height: 100%;
   margin: 0;

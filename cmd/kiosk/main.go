@@ -43,6 +43,7 @@ func main() {
 		e.Router.GET("/api/kiosk/identity", h.Identity)
 		e.Router.POST("/api/kiosk/scan", h.Scan)
 		e.Router.GET("/api/kiosk/items", h.ItemsList)
+		e.Router.GET("/branding/logo", h.Logo)
 		e.Router.POST("/api/kiosk/cart/start", h.CartStart)
 		e.Router.POST("/api/kiosk/cart/add", h.CartAdd)
 		e.Router.PATCH("/api/kiosk/cart/lines/{id}", h.CartUpdateLine)

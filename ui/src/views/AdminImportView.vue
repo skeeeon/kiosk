@@ -67,7 +67,7 @@ async function onSubmit() {
       <input
         type="file"
         accept=".csv,text/csv"
-        class="block w-full text-slate-300 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-emerald-700 file:hover:bg-emerald-600 file:text-white file:cursor-pointer"
+        class="block w-full text-slate-300 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-brand-primary file:hover:bg-brand-primary-hover file:text-white file:cursor-pointer"
         @change="onFileChange"
       />
 
@@ -80,7 +80,7 @@ async function onSubmit() {
         <button
           type="submit"
           :disabled="!file || submitting"
-          class="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 text-white font-medium"
+          class="px-4 py-2 rounded-lg bg-brand-primary hover:bg-brand-primary-hover disabled:bg-slate-700 text-white font-medium"
         >
           {{ submitting ? 'Processing…' : dryRun ? 'Validate' : 'Import' }}
         </button>

@@ -167,7 +167,17 @@ scanning:
 returns:
   allow_cross_user: true       # Bob can return Alice's tool (with UI warning).
   allow_uncorrelated: true     # Accept returns of items not currently checked out.
+
+branding:                      # Optional. Customize visual identity.
+  logo_path: "./branding/logo.svg"   # Served by the binary at /branding/logo.
+  tagline: "Tool & Consumable Checkout"  # Shown under the logo on the idle screen.
+  primary_color: ""            # CSS color (e.g. "#059669"); empty = built-in default.
 ```
+
+The `branding/logo.svg` shipped in the repo is a generic example (Lucide wrench
++ "TOOL CRIB" wordmark). Replace it with your own PNG or SVG — point
+`branding.logo_path` at the new file and restart. Leave any branding key empty
+or omit the section entirely to get unbranded defaults.
 
 ### Environment overrides
 
@@ -179,6 +189,9 @@ KIOSK_KIOSK_CODE=KC-YARD-03
 KIOSK_KIOSK_LOCATION_CODE=YARD
 KIOSK_SERVER_PORT=8091
 KIOSK_RETURNS_ALLOW_CROSS_USER=false
+KIOSK_BRANDING_LOGO_PATH=/etc/kiosk/yard-03.svg
+KIOSK_BRANDING_TAGLINE=Yard 03 Crib
+KIOSK_BRANDING_PRIMARY_COLOR=#1d4ed8
 ```
 
 Other env vars:

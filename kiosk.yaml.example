@@ -17,3 +17,11 @@ scanning:
 returns:
   allow_cross_user: true
   allow_uncorrelated: true
+
+# Optional. Customize the kiosk's visual identity. All keys are optional;
+# omitted values fall back to built-in defaults. The example logo + tagline
+# below match the file shipped at ./branding/logo.svg in the repo.
+branding:
+  logo_path: "./branding/logo.svg"   # served at /branding/logo (PNG or SVG)
+  tagline: "Tool & Consumable Checkout"
+  primary_color: ""                   # CSS color (e.g. "#059669") for primary action buttons

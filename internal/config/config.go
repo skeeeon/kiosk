@@ -19,6 +19,7 @@ type Config struct {
 	Session  SessionConfig  `yaml:"session"`
 	Scanning ScanningConfig `yaml:"scanning"`
 	Returns  ReturnsConfig  `yaml:"returns"`
+	Branding BrandingConfig `yaml:"branding"`
 }
 
 type KioskConfig struct {
@@ -44,6 +45,20 @@ type ScanningConfig struct {
 type ReturnsConfig struct {
 	AllowCrossUser    bool `yaml:"allow_cross_user"`
 	AllowUncorrelated bool `yaml:"allow_uncorrelated"`
+}
+
+// BrandingConfig customizes the kiosk's visual identity. All fields are
+// optional; empty/missing values fall back to the SPA's built-in defaults.
+//
+//   - LogoPath: absolute or working-dir-relative path to an image file the
+//     binary will stream at GET /branding/logo. Suggested formats: PNG, SVG.
+//   - Tagline: shown under the logo on the idle "Scan your badge" screen.
+//   - PrimaryColor: CSS color string ("#10b981", "rgb(...)", named color).
+//     Applied to the commit button and other primary action accents.
+type BrandingConfig struct {
+	LogoPath     string `yaml:"logo_path"`
+	Tagline      string `yaml:"tagline"`
+	PrimaryColor string `yaml:"primary_color"`
 }
 
 // Duration wraps time.Duration so YAML can parse "5m", "30s", etc.
@@ -116,6 +131,15 @@ func applyEnvOverrides(c *Config) {
 	}
 	if v := os.Getenv("KIOSK_RETURNS_ALLOW_UNCORRELATED"); v != "" {
 		c.Returns.AllowUncorrelated = parseBool(v)
+	}
+	if v := os.Getenv("KIOSK_BRANDING_LOGO_PATH"); v != "" {
+		c.Branding.LogoPath = v
+	}
+	if v := os.Getenv("KIOSK_BRANDING_TAGLINE"); v != "" {
+		c.Branding.Tagline = v
+	}
+	if v := os.Getenv("KIOSK_BRANDING_PRIMARY_COLOR"); v != "" {
+		c.Branding.PrimaryColor = v
 	}
 }
 

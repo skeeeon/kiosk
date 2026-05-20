@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Example logo for the kiosk's branding slot. Single-color (currentColor),
+  horizontal layout (wrench icon + wordmark), transparent background so it
+  drops cleanly onto whatever theme the operator picks.
+
+  Replace this file with your own logo to brand a kiosk; point
+  kiosk.yaml's branding.logo_path at the new file and restart.
+
+  The wrench glyph is the Lucide "wrench" path
+  (https://lucide.dev — ISC license), scaled into this canvas.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 80" fill="none" role="img" aria-label="Tool Crib">
+  <g transform="translate(8 8) scale(2.667)" stroke="#e2e8f0" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke">
+    <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+  </g>
+  <text x="92" y="53"
+        font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+        font-size="32" font-weight="700"
+        letter-spacing="0.06em"
+        fill="#e2e8f0">TOOL CRIB</text>
+</svg>

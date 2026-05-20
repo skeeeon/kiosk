@@ -1,6 +1,13 @@
+export interface KioskBranding {
+  logo_url?: string
+  tagline?: string
+  primary_color?: string
+}
+
 export interface KioskIdentity {
   kiosk_code: string
   location_code: string
+  branding: KioskBranding
 }
 
 export interface User {

@@ -62,7 +62,7 @@ async function onSubmit() {
 
       <button
         type="submit"
-        class="mt-2 px-4 py-3 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 text-white font-medium"
+        class="mt-2 px-4 py-3 rounded-lg bg-brand-primary hover:bg-brand-primary-hover disabled:bg-slate-700 text-white font-medium"
         :disabled="submitting"
       >
         {{ submitting ? 'Signing in…' : 'Sign in' }}

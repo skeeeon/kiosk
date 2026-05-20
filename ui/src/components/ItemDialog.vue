@@ -168,7 +168,7 @@ function onSubmit() {
         </button>
         <button
           type="submit"
-          class="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-medium"
+          class="px-4 py-2 rounded-lg bg-brand-primary hover:bg-brand-primary-hover text-white font-medium"
         >
           {{ isEdit ? 'Save changes' : 'Create item' }}
         </button>

@@ -1,16 +1,26 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import ScanInput from '../components/ScanInput.vue'
 import CartTable from '../components/CartTable.vue'
 import ItemBrowseDialog from '../components/ItemBrowseDialog.vue'
 import { useCart } from '../composables/useCart'
+import { useKioskIdentity } from '../composables/useKioskIdentity'
 import { useSessionStore } from '../stores/session'
 import type { CartAction, CartLine, CommitResult, Item, User } from '../types'
 
 const session = useSessionStore()
 const { cart, flash } = storeToRefs(session)
 const c = useCart()
+const { identity } = useKioskIdentity()
+
+const splashLogoBroken = ref(false)
+const splashLogoUrl = computed(() =>
+  !splashLogoBroken.value && identity.value?.branding?.logo_url
+    ? identity.value.branding.logo_url
+    : null,
+)
+const splashTagline = computed(() => identity.value?.branding?.tagline ?? '')
 
 // Receipt auto-dismisses so the kiosk is ready for the next worker. Long
 // enough to actually read a multi-line receipt; the explicit "Done" button
@@ -255,7 +265,19 @@ const flashClasses = {
     </div>
   </main>
 
-  <main v-else-if="!cart" class="flex flex-col items-center justify-center px-8 py-16 text-center">
+  <main v-else-if="!cart" class="flex flex-col items-center justify-center px-8 py-16 text-center gap-10">
+    <div v-if="splashLogoUrl || splashTagline" class="flex flex-col items-center gap-4">
+      <img
+        v-if="splashLogoUrl"
+        :src="splashLogoUrl"
+        alt="logo"
+        class="h-28 md:h-36 w-auto object-contain"
+        @error="splashLogoBroken = true"
+      />
+      <p v-if="splashTagline" class="text-xl text-slate-400 max-w-2xl">
+        {{ splashTagline }}
+      </p>
+    </div>
     <div class="max-w-2xl">
       <p class="text-5xl font-bold tracking-tight mb-4">Scan your badge to begin</p>
       <p class="text-xl text-slate-400">Or scan an item code to identify it.</p>
@@ -300,7 +322,7 @@ const flashClasses = {
       </button>
       <button
         type="button"
-        class="px-8 py-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 disabled:text-slate-500 text-lg font-semibold"
+        class="px-8 py-4 rounded-xl bg-brand-primary hover:bg-brand-primary-hover disabled:bg-slate-700 disabled:text-slate-500 text-white text-lg font-semibold"
         :disabled="cart.lines.length === 0 || committing"
         @click="onCommit"
       >
