@@ -12,17 +12,28 @@ entire deploy story.
 
 ## Overview
 
-- **One binary.** Go + embedded PocketBase + SQLite + built Vue SPA. ~35 MB.
-- **Edge-only.** Each kiosk is autonomous. No central server in v1. No internet
-  required for normal operation.
+- **One binary.** Go + embedded PocketBase + SQLite + built Vue SPA. ~40 MB.
+- **Edge-only.** Each kiosk is autonomous. No central server required. No
+  internet needed for normal operation; an optional NATS publisher can feed
+  events to a central consumer when one is reachable.
 - **Two auth populations.** Workers identify by badge scan (no login). Admins
   log in with email + password to manage items, workers, imports, and reports.
 - **Append-only ledger.** Transactions are immutable after commit. The
-  `open_checkouts` table is a materialized view rebuildable from the ledger;
-  an integrity endpoint reports any drift.
+  `open_checkouts` table is a materialized view rebuildable from the ledger
+  (integrity diff + one-click rebuild from the admin Reports view).
+- **Stock tracking with audit trail.** Items carry `quantity_on_hand` and
+  `reorder_threshold`. Consumables decrement automatically on `consume`;
+  admin edits go through an `/adjust` endpoint that writes a
+  `stock_adjustments` audit row in the same transaction as the item update.
+  A Low Stock report surfaces items at or below threshold.
+- **Per-unit tracking for serialized tools.** One `items` row is the SKU;
+  one `item_instances` row is the physical unit (its scannable barcode,
+  printed serial, RFID tag). Returns close the exact instance scanned, so
+  three impact drivers under one SKU don't blur together.
 - **Federation-ready.** Every transaction is stamped with `kiosk_code` and
-  `location_code`. Every state change goes through a single `PublishEvent`
-  function (currently logs only; v2 swaps in NATS without changing callers).
+  `location_code`. Every state change flows through `events.Publish`, which
+  always logs via slog and (when enabled) also publishes to NATS — same
+  subjects, no caller changes.
 
 ## Architecture
 
@@ -67,16 +78,21 @@ by configurable prefix or by trying items first, then users.
 
 ```
 kiosk/
-├── cmd/kiosk/main.go            PB bootstrap, config load, route registration
+├── cmd/kiosk/main.go            PB bootstrap, config load, NATS wire, routes
 ├── internal/
 │   ├── cart/                    In-memory cart store + tests
 │   ├── commit/                  Cart-to-transaction orchestrator + tests
 │   ├── config/                  YAML loader + env overrides
-│   ├── events/                  PublishEvent stub (slog only in v1)
-│   ├── handlers/                HTTP handlers for /api/kiosk/*
+│   ├── events/                  Publish() + optional NATS publisher + tests
+│   ├── handlers/                HTTP handlers for /api/kiosk/* + tests
 │   ├── kioskctx/                Process-global kiosk identity
 │   └── scan/                    Scan resolver + tests
-├── migrations/1779000000_init.go  All six collections + bootstrap admin
+├── migrations/                  Schema-as-code; runs on startup
+│   ├── 1779000000_init.go       Six base collections + bootstrap admin
+│   ├── 1779235200_*.go          created/updated autodate fields
+│   ├── 1779400000_*.go          items.quantity_on_hand / reorder_threshold
+│   ├── 1779500000_*.go          item_instances + FK backfill on opens/lines
+│   └── 1779600000_*.go          stock_adjustments collection
 ├── ui/                          Vue 3 SPA source (Vite project)
 │   └── src/
 │       ├── components/          Dialog primitives + cart UI
@@ -172,7 +188,31 @@ branding:                      # Optional. Customize visual identity.
   logo_path: "./branding/logo.svg"   # Served by the binary at /branding/logo.
   tagline: "Tool & Consumable Checkout"  # Shown under the logo on the idle screen.
   primary_color: ""            # CSS color (e.g. "#059669"); empty = built-in default.
+
+nats:                          # Optional. Off by default.
+  enabled: false               # When true, events also publish to NATS.
+  url: "nats://localhost:4222"
+  # Use whichever auth your nats-server expects; leave blank for anonymous.
+  token: ""
+  username: ""
+  password: ""
+  credentials_file: ""         # JWT .creds file (NGS / JetStream Cloud)
+  nkey_seed_file: ""           # ed25519 NKey seed
+  tls_ca_file: ""
+  tls_cert_file: ""
+  tls_key_file: ""
+  tls_insecure: false          # skip cert verification — dev only
 ```
+
+The `returns.*` flags are enforced at commit time. With either flag set to
+`false`, the matching transaction fails and rolls back; the cart is left
+intact for the worker to fix and retry.
+
+The `nats.*` block enables an optional publisher. The kiosk's primary job is
+the local ledger, so NATS is best-effort: an unreachable server at startup
+does **not** block the kiosk from booting (the connection enters a buffering
+state and dials in the background). All `nats.go` auth modes are supported —
+provide whichever your server expects, or leave them blank for anonymous.
 
 The `branding/logo.svg` shipped in the repo is a generic example (Lucide wrench
 + "TOOL CRIB" wordmark). Replace it with your own PNG or SVG — point
@@ -192,6 +232,9 @@ KIOSK_RETURNS_ALLOW_CROSS_USER=false
 KIOSK_BRANDING_LOGO_PATH=/etc/kiosk/yard-03.svg
 KIOSK_BRANDING_TAGLINE=Yard 03 Crib
 KIOSK_BRANDING_PRIMARY_COLOR=#1d4ed8
+KIOSK_NATS_ENABLED=true
+KIOSK_NATS_URL=nats://central.example.com:4222
+KIOSK_NATS_CREDENTIALS_FILE=/etc/kiosk/nats.creds
 ```
 
 Other env vars:
@@ -253,15 +296,22 @@ go test ./...
 
 Tested modules:
 
-- `internal/scan` — table-driven tests covering the resolver's dispatch order:
-  user-prefix routing, item-prefix routing, no-prefix fallback chain, unknown.
+- `internal/scan` — table-driven tests covering the resolver's dispatch order
+  including the instance-before-item precedence.
 - `internal/cart` — in-memory store: stacking rules, qty/action updates,
   expiry, line removal.
 - `internal/commit` — the heart of the system. Integration tests spin up a
   fresh PocketBase app per case via `pocketbase.NewWithConfig` +
   `core.NewMigrationsRunner`, then exercise the state machine: checkout (with
   qty=N row creation), return (correlated and uncorrelated), cross-user
-  return, consume, mixed cart, rollback-on-error, and serialized constraints.
+  return, consume (with `quantity_on_hand` decrement and negative-allowed
+  semantics), mixed cart, rollback-on-error, serialized constraints,
+  per-instance return targeting, and the policy flags (cross-user /
+  uncorrelated rejection).
+- `internal/handlers` — stock-adjustment transaction (delta/absolute, audit
+  row written, empty reason rejected, item-not-found).
+- `internal/events` — `Publish()` invokes any installed publisher; nil
+  publisher is a no-op (NATS path covered by manual smoke).
 
 ## API reference
 
@@ -281,7 +331,10 @@ All custom endpoints serve the kiosk checkout flow or admin operations. PB's
 | `POST` | `/api/kiosk/cart/cancel` | none | Discard an in-progress cart |
 | `POST` | `/api/kiosk/cart/commit` | none | Promote cart to transaction + side effects + events |
 | `GET` | `/api/kiosk/integrity` | admin | Diff expected vs actual `open_checkouts` |
+| `POST` | `/api/kiosk/integrity/rebuild` | admin | Wipe `open_checkouts` and rebuild it from the ledger |
 | `POST` | `/api/kiosk/items/import` | admin | Multipart CSV upload, upsert by `code` |
+| `POST` | `/api/kiosk/items/{id}/adjust` | admin | Change `quantity_on_hand` + write a `stock_adjustments` audit row in one transaction |
+| `GET` | `/api/kiosk/transactions.csv` | admin | Export completed transactions as CSV (optional `from=` / `to=` ISO8601 query params) |
 
 Admin endpoints require a token from the `admins` auth collection in the
 `Authorization` header (the PB SDK handles this automatically after login).
@@ -297,9 +350,11 @@ the application layer via badge scan — `code` resolves to a `users` record.
 | `users` (workers) | admin | admin |
 | `admins` | self only | superuser only (via `/_/`) |
 | `items` | admin | admin |
+| `item_instances` | admin | admin |
 | `transactions` | admin | forbidden via API; written by commit hook only |
 | `transaction_lines` | admin | forbidden via API |
 | `open_checkouts` | admin | forbidden via API |
+| `stock_adjustments` | admin | forbidden via API; written by `/items/{id}/adjust` only |
 
 The kiosk checkout flow never touches PB's REST API. Every operation goes
 through a custom `/api/kiosk/*` endpoint that runs in-process and bypasses
@@ -308,8 +363,10 @@ collection rules.
 ### Events
 
 `internal/events.Publish(subject, payload)` is called from the commit hook
-for every state change. v1 emits structured log lines via `slog.Info`. v2 will
-add NATS publishing here (one file, zero changes upstream).
+for every state change. It always emits a structured `slog.Info` line. When
+`nats.enabled=true`, it also publishes the JSON-encoded payload to the same
+subject via a buffering NATS connection. Errors from the NATS publish are
+logged at warn level; commit paths are never blocked or failed by them.
 
 | Trigger | Subject |
 |---|---|
@@ -318,36 +375,56 @@ add NATS publishing here (one file, zero changes upstream).
 | Return line | `kiosk.{kiosk_code}.item.return` |
 | Consume line | `kiosk.{kiosk_code}.item.consume` |
 
+Subscribe locally with the `nats` CLI to confirm publishing:
+
+```bash
+nats sub "kiosk.>"
+```
+
 ## Schema
 
-Six collections, all defined as code in `migrations/1779000000_init.go`.
+Eight collections, defined as code across `migrations/*.go`. The initial
+migration creates the first six; subsequent migrations add the per-instance
+and audit-log collections (and a couple of fields on `items`).
 
 | Collection | Purpose |
 |---|---|
 | `users` | Workers (badge-holders). PB default auth collection, real emails kept for future notifications. Workers don't log in in v1. |
 | `admins` | Foremen / admins. Separate PB auth collection. Login via email + password. |
-| `items` | Tools and consumables. `tracking_mode` is `quantity` or `serialized`. |
+| `items` | Tools and consumables (the SKU). `tracking_mode` is `quantity` or `serialized`. Carries `quantity_on_hand` (fleet count for tools / current stock for consumables) and `reorder_threshold` (low-stock alert level; 0 disables the alert). |
+| `item_instances` | One physical unit of a serialized SKU. Holds the scannable `code`, the printed `serial`, an optional `rfid_epc`, and `active`. FK to the parent `items` row. |
 | `transactions` | Append-only ledger. `kiosk_code`, `location_code`, `user`, `started_at`, `completed_at`, `status`. |
-| `transaction_lines` | One per item action within a transaction. `action` is `checkout`, `return`, or `consume`. |
-| `open_checkouts` | Materialized view of "what's out right now." One row per unit out. Maintained by the commit hook. |
+| `transaction_lines` | One per item action within a transaction. `action` is `checkout`, `return`, or `consume`. Carries optional `item_instance` FK for serialized lines. |
+| `open_checkouts` | Materialized view of "what's out right now." One row per unit out. Carries `item_instance` FK for serialized units. Maintained by the commit hook. |
+| `stock_adjustments` | Append-only audit log of changes to `items.quantity_on_hand` made via `/api/kiosk/items/{id}/adjust`. Stores `delta`, `new_quantity` (snapshot), `reason`, and the responsible `admin`. |
 
 Cardinality rules for `open_checkouts`:
 
 - A `checkout` line with `qty=N` for a non-serialized tool creates **N rows**.
-- A `return` line with `qty=N` deletes up to **N rows** (line marked `uncorrelated=true` if fewer matched).
-- Serialized tools always have `qty=1`, so there's exactly one row per serialized unit at any time.
-- Consumables don't generate `open_checkouts` rows.
+- A `return` line with `qty=N` deletes up to **N rows** (line marked
+  `uncorrelated=true` if fewer matched).
+- A serialized line always has `qty=1` and carries an `item_instance` FK.
+  At most one open row exists per instance at any time; returning targets
+  that exact instance — sibling units of the same SKU are untouched.
+- Consumables don't generate `open_checkouts` rows. Instead the commit hook
+  decrements `items.quantity_on_hand` by `qty` inside the same transaction.
+  The value is allowed to go negative — the ledger is authoritative, and a
+  worker grabbing more than was recorded shouldn't be blocked at the kiosk.
 
 CSV import (`POST /api/kiosk/items/import`) format:
 
 ```csv
-code,name,type,unit,tracking_mode,serial,category,rfid_epc,active,notes
-DR-IMPACT-042,Impact Driver,tool,each,serialized,SN-1234,Power Tools,E280117020000042,true,
-SCREW-DECK-3IN,Deck Screws 3in,consumable,box of 100,quantity,,Fasteners,,true,
+code,name,type,unit,tracking_mode,serial,category,rfid_epc,active,notes,quantity_on_hand,reorder_threshold
+DR-IMPACT-042,Impact Driver,tool,each,serialized,SN-1234,Power Tools,E280117020000042,true,,1,0
+SCREW-DECK-3IN,Deck Screws 3in,consumable,box of 100,quantity,,Fasteners,,true,,25,5
 ```
 
-Empty cells are nulls. `active` accepts `true|false|1|0|yes|no|y|n`. Items are
-matched by `code` (upsert). Items not in the CSV are left alone.
+Empty cells are nulls. `active` accepts `true|false|1|0|yes|no|y|n`. The
+`quantity_on_hand` and `reorder_threshold` columns are optional; if
+omitted, existing rows keep their current values and new rows default to
+zero. Items are matched by `code` (upsert). Items not in the CSV are left
+alone. CSV import targets `items` only — serialized SKUs created via CSV
+still need their instances added through the admin UI's instances panel.
 
 ## Operations
 
@@ -411,6 +488,46 @@ inspect the diff. Clean ledger:
 If `missing_in_table` or `extra_in_table` is non-empty, the `transaction_lines`
 ledger is authoritative — the `open_checkouts` table can be rebuilt from it.
 
+To rebuild: in the admin SPA, go to **Reports → Currently out** and click
+**Rebuild from ledger** at the bottom of the list. A confirm modal warns
+that this wipes and repopulates `open_checkouts` inside a single
+transaction. Or call `POST /api/kiosk/integrity/rebuild` directly with an
+admin token. The response reports `{ deleted, inserted }` counts.
+
+### Adjusting stock
+
+Admins should change `items.quantity_on_hand` through the admin UI's
+**Adjust…** button (next to the read-only quantity in the item dialog),
+not by editing the value directly. The Adjust dialog supports a signed
+delta or an absolute "set to N" mode, both requiring a free-form reason.
+Each submission writes a `stock_adjustments` row in the same transaction
+as the item update, capturing who/what/why. Past adjustments for an item
+are viewable via the **View adjustment history** link below the
+threshold field.
+
+The Low Stock tab on Reports surfaces every active item whose available
+quantity is at or below its `reorder_threshold`. For serialized SKUs,
+"available" is `active instance count − currently-out instance count`;
+for quantity items, it's `quantity_on_hand − count(open_checkouts)`;
+for consumables, just `quantity_on_hand`.
+
+### Managing instances of serialized tools
+
+In the admin SPA, opening (or creating + saving) a serialized item shows
+an **Instances** panel below the form. Each row is one physical unit:
+
+- **Code** — the barcode physically on the unit (e.g. `DR-042-A`). What
+  workers actually scan. Wins over the SKU code on collision.
+- **Serial** — the printed serial label (informational).
+- **RFID EPC** — optional tag; resolves through the same scan dispatcher.
+- **Active** — uncheck to retire a unit without breaking ledger history.
+
+Deleting an instance is blocked while it has an open checkout (return it
+first) and gracefully declines when the ledger holds an FK ("uncheck
+Active to retire instead"). The Items list shows an `N inst` badge next
+to the tracking mode for serialized rows so an admin can see at a glance
+how many physical units exist per SKU.
+
 ### Resetting the bootstrap admin password
 
 The bootstrap admin email is `admin@kiosk.local`. If you've lost the password:
@@ -459,24 +576,43 @@ apply migrations after `app.Bootstrap()`. If you're writing new tests against
 PB, follow the same pattern (`migratecmd`'s `Automigrate` hooks `OnServe`, not
 `OnBootstrap`, so it doesn't fire in tests that don't start a server).
 
+## Shipped since v1
+
+These started as deferred roadmap items and are now live in the binary:
+
+- **Stock tracking with audit log.** `items.quantity_on_hand` /
+  `reorder_threshold`, automatic decrement on `consume`, low-stock report,
+  `/items/{id}/adjust` endpoint with `stock_adjustments` audit table.
+- **Per-instance serialized tracking.** `item_instances` collection, scan
+  resolver precedence, per-instance returns, admin instances panel.
+- **Returns policy enforcement.** `allow_cross_user` / `allow_uncorrelated`
+  flags are honored at commit time and roll back the transaction when set
+  to `false`.
+- **NATS publishing.** `events.Publish` dual-publishes to NATS when
+  `nats.enabled=true`; supports all `nats.go` auth modes; unreachable
+  servers don't block the kiosk from booting.
+- **Ledger rebuild.** Admin button + `/integrity/rebuild` endpoint repopulate
+  `open_checkouts` from the ledger.
+
 ## Roadmap
 
-Each item below is intentionally deferred from v1. Schema, identity stamping,
-event subjects, and the `rfid_epc` field are already in place to make these
-additions additive rather than rewrites.
+Items below are still intentionally deferred. Schema and event subjects are
+in place to make them additive rather than rewrites.
 
-- **NATS publishing (v2).** Replace the body of `events.Publish` to also
-  publish to NATS. Subject names already follow NATS hierarchical naming.
 - **Central reporting (v2.1).** A central PocketBase subscribes to
   `kiosk.>.transaction.complete` and mirrors transactions into its own
-  collection for cross-kiosk reporting.
-- **Catalog sync (v2.2).** Items authored centrally, distributed to kiosks
-  via NATS. The CSV import remains as a fallback for kiosk-local additions.
-- **RFID (v2.3).** Impinj reader publishes scans to
+  collection for cross-kiosk reporting. The publish side is done.
+- **Catalog sync (v2.2).** Items + instances authored centrally, distributed
+  to kiosks via NATS. The CSV import remains as a fallback for kiosk-local
+  additions.
+- **RFID reader integration (v2.3).** Impinj reader publishes scans to
   `kiosk.{kiosk_code}.scan.rfid`. The scan dispatcher already resolves
-  `rfid_epc` lookups — no new dispatch logic needed.
+  `rfid_epc` for both items and instances — no new dispatch logic needed.
 - **Multi-kiosk site coordination (v3).** NATS leaf node per site, shared KV
   for "tool out at kiosk A visible at kiosk B."
+- **Per-kiosk item / location-aware availability.** All kiosks currently
+  share the same catalog; v3 narrows visibility to what the kiosk's
+  location actually stocks.
 
 Each of these can be evaluated on demand. None should be built until there is
 a concrete user asking for it.
