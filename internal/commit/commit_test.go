@@ -44,10 +44,12 @@ func setupApp(t *testing.T) *pocketbase.PocketBase {
 }
 
 type seed struct {
-	UserID, OtherUserID string
-	ToolQtyID           string
-	ToolSerialID        string
-	ConsumableID        string
+	UserID, OtherUserID    string
+	ToolQtyID              string
+	ToolSerialID           string
+	ToolSerialInstanceID   string
+	ToolSerialInstance2ID  string // a second instance of the same serialized SKU
+	ConsumableID           string
 }
 
 func seedFixtures(t *testing.T, app core.App) seed {
@@ -95,13 +97,35 @@ func seedFixtures(t *testing.T, app core.App) seed {
 
 	toolSerial := core.NewRecord(items)
 	toolSerial.Set("code", "DR-042")
-	toolSerial.Set("name", "Impact Driver SN-042")
+	toolSerial.Set("name", "Impact Driver")
 	toolSerial.Set("type", "tool")
 	toolSerial.Set("tracking_mode", "serialized")
-	toolSerial.Set("serial", "SN-042")
 	toolSerial.Set("active", true)
 	if err := app.Save(toolSerial); err != nil {
 		t.Fatalf("save impact driver: %v", err)
+	}
+
+	// Two instances of the same serialized SKU. Tests for cross-instance
+	// behavior (returning B doesn't touch A) need both.
+	instances, err := app.FindCollectionByNameOrId("item_instances")
+	if err != nil {
+		t.Fatalf("find item_instances: %v", err)
+	}
+	instA := core.NewRecord(instances)
+	instA.Set("item", toolSerial.Id)
+	instA.Set("code", "DR-042-A")
+	instA.Set("serial", "SN-A")
+	instA.Set("active", true)
+	if err := app.Save(instA); err != nil {
+		t.Fatalf("save instance A: %v", err)
+	}
+	instB := core.NewRecord(instances)
+	instB.Set("item", toolSerial.Id)
+	instB.Set("code", "DR-042-B")
+	instB.Set("serial", "SN-B")
+	instB.Set("active", true)
+	if err := app.Save(instB); err != nil {
+		t.Fatalf("save instance B: %v", err)
 	}
 
 	consumable := core.NewRecord(items)
@@ -115,11 +139,13 @@ func seedFixtures(t *testing.T, app core.App) seed {
 	}
 
 	return seed{
-		UserID:       alice.Id,
-		OtherUserID:  bob.Id,
-		ToolQtyID:    toolQty.Id,
-		ToolSerialID: toolSerial.Id,
-		ConsumableID: consumable.Id,
+		UserID:                alice.Id,
+		OtherUserID:           bob.Id,
+		ToolQtyID:             toolQty.Id,
+		ToolSerialID:          toolSerial.Id,
+		ToolSerialInstanceID:  instA.Id,
+		ToolSerialInstance2ID: instB.Id,
+		ConsumableID:          consumable.Id,
 	}
 }
 
@@ -211,8 +237,9 @@ func TestCheckout_Serialized_QtyTwo_Rejected(t *testing.T) {
 	s := seedFixtures(t, app)
 
 	c := newCart(s.UserID, &cart.Line{
-		ItemID: s.ToolSerialID, ItemCode: "DR-042", ItemName: "Impact Driver",
-		ItemType: "tool", TrackingMode: "serialized", Serial: "SN-042",
+		ItemID: s.ToolSerialID, ItemCode: "DR-042-A", ItemName: "Impact Driver",
+		ItemType: "tool", TrackingMode: "serialized", Serial: "SN-A",
+		ItemInstanceID: s.ToolSerialInstanceID,
 		Action: "checkout", Qty: 2,
 	})
 	if _, err := commit.Commit(app, c, testIdentity, commit.DefaultPolicy(), (&captured{}).publish); err == nil {
@@ -338,10 +365,11 @@ func TestCommit_MixedCart_ProducesAllExpectedSideEffects(t *testing.T) {
 			ItemID: s.ToolQtyID, Action: "return", Qty: 1,
 			ItemType: "tool", TrackingMode: "quantity",
 		},
-		// checkout the impact driver (serialized)
+		// checkout the impact driver (serialized) — instance A
 		&cart.Line{
 			ItemID: s.ToolSerialID, Action: "checkout", Qty: 1,
-			ItemType: "tool", TrackingMode: "serialized", Serial: "SN-042",
+			ItemType: "tool", TrackingMode: "serialized", Serial: "SN-A",
+			ItemInstanceID: s.ToolSerialInstanceID,
 		},
 		// consume 50 screws
 		&cart.Line{
@@ -395,6 +423,92 @@ func TestCommit_EmptyCart_Rejected(t *testing.T) {
 	c := &cart.Cart{ID: "x", UserID: "fake", Lines: []*cart.Line{}}
 	if _, err := commit.Commit(app, c, testIdentity, commit.DefaultPolicy(), (&captured{}).publish); err == nil {
 		t.Fatal("expected error for empty cart")
+	}
+}
+
+func TestCheckout_SerializedInstance_WritesInstanceFK(t *testing.T) {
+	app := setupApp(t)
+	s := seedFixtures(t, app)
+
+	c := newCart(s.UserID, &cart.Line{
+		ItemID: s.ToolSerialID, Action: "checkout", Qty: 1,
+		ItemType: "tool", TrackingMode: "serialized",
+		ItemInstanceID: s.ToolSerialInstanceID,
+	})
+	if _, err := commit.Commit(app, c, testIdentity, commit.DefaultPolicy(), (&captured{}).publish); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	rows, _ := app.FindRecordsByFilter("open_checkouts", "item_instance = {:inst}", "", 0, 0,
+		dbx.Params{"inst": s.ToolSerialInstanceID})
+	if len(rows) != 1 {
+		t.Fatalf("open rows for instance A: want 1, got %d", len(rows))
+	}
+	if rows[0].GetString("item_instance") != s.ToolSerialInstanceID {
+		t.Errorf("item_instance FK not set on open_checkouts row")
+	}
+}
+
+func TestReturn_SerializedInstance_TargetsOnlyThatInstance(t *testing.T) {
+	app := setupApp(t)
+	s := seedFixtures(t, app)
+
+	// Check out both instances.
+	for _, instID := range []string{s.ToolSerialInstanceID, s.ToolSerialInstance2ID} {
+		c := newCart(s.UserID, &cart.Line{
+			ItemID: s.ToolSerialID, Action: "checkout", Qty: 1,
+			ItemType: "tool", TrackingMode: "serialized",
+			ItemInstanceID: instID,
+		})
+		if _, err := commit.Commit(app, c, testIdentity, commit.DefaultPolicy(), (&captured{}).publish); err != nil {
+			t.Fatalf("seed checkout: %v", err)
+		}
+	}
+
+	// Return only B.
+	ret := newCart(s.UserID, &cart.Line{
+		ItemID: s.ToolSerialID, Action: "return", Qty: 1,
+		ItemType: "tool", TrackingMode: "serialized",
+		ItemInstanceID: s.ToolSerialInstance2ID,
+	})
+	if _, err := commit.Commit(app, ret, testIdentity, commit.DefaultPolicy(), (&captured{}).publish); err != nil {
+		t.Fatalf("commit return: %v", err)
+	}
+
+	// A still out, B closed.
+	if n := countOpenCheckouts(t, app, "item_instance = {:inst}", dbx.Params{"inst": s.ToolSerialInstanceID}); n != 1 {
+		t.Errorf("instance A open rows: want 1, got %d", n)
+	}
+	if n := countOpenCheckouts(t, app, "item_instance = {:inst}", dbx.Params{"inst": s.ToolSerialInstance2ID}); n != 0 {
+		t.Errorf("instance B open rows: want 0, got %d", n)
+	}
+}
+
+func TestCheckout_SerializedItem_MissingInstance_Rejected(t *testing.T) {
+	app := setupApp(t)
+	s := seedFixtures(t, app)
+
+	c := newCart(s.UserID, &cart.Line{
+		ItemID: s.ToolSerialID, Action: "checkout", Qty: 1,
+		ItemType: "tool", TrackingMode: "serialized",
+		// no ItemInstanceID
+	})
+	if _, err := commit.Commit(app, c, testIdentity, commit.DefaultPolicy(), (&captured{}).publish); err == nil {
+		t.Fatal("expected error for serialized line without instance, got nil")
+	}
+}
+
+func TestCheckout_SerializedInstance_WrongItem_Rejected(t *testing.T) {
+	app := setupApp(t)
+	s := seedFixtures(t, app)
+
+	// Pretend the line points instance A at the wrong (quantity) item.
+	c := newCart(s.UserID, &cart.Line{
+		ItemID: s.ToolQtyID, Action: "checkout", Qty: 1,
+		ItemType: "tool", TrackingMode: "serialized",
+		ItemInstanceID: s.ToolSerialInstanceID,
+	})
+	if _, err := commit.Commit(app, c, testIdentity, commit.DefaultPolicy(), (&captured{}).publish); err == nil {
+		t.Fatal("expected error for instance/item mismatch, got nil")
 	}
 }
 

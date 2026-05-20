@@ -7,10 +7,12 @@ import (
 
 // fakeLookups implements Lookups against fixed maps for table-driven tests.
 type fakeLookups struct {
-	usersByCode map[string]*User
-	itemsByCode map[string]*Item
-	itemsByRFID map[string]*Item
-	calls       []string // ordered list of lookup calls, for verifying dispatch
+	usersByCode     map[string]*User
+	itemsByCode     map[string]*Item
+	itemsByRFID     map[string]*Item
+	instancesByCode map[string]*InstanceMatch
+	instancesByRFID map[string]*InstanceMatch
+	calls           []string // ordered list of lookup calls, for verifying dispatch
 }
 
 func (f *fakeLookups) UserByCode(c string) (*User, error) {
@@ -25,18 +27,39 @@ func (f *fakeLookups) ItemByRFID(c string) (*Item, error) {
 	f.calls = append(f.calls, "ItemByRFID:"+c)
 	return f.itemsByRFID[c], nil
 }
+func (f *fakeLookups) ItemInstanceByCode(c string) (*InstanceMatch, error) {
+	f.calls = append(f.calls, "ItemInstanceByCode:"+c)
+	return f.instancesByCode[c], nil
+}
+func (f *fakeLookups) ItemInstanceByRFID(c string) (*InstanceMatch, error) {
+	f.calls = append(f.calls, "ItemInstanceByRFID:"+c)
+	return f.instancesByRFID[c], nil
+}
 
 func newFake() *fakeLookups {
+	item1 := &Item{ID: "i1", Code: "DR-042", Name: "Impact Driver", Type: "tool", TrackingMode: "serialized"}
 	return &fakeLookups{
 		usersByCode: map[string]*User{
 			"EMP-1": {ID: "u1", Code: "EMP-1", Name: "Alice", Role: "worker"},
 		},
 		itemsByCode: map[string]*Item{
-			"DR-042": {ID: "i1", Code: "DR-042", Name: "Impact Driver", Type: "tool", TrackingMode: "serialized", Serial: "SN-1"},
+			"DR-042": item1,
 			"SCREW":  {ID: "i2", Code: "SCREW", Name: "Deck Screws", Type: "consumable", TrackingMode: "quantity"},
 		},
 		itemsByRFID: map[string]*Item{
-			"E280-RFID-XYZ": {ID: "i1", Code: "DR-042", Name: "Impact Driver", Type: "tool", TrackingMode: "serialized", Serial: "SN-1"},
+			"E280-RFID-ITEM": {ID: "i2", Code: "SCREW", Name: "Deck Screws", Type: "consumable", TrackingMode: "quantity"},
+		},
+		instancesByCode: map[string]*InstanceMatch{
+			"DR-042-B": {
+				Instance: &ItemInstance{ID: "inst-B", ItemID: "i1", Code: "DR-042-B", Serial: "SN-B", Active: true},
+				Item:     item1,
+			},
+		},
+		instancesByRFID: map[string]*InstanceMatch{
+			"E280-INST-XYZ": {
+				Instance: &ItemInstance{ID: "inst-B", ItemID: "i1", Code: "DR-042-B", RFIDEPC: "E280-INST-XYZ", Active: true},
+				Item:     item1,
+			},
 		},
 	}
 }
@@ -86,16 +109,19 @@ func TestResolve(t *testing.T) {
 			itemPrefix: "I:",
 			value:      "I:DR-042",
 			wantType:   ResultItem,
-			wantRecord: &Item{ID: "i1", Code: "DR-042", Name: "Impact Driver", Type: "tool", TrackingMode: "serialized", Serial: "SN-1"},
-			wantCalls:  []string{"ItemByCode:DR-042"},
+			wantRecord: &Item{ID: "i1", Code: "DR-042", Name: "Impact Driver", Type: "tool", TrackingMode: "serialized"},
+			wantCalls:  []string{"ItemInstanceByCode:DR-042", "ItemByCode:DR-042"},
 		},
 		{
-			name:       "item prefix falls back to rfid",
+			name:       "item prefix falls back to rfid (item)",
 			itemPrefix: "I:",
-			value:      "I:E280-RFID-XYZ",
+			value:      "I:E280-RFID-ITEM",
 			wantType:   ResultItem,
-			wantRecord: &Item{ID: "i1", Code: "DR-042", Name: "Impact Driver", Type: "tool", TrackingMode: "serialized", Serial: "SN-1"},
-			wantCalls:  []string{"ItemByCode:E280-RFID-XYZ", "ItemByRFID:E280-RFID-XYZ"},
+			wantRecord: &Item{ID: "i2", Code: "SCREW", Name: "Deck Screws", Type: "consumable", TrackingMode: "quantity"},
+			wantCalls: []string{
+				"ItemInstanceByCode:E280-RFID-ITEM", "ItemByCode:E280-RFID-ITEM",
+				"ItemInstanceByRFID:E280-RFID-ITEM", "ItemByRFID:E280-RFID-ITEM",
+			},
 		},
 		{
 			name:       "item prefix with no match is unknown, does not try users",
@@ -103,35 +129,49 @@ func TestResolve(t *testing.T) {
 			value:      "I:NOPE",
 			wantType:   ResultUnknown,
 			wantValue:  "I:NOPE",
-			wantCalls:  []string{"ItemByCode:NOPE", "ItemByRFID:NOPE"},
+			wantCalls: []string{
+				"ItemInstanceByCode:NOPE", "ItemByCode:NOPE",
+				"ItemInstanceByRFID:NOPE", "ItemByRFID:NOPE",
+			},
 		},
 		{
 			name:       "no prefix tries item code first",
 			value:      "DR-042",
 			wantType:   ResultItem,
-			wantRecord: &Item{ID: "i1", Code: "DR-042", Name: "Impact Driver", Type: "tool", TrackingMode: "serialized", Serial: "SN-1"},
-			wantCalls:  []string{"ItemByCode:DR-042"},
+			wantRecord: &Item{ID: "i1", Code: "DR-042", Name: "Impact Driver", Type: "tool", TrackingMode: "serialized"},
+			wantCalls:  []string{"ItemInstanceByCode:DR-042", "ItemByCode:DR-042"},
 		},
 		{
-			name:       "no prefix falls through to rfid",
-			value:      "E280-RFID-XYZ",
+			name:       "no prefix falls through to item rfid",
+			value:      "E280-RFID-ITEM",
 			wantType:   ResultItem,
-			wantRecord: &Item{ID: "i1", Code: "DR-042", Name: "Impact Driver", Type: "tool", TrackingMode: "serialized", Serial: "SN-1"},
-			wantCalls:  []string{"ItemByCode:E280-RFID-XYZ", "ItemByRFID:E280-RFID-XYZ"},
+			wantRecord: &Item{ID: "i2", Code: "SCREW", Name: "Deck Screws", Type: "consumable", TrackingMode: "quantity"},
+			wantCalls: []string{
+				"ItemInstanceByCode:E280-RFID-ITEM", "ItemByCode:E280-RFID-ITEM",
+				"ItemInstanceByRFID:E280-RFID-ITEM", "ItemByRFID:E280-RFID-ITEM",
+			},
 		},
 		{
 			name:       "no prefix falls through to user code",
 			value:      "EMP-1",
 			wantType:   ResultUser,
 			wantRecord: &User{ID: "u1", Code: "EMP-1", Name: "Alice", Role: "worker"},
-			wantCalls:  []string{"ItemByCode:EMP-1", "ItemByRFID:EMP-1", "UserByCode:EMP-1"},
+			wantCalls: []string{
+				"ItemInstanceByCode:EMP-1", "ItemByCode:EMP-1",
+				"ItemInstanceByRFID:EMP-1", "ItemByRFID:EMP-1",
+				"UserByCode:EMP-1",
+			},
 		},
 		{
-			name:       "no prefix with no match is unknown",
-			value:      "DOES-NOT-EXIST",
-			wantType:   ResultUnknown,
-			wantValue:  "DOES-NOT-EXIST",
-			wantCalls:  []string{"ItemByCode:DOES-NOT-EXIST", "ItemByRFID:DOES-NOT-EXIST", "UserByCode:DOES-NOT-EXIST"},
+			name:      "no prefix with no match is unknown",
+			value:     "DOES-NOT-EXIST",
+			wantType:  ResultUnknown,
+			wantValue: "DOES-NOT-EXIST",
+			wantCalls: []string{
+				"ItemInstanceByCode:DOES-NOT-EXIST", "ItemByCode:DOES-NOT-EXIST",
+				"ItemInstanceByRFID:DOES-NOT-EXIST", "ItemByRFID:DOES-NOT-EXIST",
+				"UserByCode:DOES-NOT-EXIST",
+			},
 		},
 		{
 			name:       "value without prefix when prefix is configured falls through normally",
@@ -139,7 +179,34 @@ func TestResolve(t *testing.T) {
 			value:      "EMP-1",
 			wantType:   ResultUser,
 			wantRecord: &User{ID: "u1", Code: "EMP-1", Name: "Alice", Role: "worker"},
-			wantCalls:  []string{"ItemByCode:EMP-1", "ItemByRFID:EMP-1", "UserByCode:EMP-1"},
+			wantCalls: []string{
+				"ItemInstanceByCode:EMP-1", "ItemByCode:EMP-1",
+				"ItemInstanceByRFID:EMP-1", "ItemByRFID:EMP-1",
+				"UserByCode:EMP-1",
+			},
+		},
+		{
+			name:     "instance code wins, short-circuits before item lookup",
+			value:    "DR-042-B",
+			wantType: ResultItemInstance,
+			wantRecord: &InstanceMatch{
+				Instance: &ItemInstance{ID: "inst-B", ItemID: "i1", Code: "DR-042-B", Serial: "SN-B", Active: true},
+				Item:     &Item{ID: "i1", Code: "DR-042", Name: "Impact Driver", Type: "tool", TrackingMode: "serialized"},
+			},
+			wantCalls: []string{"ItemInstanceByCode:DR-042-B"},
+		},
+		{
+			name:     "instance rfid resolves when item code/rfid miss",
+			value:    "E280-INST-XYZ",
+			wantType: ResultItemInstance,
+			wantRecord: &InstanceMatch{
+				Instance: &ItemInstance{ID: "inst-B", ItemID: "i1", Code: "DR-042-B", RFIDEPC: "E280-INST-XYZ", Active: true},
+				Item:     &Item{ID: "i1", Code: "DR-042", Name: "Impact Driver", Type: "tool", TrackingMode: "serialized"},
+			},
+			wantCalls: []string{
+				"ItemInstanceByCode:E280-INST-XYZ", "ItemByCode:E280-INST-XYZ",
+				"ItemInstanceByRFID:E280-INST-XYZ",
+			},
 		},
 	}
 
@@ -150,9 +217,11 @@ func TestResolve(t *testing.T) {
 				UserPrefix: tt.userPrefix,
 				ItemPrefix: tt.itemPrefix,
 				Lookups: Lookups{
-					UserByCode: fake.UserByCode,
-					ItemByCode: fake.ItemByCode,
-					ItemByRFID: fake.ItemByRFID,
+					UserByCode:         fake.UserByCode,
+					ItemByCode:         fake.ItemByCode,
+					ItemByRFID:         fake.ItemByRFID,
+					ItemInstanceByCode: fake.ItemInstanceByCode,
+					ItemInstanceByRFID: fake.ItemInstanceByRFID,
 				},
 			}
 			got := r.Resolve(tt.value)

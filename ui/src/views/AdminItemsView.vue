@@ -9,6 +9,7 @@ import type { ItemRecord } from '../types'
 const toast = useAdminToast()
 
 const items = ref<ItemRecord[]>([])
+const instanceCounts = ref<Record<string, number>>({})
 const loading = ref(false)
 const error = ref<string | null>(null)
 const search = ref('')
@@ -21,10 +22,14 @@ async function load() {
   loading.value = true
   error.value = null
   try {
-    const res = await pb.collection('items').getList<ItemRecord>(1, 500, {
-      sort: '+code',
-    })
-    items.value = res.items
+    const [itemsRes, instancesRes] = await Promise.all([
+      pb.collection('items').getList<ItemRecord>(1, 500, { sort: '+code' }),
+      pb.collection('item_instances').getFullList<{ item: string }>({ fields: 'item' }),
+    ])
+    items.value = itemsRes.items
+    const counts: Record<string, number> = {}
+    for (const i of instancesRes) counts[i.item] = (counts[i.item] ?? 0) + 1
+    instanceCounts.value = counts
   } catch (e) {
     error.value = (e as Error).message
   } finally {
@@ -178,7 +183,14 @@ async function onDelete() {
                 {{ item.type }}
               </span>
             </td>
-            <td class="px-4 py-3 text-slate-400">{{ item.tracking_mode }}</td>
+            <td class="px-4 py-3 text-slate-400">
+              {{ item.tracking_mode }}
+              <span
+                v-if="item.tracking_mode === 'serialized'"
+                class="ml-1 inline-block px-1.5 rounded text-[10px] bg-slate-800 text-slate-300"
+                :title="`${instanceCounts[item.id] ?? 0} instance(s)`"
+              >{{ instanceCounts[item.id] ?? 0 }} inst</span>
+            </td>
             <td class="px-4 py-3 font-mono text-slate-400">{{ item.serial || '—' }}</td>
             <td class="px-4 py-3 text-slate-400">{{ item.category || '—' }}</td>
             <td class="px-4 py-3">
@@ -202,7 +214,7 @@ async function onDelete() {
     <ItemDialog
       :open="editing !== null"
       :item="editing"
-      @update:open="(v) => { if (!v) editing = null }"
+      @update:open="(v) => { if (!v) { editing = null; void load() } }"
       @save="onSave"
     />
 

@@ -8,13 +8,16 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 )
 
-type openKey struct{ item, user string }
+// openKey groups expected open_checkouts by (item, instance, user). The
+// instance field is the empty string for quantity-tracked items, so the
+// non-serialized path stays unchanged.
+type openKey struct{ item, instance, user string }
 
 // expectedOpenCheckouts replays the transaction_lines ledger to compute what
 // open_checkouts SHOULD contain right now. Used by both Integrity (which
 // diffs against actual) and RebuildOpenCheckouts (which overwrites actual).
 //
-// Method per (item, user) pair:
+// Method per (item, instance, user) tuple:
 //   - checkout line: +qty
 //   - return line:   -qty against the original_checkout_user (or the
 //     transaction's user if unset)
@@ -52,16 +55,17 @@ func expectedOpenCheckouts(app core.App) (map[openKey]int, int, error) {
 		action := line.GetString("action")
 		qty := line.GetInt("qty")
 		item := line.GetString("item")
+		instance := line.GetString("item_instance")
 
 		switch action {
 		case "checkout":
-			expected[openKey{item, tx.GetString("user")}] += qty
+			expected[openKey{item, instance, tx.GetString("user")}] += qty
 		case "return":
 			target := line.GetString("original_checkout_user")
 			if target == "" {
 				target = tx.GetString("user")
 			}
-			expected[openKey{item, target}] -= qty
+			expected[openKey{item, instance, target}] -= qty
 		}
 	}
 	return expected, len(lines), nil
@@ -90,11 +94,12 @@ func (h *Handlers) Integrity(re *core.RequestEvent) error {
 		return err
 	}
 	for _, o := range opens {
-		actual[openKey{o.GetString("item"), o.GetString("user")}]++
+		actual[openKey{o.GetString("item"), o.GetString("item_instance"), o.GetString("user")}]++
 	}
 
 	type diff struct {
 		Item     string `json:"item"`
+		Instance string `json:"item_instance,omitempty"`
 		User     string `json:"user"`
 		Expected int    `json:"expected"`
 		Actual   int    `json:"actual"`
@@ -107,9 +112,9 @@ func (h *Handlers) Integrity(re *core.RequestEvent) error {
 		}
 		act := actual[k]
 		if exp > act {
-			missing = append(missing, diff{k.item, k.user, exp, act})
+			missing = append(missing, diff{k.item, k.instance, k.user, exp, act})
 		} else if act > exp {
-			extra = append(extra, diff{k.item, k.user, exp, act})
+			extra = append(extra, diff{k.item, k.instance, k.user, exp, act})
 		}
 	}
 	for k, act := range actual {
@@ -117,7 +122,7 @@ func (h *Handlers) Integrity(re *core.RequestEvent) error {
 			continue
 		}
 		if act > 0 {
-			extra = append(extra, diff{k.item, k.user, 0, act})
+			extra = append(extra, diff{k.item, k.instance, k.user, 0, act})
 		}
 	}
 
@@ -183,10 +188,19 @@ func (h *Handlers) RebuildOpenCheckouts(re *core.RequestEvent) error {
 				return fmt.Errorf("find item %s: %w", k.item, err)
 			}
 			serial := item.GetString("serial")
+			// Per-instance serial wins when known.
+			if k.instance != "" {
+				if inst, ierr := tx.FindRecordById("item_instances", k.instance); ierr == nil {
+					serial = inst.GetString("serial")
+				}
+			}
 			for i := 0; i < count; i++ {
 				rec := core.NewRecord(col)
 				rec.Set("item", k.item)
 				rec.Set("user", k.user)
+				if k.instance != "" {
+					rec.Set("item_instance", k.instance)
+				}
 				if serial != "" {
 					rec.Set("serial", serial)
 				}

@@ -64,9 +64,14 @@ func setLowStockWarning(warnings []string, w string) []string {
 // lowStockWarning returns a "low_stock:available=N" warning string if the
 // requested qty for the given action would exceed available stock, or "" if
 // no warning is needed. Returns are exempt: returning a tool can't reduce
-// availability of that tool.
+// availability of that tool. Serialized items are exempt too — the action
+// defaulting already produces a return / cross_user_return warning when the
+// scanned instance is out, which is the more useful signal for this case.
 func lowStockWarning(app core.App, item *core.Record, action string, qty int) (string, error) {
 	if qty <= 0 || action == "return" {
+		return "", nil
+	}
+	if item.GetString("tracking_mode") == "serialized" {
 		return "", nil
 	}
 	available, err := availableForItem(app, item)

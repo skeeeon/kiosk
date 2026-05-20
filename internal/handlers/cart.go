@@ -60,35 +60,54 @@ func (h *Handlers) CartAdd(re *core.RequestEvent) error {
 		return re.NotFoundError("cart not found or expired", nil)
 	}
 
-	item, err := h.App.FindFirstRecordByFilter("items", "code = {:code}", dbx.Params{"code": body.ItemCode})
-	if isNotFound(err) {
-		// Try RFID as a courtesy — same as the scan dispatcher.
-		item, err = h.App.FindFirstRecordByFilter("items", "rfid_epc = {:epc}", dbx.Params{"epc": body.ItemCode})
-	}
-	if isNotFound(err) {
-		return re.NotFoundError("item not found", nil)
-	}
+	// Resolve the input string against instances first, then items —
+	// same precedence as the scan dispatcher.
+	item, instance, err := h.resolveScannableForCart(body.ItemCode)
 	if err != nil {
+		if isNotFound(err) {
+			return re.NotFoundError("item not found", nil)
+		}
 		return err
 	}
 	if !item.GetBool("active") {
 		return re.BadRequestError("item is inactive", nil)
 	}
+	// Serialized items must be added via a specific instance — the SKU
+	// alone doesn't identify a physical unit. Browse-and-pick by SKU is
+	// the path that hits this; the frontend prompts to select an instance.
+	if item.GetString("tracking_mode") == "serialized" && instance == nil {
+		return re.BadRequestError("select a specific unit (instance) for this serialized item", nil)
+	}
+	if instance != nil && !instance.GetBool("active") {
+		return re.BadRequestError("instance is inactive", nil)
+	}
 
-	action, origUserID, origUserName, warnings, err := h.defaultActionFor(item, c.UserID)
+	action, origUserID, origUserName, warnings, err := h.defaultActionFor(item, instance, c.UserID)
 	if err != nil {
 		return err
 	}
 
+	lineCode := item.GetString("code")
+	lineSerial := item.GetString("serial")
+	var instanceID, instanceCode string
+	if instance != nil {
+		lineCode = instance.GetString("code")
+		lineSerial = instance.GetString("serial")
+		instanceID = instance.Id
+		instanceCode = instance.GetString("code")
+	}
+
 	line := &cart.Line{
 		ItemID:                   item.Id,
-		ItemCode:                 item.GetString("code"),
+		ItemCode:                 lineCode,
 		ItemName:                 item.GetString("name"),
 		ItemType:                 item.GetString("type"),
 		TrackingMode:             item.GetString("tracking_mode"),
 		Action:                   action,
 		Qty:                      1,
-		Serial:                   item.GetString("serial"),
+		Serial:                   lineSerial,
+		ItemInstanceID:           instanceID,
+		ItemInstanceCode:         instanceCode,
 		OriginalCheckoutUserID:   origUserID,
 		OriginalCheckoutUserName: origUserName,
 		Warnings:                 warnings,
@@ -225,29 +244,75 @@ func (h *Handlers) CartCancel(re *core.RequestEvent) error {
 	return re.JSON(http.StatusOK, map[string]any{"ok": true})
 }
 
-// defaultActionFor implements the action-defaulting rules from §6 of the plan:
+// resolveScannableForCart mirrors the scan resolver's precedence: instance
+// code → item code → instance RFID → item RFID. Returns (item, instance|nil,
+// err). For non-instance matches, instance is nil and the item is the
+// matched SKU. For instance matches, the instance is loaded and the item
+// is its parent SKU.
+func (h *Handlers) resolveScannableForCart(code string) (*core.Record, *core.Record, error) {
+	if code == "" {
+		return nil, nil, &notFoundErr{}
+	}
+	if inst, err := h.App.FindFirstRecordByFilter("item_instances", "code = {:code}", dbx.Params{"code": code}); err == nil && inst != nil {
+		item, ierr := h.App.FindRecordById("items", inst.GetString("item"))
+		if ierr != nil {
+			return nil, nil, ierr
+		}
+		return item, inst, nil
+	}
+	if item, err := h.App.FindFirstRecordByFilter("items", "code = {:code}", dbx.Params{"code": code}); err == nil && item != nil {
+		return item, nil, nil
+	}
+	if inst, err := h.App.FindFirstRecordByFilter("item_instances", "rfid_epc = {:epc}", dbx.Params{"epc": code}); err == nil && inst != nil {
+		item, ierr := h.App.FindRecordById("items", inst.GetString("item"))
+		if ierr != nil {
+			return nil, nil, ierr
+		}
+		return item, inst, nil
+	}
+	if item, err := h.App.FindFirstRecordByFilter("items", "rfid_epc = {:epc}", dbx.Params{"epc": code}); err == nil && item != nil {
+		return item, nil, nil
+	}
+	return nil, nil, &notFoundErr{}
+}
+
+// notFoundErr is a tiny sentinel so callers can use isNotFound() uniformly.
+type notFoundErr struct{}
+
+func (notFoundErr) Error() string { return "not found" }
+func (notFoundErr) Is(target error) bool {
+	_, ok := target.(*notFoundErr)
+	return ok
+}
+
+// defaultActionFor implements the action-defaulting rules:
 //
 //   - consumable → consume
 //   - tool checked out to the cart's user → return
 //   - tool checked out to another user → return + cross_user_return warning
 //   - tool not checked out → checkout
 //
+// When an instance is supplied (serialized scan), open-checkout lookups are
+// scoped to that exact instance — Bob's drill SN-B doesn't count against
+// Alice scanning drill SN-A.
+//
 // Cross-user and uncorrelated policy toggles in config aren't enforced here —
-// the cart freely accepts any action; the commit hook (Phase 4) enforces
-// the kiosk's return policy when finalizing the transaction.
-func (h *Handlers) defaultActionFor(item *core.Record, cartUserID string) (
+// the cart freely accepts any action; the commit hook enforces them.
+func (h *Handlers) defaultActionFor(item, instance *core.Record, cartUserID string) (
 	action, origUserID, origUserName string, warnings []string, err error,
 ) {
 	if item.GetString("type") == "consumable" {
 		return "consume", "", "", nil, nil
 	}
 
-	// Tool: is it already checked out to this user?
-	self, err := h.App.FindFirstRecordByFilter(
-		"open_checkouts",
-		"item = {:item} && user = {:user}",
-		dbx.Params{"item": item.Id, "user": cartUserID},
-	)
+	filter := "item = {:item} && user = {:user}"
+	params := dbx.Params{"item": item.Id, "user": cartUserID}
+	if instance != nil {
+		filter = "item_instance = {:inst} && user = {:user}"
+		params = dbx.Params{"inst": instance.Id, "user": cartUserID}
+	}
+
+	self, err := h.App.FindFirstRecordByFilter("open_checkouts", filter, params)
 	if err != nil && !isNotFound(err) {
 		return "", "", "", nil, err
 	}
@@ -256,11 +321,13 @@ func (h *Handlers) defaultActionFor(item *core.Record, cartUserID string) (
 	}
 
 	// To someone else?
-	other, err := h.App.FindFirstRecordByFilter(
-		"open_checkouts",
-		"item = {:item}",
-		dbx.Params{"item": item.Id},
-	)
+	otherFilter := "item = {:item}"
+	otherParams := dbx.Params{"item": item.Id}
+	if instance != nil {
+		otherFilter = "item_instance = {:inst}"
+		otherParams = dbx.Params{"inst": instance.Id}
+	}
+	other, err := h.App.FindFirstRecordByFilter("open_checkouts", otherFilter, otherParams)
 	if err != nil && !isNotFound(err) {
 		return "", "", "", nil, err
 	}

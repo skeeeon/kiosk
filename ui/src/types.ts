@@ -29,9 +29,25 @@ export interface Item {
   category?: string
 }
 
+export interface ItemInstance {
+  id: string
+  item_id: string
+  code: string
+  serial?: string
+  rfid_epc?: string
+  active: boolean
+  notes?: string
+}
+
+export interface InstanceMatch {
+  instance: ItemInstance
+  item: Item
+}
+
 export type ScanResult =
   | { type: 'user'; record: User }
   | { type: 'item'; record: Item }
+  | { type: 'item_instance'; record: InstanceMatch }
   | { type: 'unknown'; value?: string }
 
 export type CartAction = 'checkout' | 'return' | 'consume'
@@ -46,6 +62,8 @@ export interface CartLine {
   action: CartAction
   qty: number
   serial?: string
+  item_instance_id?: string
+  item_instance_code?: string
   original_checkout_user_id?: string
   original_checkout_user_name?: string
   warnings?: string[]

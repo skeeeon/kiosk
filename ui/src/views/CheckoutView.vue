@@ -9,7 +9,7 @@ import { useCart } from '../composables/useCart'
 import { useKioskIdentity } from '../composables/useKioskIdentity'
 import { useSessionStore } from '../stores/session'
 import { ApiError } from '../lib/api'
-import type { CartAction, CartLine, CommitResult, Item, User } from '../types'
+import type { CartAction, CartLine, CommitResult, InstanceMatch, Item, User } from '../types'
 
 const session = useSessionStore()
 const { cart, flash } = storeToRefs(session)
@@ -120,13 +120,19 @@ async function onScan(raw: string) {
     return
   }
 
-  if (result.type === 'item') {
+  if (result.type === 'item' || result.type === 'item_instance') {
     if (!cart.value) {
       session.setFlash('warn', 'Scan your badge first')
       return
     }
+    // For an instance scan, we pass the instance's own code — the backend
+    // resolves instances before items (same precedence as /scan), so this
+    // ends up on the correct cart line with the instance FK populated.
+    const code = result.type === 'item_instance'
+      ? (result.record as InstanceMatch).instance.code
+      : (result.record as Item).code
     try {
-      const line = await c.addItem((result.record as Item).code)
+      const line = await c.addItem(code)
       if (line.warnings && line.warnings.length > 0) {
         const first = line.warnings[0]
         if (first.startsWith('cross_user_return:')) {

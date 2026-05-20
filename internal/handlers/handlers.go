@@ -37,10 +37,18 @@ func (h *Handlers) requireAdmin(re *core.RequestEvent) error {
 	return nil
 }
 
-// isNotFound reports whether an error from a PB find call means "no record
-// matched" (vs. a real DB error worth surfacing).
+// isNotFound reports whether an error means "no record matched" — either a
+// PB sql.ErrNoRows or our local notFoundErr sentinel from multi-source
+// resolvers like resolveScannableForCart.
 func isNotFound(err error) bool {
-	return err != nil && errors.Is(err, sql.ErrNoRows)
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return true
+	}
+	var nf *notFoundErr
+	return errors.As(err, &nf)
 }
 
 // userFromRecord projects a PB users record into the SPA-facing shape.

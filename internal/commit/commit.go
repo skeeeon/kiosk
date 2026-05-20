@@ -114,8 +114,24 @@ func Commit(app core.App, c *cart.Cart, id kioskctx.Identity, policy Policy, pub
 			if l.Qty < 1 || l.Qty > cart.MaxQty {
 				return fmt.Errorf("item %s qty=%d out of range (1..%d)", itemRec.GetString("code"), l.Qty, cart.MaxQty)
 			}
-			if itemRec.GetString("tracking_mode") == "serialized" && l.Qty != 1 {
-				return fmt.Errorf("serialized item %s must have qty=1, got %d", itemRec.GetString("code"), l.Qty)
+			if itemRec.GetString("tracking_mode") == "serialized" {
+				if l.Qty != 1 {
+					return fmt.Errorf("serialized item %s must have qty=1, got %d", itemRec.GetString("code"), l.Qty)
+				}
+				if l.ItemInstanceID == "" {
+					return fmt.Errorf("serialized item %s requires an instance", itemRec.GetString("code"))
+				}
+			}
+			// Any line carrying an instance must point at an instance whose
+			// parent item matches the line. Catches client bugs / tampering.
+			if l.ItemInstanceID != "" {
+				inst, err := tx.FindRecordById("item_instances", l.ItemInstanceID)
+				if err != nil {
+					return fmt.Errorf("find instance %s: %w", l.ItemInstanceID, err)
+				}
+				if inst.GetString("item") != l.ItemID {
+					return fmt.Errorf("instance %s does not belong to item %s", l.ItemInstanceID, itemRec.GetString("code"))
+				}
 			}
 
 			lineRec, err := createLine(tx, linesCol, txRec, l)
@@ -125,13 +141,13 @@ func Commit(app core.App, c *cart.Cart, id kioskctx.Identity, policy Policy, pub
 
 			switch l.Action {
 			case "checkout":
-				if err := openCheckoutsForLine(tx, openCol, lineRec, itemRec, c.UserID, completedAt, l.Qty); err != nil {
+				if err := openCheckoutsForLine(tx, openCol, l, lineRec, itemRec, c.UserID, completedAt, l.Qty); err != nil {
 					return err
 				}
 				result.CheckedOut++
 
 			case "return":
-				uncorrelated, err := closeCheckoutsForLine(tx, lineRec, itemRec, c.UserID, l.Qty)
+				uncorrelated, err := closeCheckoutsForLine(tx, l, lineRec, itemRec, c.UserID, l.Qty)
 				if err != nil {
 					return err
 				}
@@ -242,6 +258,9 @@ func createLine(tx core.App, col *core.Collection, txRec *core.Record, l *cart.L
 	if l.Serial != "" {
 		rec.Set("serial", l.Serial)
 	}
+	if l.ItemInstanceID != "" {
+		rec.Set("item_instance", l.ItemInstanceID)
+	}
 	if l.OriginalCheckoutUserID != "" {
 		rec.Set("original_checkout_user", l.OriginalCheckoutUserID)
 	}
@@ -252,15 +271,22 @@ func createLine(tx core.App, col *core.Collection, txRec *core.Record, l *cart.L
 }
 
 // openCheckoutsForLine inserts one open_checkouts row per unit. Serialized
-// tools always have qty=1; non-serialized may have qty>1.
-func openCheckoutsForLine(tx core.App, col *core.Collection, lineRec, itemRec *core.Record, userID string, completedAt time.Time, qty int) error {
-	serial := itemRec.GetString("serial")
+// tools always have qty=1 and carry an item_instance FK (validated above);
+// non-serialized may have qty>1 and carry no instance.
+func openCheckoutsForLine(tx core.App, col *core.Collection, line *cart.Line, lineRec, itemRec *core.Record, userID string, completedAt time.Time, qty int) error {
+	serial := line.Serial
+	if serial == "" {
+		serial = itemRec.GetString("serial")
+	}
 	for i := 0; i < qty; i++ {
 		rec := core.NewRecord(col)
 		rec.Set("item", itemRec.Id)
 		rec.Set("user", userID)
 		if serial != "" {
 			rec.Set("serial", serial)
+		}
+		if line.ItemInstanceID != "" {
+			rec.Set("item_instance", line.ItemInstanceID)
 		}
 		rec.Set("checked_out_at", completedAt)
 		rec.Set("transaction_line", lineRec.Id)
@@ -272,12 +298,13 @@ func openCheckoutsForLine(tx core.App, col *core.Collection, lineRec, itemRec *c
 }
 
 // closeCheckoutsForLine deletes up to qty rows. For serialized tools, the
-// row is uniquely identified by item; for non-serialized, we prefer rows
-// belonging to the line's original_checkout_user (or the cart user if unset)
-// and fall back to anyone else's. Returns uncorrelated=true if we couldn't
-// match enough rows to cover qty.
-func closeCheckoutsForLine(tx core.App, lineRec, itemRec *core.Record, cartUserID string, qty int) (bool, error) {
-	rows, err := candidateOpenRows(tx, lineRec, itemRec, cartUserID, qty)
+// row is uniquely identified by the item_instance carried on the cart line;
+// for non-serialized, we prefer rows belonging to the line's
+// original_checkout_user (or the cart user if unset) and fall back to
+// anyone else's. Returns uncorrelated=true if we couldn't match enough
+// rows to cover qty.
+func closeCheckoutsForLine(tx core.App, line *cart.Line, lineRec, itemRec *core.Record, cartUserID string, qty int) (bool, error) {
+	rows, err := candidateOpenRows(tx, line, lineRec, itemRec, cartUserID, qty)
 	if err != nil {
 		return false, err
 	}
@@ -295,12 +322,13 @@ func closeCheckoutsForLine(tx core.App, lineRec, itemRec *core.Record, cartUserI
 	return deleted < qty, nil
 }
 
-func candidateOpenRows(tx core.App, lineRec, itemRec *core.Record, cartUserID string, qty int) ([]*core.Record, error) {
+func candidateOpenRows(tx core.App, line *cart.Line, lineRec, itemRec *core.Record, cartUserID string, qty int) ([]*core.Record, error) {
 	if itemRec.GetString("tracking_mode") == "serialized" {
-		// At most one row possible.
+		// Returns of a serialized SKU target the exact instance scanned.
+		// At most one open row possible per instance.
 		rows, err := tx.FindRecordsByFilter("open_checkouts",
-			"item = {:item}", "", 1, 0,
-			dbx.Params{"item": itemRec.Id})
+			"item_instance = {:inst}", "", 1, 0,
+			dbx.Params{"inst": line.ItemInstanceID})
 		if err != nil {
 			return nil, fmt.Errorf("find serialized open row: %w", err)
 		}

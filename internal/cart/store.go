@@ -27,6 +27,12 @@ type Line struct {
 	Action                   string   `json:"action"` // "checkout" | "return" | "consume"
 	Qty                      int      `json:"qty"`
 	Serial                   string   `json:"serial,omitempty"`
+	// ItemInstanceID is set when a serialized tool was scanned by its
+	// instance code / RFID. Serial and ItemCode are populated from the
+	// instance (not the SKU item) so the cart and receipt show the
+	// physical unit's identity.
+	ItemInstanceID   string `json:"item_instance_id,omitempty"`
+	ItemInstanceCode string `json:"item_instance_code,omitempty"`
 	OriginalCheckoutUserID   string   `json:"original_checkout_user_id,omitempty"`
 	OriginalCheckoutUserName string   `json:"original_checkout_user_name,omitempty"`
 	Warnings                 []string `json:"warnings,omitempty"`

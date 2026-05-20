@@ -143,8 +143,9 @@ const TYPE_FILTERS: { value: TypeFilter; label: string }[] = [
         <li v-for="item in items" :key="item.id">
           <button
             type="button"
-            class="w-full text-left rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 px-4 py-3 flex items-center gap-3 transition-colors disabled:opacity-50"
-            :disabled="pending && pickingCode === item.code"
+            class="w-full text-left rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 px-4 py-3 flex items-center gap-3 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            :disabled="(pending && pickingCode === item.code) || item.tracking_mode === 'serialized'"
+            :title="item.tracking_mode === 'serialized' ? 'Scan the unit barcode — serialized items need a specific instance' : ''"
             @click="pick(item)"
           >
             <div class="min-w-0 flex-1">
@@ -153,6 +154,9 @@ const TYPE_FILTERS: { value: TypeFilter; label: string }[] = [
                 {{ item.code }}
                 <span v-if="item.serial"> · SN {{ item.serial }}</span>
                 <span v-if="item.category"> · {{ item.category }}</span>
+                <span v-if="item.tracking_mode === 'serialized'" class="text-amber-300">
+                  · scan unit barcode
+                </span>
               </p>
             </div>
             <span

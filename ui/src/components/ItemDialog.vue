@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, watch } from 'vue'
 import AppDialog from './AppDialog.vue'
+import ItemInstancesPanel from './ItemInstancesPanel.vue'
 import type { ItemRecord } from '../types'
 
 const props = defineProps<{
@@ -118,14 +119,12 @@ function onSubmit() {
         </label>
       </div>
 
-      <label v-if="isSerialized" class="flex flex-col gap-1">
-        <span class="text-sm text-slate-400">Serial</span>
-        <input
-          v-model="form.serial"
-          type="text"
-          required
-          class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100"
-        />
+      <!-- For serialized items, serial and RFID live on each instance instead
+           of the SKU itself. Hide the dialog-level inputs and surface the
+           instances panel below once the item exists. -->
+      <label v-if="isSerialized && !isEdit" class="rounded-lg bg-slate-950/40 border border-dashed border-slate-700 px-3 py-2 text-xs text-slate-400">
+        Save the item first, then add its serialized instances (per-unit
+        code, serial, RFID) in the panel that appears below.
       </label>
 
       <div class="grid grid-cols-2 gap-3">
@@ -168,7 +167,7 @@ function onSubmit() {
             class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100"
           />
         </label>
-        <label class="flex flex-col gap-1">
+        <label v-if="!isSerialized" class="flex flex-col gap-1">
           <span class="text-sm text-slate-400">RFID EPC</span>
           <input
             v-model="form.rfid_epc"
@@ -177,6 +176,11 @@ function onSubmit() {
           />
         </label>
       </div>
+
+      <ItemInstancesPanel
+        v-if="isSerialized && isEdit && form.id"
+        :item-id="form.id"
+      />
 
       <label class="flex flex-col gap-1">
         <span class="text-sm text-slate-400">Notes</span>
