@@ -6,6 +6,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -89,10 +90,26 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
 	applyEnvOverrides(&c)
+	resolvePaths(&c, path)
 	if err := validate(&c); err != nil {
 		return nil, err
 	}
 	return &c, nil
+}
+
+// resolvePaths rewrites any file-path config values that are relative so they
+// resolve against the directory containing the loaded config file rather than
+// the process CWD. Without this, `./branding/logo.svg` only works when the
+// operator happens to launch the binary from the same directory the yaml
+// lives in — a common footgun for systemd units and `cd /tmp && kiosk-app`.
+func resolvePaths(c *Config, configFile string) {
+	base, err := filepath.Abs(filepath.Dir(configFile))
+	if err != nil {
+		return
+	}
+	if p := c.Branding.LogoPath; p != "" && !filepath.IsAbs(p) {
+		c.Branding.LogoPath = filepath.Join(base, p)
+	}
 }
 
 func applyEnvOverrides(c *Config) {

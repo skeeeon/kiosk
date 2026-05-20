@@ -36,26 +36,26 @@ const logoUrl = computed(() =>
   <div class="min-h-screen flex flex-col bg-slate-950 text-slate-100">
     <header
       v-if="layoutMode === 'active'"
-      class="px-6 py-3 border-b border-slate-800 flex items-center gap-4 text-sm"
+      class="px-6 py-3 border-b border-slate-800 flex items-center gap-5"
     >
       <img
         v-if="logoUrl"
         :src="logoUrl"
         alt="logo"
-        class="h-7 w-auto object-contain shrink-0"
+        class="h-9 w-auto object-contain shrink-0"
         @error="logoBroken = true"
       />
-      <span v-else class="text-slate-400 font-semibold tracking-wide">Kiosk</span>
+      <span v-else class="text-slate-300 font-semibold tracking-wide text-base">Kiosk</span>
 
-      <span class="text-slate-400 font-mono text-xs">
+      <span class="text-slate-300 font-mono text-base">
         {{ identity?.kiosk_code ?? '…' }}
       </span>
-      <span class="text-slate-500 font-mono text-xs">
+      <span class="text-slate-400 font-mono text-base">
         {{ identity?.location_code ?? '' }}
       </span>
       <RouterLink
         to="/admin/login"
-        class="ml-auto text-slate-500 hover:text-slate-300 text-xs"
+        class="ml-auto text-slate-400 hover:text-slate-200 text-sm"
       >
         Admin
       </RouterLink>
@@ -65,7 +65,7 @@ const logoUrl = computed(() =>
 
     <footer
       v-if="layoutMode === 'idle'"
-      class="px-6 py-3 border-t border-slate-800 flex items-center justify-between text-xs text-slate-500"
+      class="px-6 py-4 border-t border-slate-800 flex items-center justify-between text-base text-slate-400"
     >
       <span class="font-mono">
         {{ identity?.kiosk_code ?? '…' }}
@@ -73,7 +73,7 @@ const logoUrl = computed(() =>
       </span>
       <RouterLink
         to="/admin/login"
-        class="text-slate-500 hover:text-slate-300"
+        class="text-slate-400 hover:text-slate-200"
       >
         Admin
       </RouterLink>
