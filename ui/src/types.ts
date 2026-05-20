@@ -119,3 +119,24 @@ export interface WorkerRecord {
   created?: string
   updated?: string
 }
+
+export interface StockAdjustmentRecord {
+  id: string
+  item: string
+  delta: number
+  new_quantity: number
+  reason: string
+  admin: string
+  created: string
+  expand?: {
+    admin?: { id: string; name: string; email: string }
+  }
+}
+
+export interface StockAdjustmentResult {
+  adjustment_id: string
+  item_id: string
+  delta: number
+  new_quantity: number
+  prev_quantity: number
+}

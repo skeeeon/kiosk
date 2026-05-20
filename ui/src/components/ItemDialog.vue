@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { computed, reactive, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import AppDialog from './AppDialog.vue'
 import ItemInstancesPanel from './ItemInstancesPanel.vue'
-import type { ItemRecord } from '../types'
+import StockAdjustDialog from './StockAdjustDialog.vue'
+import StockAdjustmentHistoryDialog from './StockAdjustmentHistoryDialog.vue'
+import type { ItemRecord, StockAdjustmentResult } from '../types'
 
 const props = defineProps<{
   open: boolean
@@ -55,8 +57,15 @@ watch(
 const isEdit = computed(() => !!props.item?.id)
 const isSerialized = computed(() => form.tracking_mode === 'serialized')
 
+const adjustOpen = ref(false)
+const historyOpen = ref(false)
+
 function onSubmit() {
   emit('save', { ...form })
+}
+
+function onAdjusted(result: StockAdjustmentResult) {
+  form.quantity_on_hand = result.new_quantity
 }
 </script>
 
@@ -128,11 +137,27 @@ function onSubmit() {
       </label>
 
       <div class="grid grid-cols-2 gap-3">
-        <label class="flex flex-col gap-1">
+        <div class="flex flex-col gap-1">
           <span class="text-sm text-slate-400">
             {{ form.type === 'tool' ? 'Fleet quantity' : 'Quantity on hand' }}
           </span>
+          <!-- In edit mode the quantity is read-only; use the Adjust button
+               to change it so the audit log captures who / why. New items
+               still take a free-form number for the initial seed. -->
+          <div v-if="isEdit" class="flex items-center gap-2">
+            <span class="rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-slate-100 font-medium tabular-nums flex-1">
+              {{ form.quantity_on_hand ?? 0 }}
+            </span>
+            <button
+              type="button"
+              class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm whitespace-nowrap"
+              @click="adjustOpen = true"
+            >
+              Adjust…
+            </button>
+          </div>
           <input
+            v-else
             v-model.number="form.quantity_on_hand"
             type="number"
             step="1"
@@ -142,8 +167,16 @@ function onSubmit() {
             {{ form.type === 'tool'
               ? 'Total units owned. Does not change on checkout/return.'
               : 'Current stock. Decrements automatically when consumed.' }}
+            <button
+              v-if="isEdit"
+              type="button"
+              class="ml-1 text-sky-400 hover:text-sky-300 underline-offset-2 hover:underline"
+              @click="historyOpen = true"
+            >
+              View adjustment history
+            </button>
           </span>
-        </label>
+        </div>
         <label class="flex flex-col gap-1">
           <span class="text-sm text-slate-400">Reorder threshold</span>
           <input
@@ -213,4 +246,22 @@ function onSubmit() {
       </div>
     </form>
   </AppDialog>
+
+  <StockAdjustDialog
+    v-if="isEdit && form.id"
+    :open="adjustOpen"
+    :item-id="form.id"
+    :item-code="form.code ?? ''"
+    :item-name="form.name ?? ''"
+    :current-qty="form.quantity_on_hand ?? 0"
+    @update:open="adjustOpen = $event"
+    @applied="onAdjusted"
+  />
+  <StockAdjustmentHistoryDialog
+    v-if="isEdit && form.id"
+    :open="historyOpen"
+    :item-id="form.id"
+    :item-code="form.code ?? ''"
+    @update:open="historyOpen = $event"
+  />
 </template>
