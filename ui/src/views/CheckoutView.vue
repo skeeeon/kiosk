@@ -241,6 +241,11 @@ const flashClasses = {
 </script>
 
 <template>
+  <!-- Single flex-col root so RouterView's flex-1 class can apply and the
+       inner mains can use flex-1 to fill the viewport area between the
+       app-level header and footer. Without this wrapper the multi-root
+       fragment broke vertical centering of the splash. -->
+  <div class="flex-1 flex flex-col">
   <ScanInput @scan="onScan" />
 
   <Transition
@@ -325,7 +330,7 @@ const flashClasses = {
     </div>
   </main>
 
-  <main v-else-if="!cart" class="flex flex-col items-center justify-center px-8 py-16 text-center gap-10">
+  <main v-else-if="!cart" class="flex-1 flex flex-col items-center justify-center px-8 py-16 text-center gap-10">
     <div v-if="splashLogoUrl || splashTagline" class="flex flex-col items-center gap-4">
       <img
         v-if="splashLogoUrl"
@@ -407,4 +412,5 @@ const flashClasses = {
     @update:open="crossUserConfirmOpen = $event"
     @confirm="onConfirmCrossUser"
   />
+  </div>
 </template>

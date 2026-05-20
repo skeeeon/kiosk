@@ -47,6 +47,7 @@ function fmtDate(iso: string): string {
     :open="open"
     title="Adjustment history"
     :description="`${itemCode}`"
+    size="lg"
     @update:open="emit('update:open', $event)"
   >
     <p v-if="error" class="rounded-lg bg-red-900/40 border border-red-700 text-red-200 text-sm px-3 py-2 mb-3">

@@ -73,6 +73,7 @@ function onAdjusted(result: StockAdjustmentResult) {
   <AppDialog
     :open="open"
     :title="isEdit ? 'Edit item' : 'New item'"
+    :size="isSerialized && isEdit ? 'lg' : 'md'"
     @update:open="emit('update:open', $event)"
   >
     <form class="flex flex-col gap-4" @submit.prevent="onSubmit">

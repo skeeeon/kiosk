@@ -80,6 +80,7 @@ function formatDateTime(iso: string): string {
   <AppDialog
     :open="open"
     title="Transaction detail"
+    size="lg"
     @update:open="emit('update:open', $event)"
   >
     <div v-if="transaction" class="flex flex-col gap-4">
