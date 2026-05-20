@@ -41,17 +41,29 @@ func (p *natsPublisher) Close() {
 	if p == nil || p.nc == nil {
 		return
 	}
-	// Drain flushes the internal buffer, signals subscribers (we have none),
-	// then closes. Bounded by DrainTimeout (default 30s) — fine for shutdown.
-	if err := p.nc.Drain(); err != nil {
-		slog.Warn("kiosk.nats.drain_failed", "error", err)
+	// Drain only works on a connected conn; if we're still mid-reconnect
+	// (e.g., never reached the server since startup), Drain errors. In that
+	// case just close — there's nothing usefully drainable.
+	if p.nc.IsConnected() {
+		if err := p.nc.Drain(); err != nil {
+			slog.Warn("kiosk.nats.drain_failed", "error", err)
+		}
+		return
 	}
+	p.nc.Close()
 }
 
 // Connect dials NATS using the auth knobs the operator filled in. Returns
 // (nil, nil) when cfg.Enabled is false — main.go treats nil as a no-op
-// publisher. Returns (nil, err) when enabled-but-unable-to-connect; that's
-// a fatal startup condition (an operator misconfigured something).
+// publisher.
+//
+// Network unreachability is NOT an error: with RetryOnFailedConnect, the
+// returned *nats.Conn enters a connecting/buffering state and dials in
+// the background. The kiosk's primary job is local checkout against the
+// ledger; NATS is a best-effort feed to the central reporting consumer
+// and should never block the kiosk from starting. An (nil, err) return
+// here means a structural config problem (empty URL, malformed URL,
+// unloadable creds) that won't fix itself by waiting.
 func Connect(cfg config.NATSConfig) (Publisher, error) {
 	if !cfg.Enabled {
 		return nil, nil
@@ -65,7 +77,13 @@ func Connect(cfg config.NATSConfig) (Publisher, error) {
 	if err != nil {
 		return nil, fmt.Errorf("connect %s: %w", cfg.URL, err)
 	}
-	slog.Info("kiosk.nats.connected", "url", cfg.URL)
+	if nc.IsConnected() {
+		slog.Info("kiosk.nats.connected", "url", cfg.URL)
+	} else {
+		slog.Warn("kiosk.nats.connect_deferred",
+			"url", cfg.URL,
+			"note", "events will buffer locally until the server is reachable")
+	}
 	return &natsPublisher{nc: nc}, nil
 }
 
@@ -79,7 +97,14 @@ func buildNATSOptions(cfg config.NATSConfig) []nats.Option {
 
 	// Reconnect aggressively but quietly — kiosks live in flaky shop
 	// networks and we'd rather buffer-and-retry than fail-fast.
+	//
+	// RetryOnFailedConnect makes the *initial* dial behave the same way:
+	// if the server isn't reachable at startup, nats.Connect still returns
+	// a valid connection that buffers publishes and dials in the background.
+	// This is what lets the kiosk boot even when the central NATS endpoint
+	// is down — the local ledger is authoritative regardless.
 	opts = append(opts,
+		nats.RetryOnFailedConnect(true),
 		nats.ReconnectWait(2*time.Second),
 		nats.MaxReconnects(-1), // forever
 		nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {

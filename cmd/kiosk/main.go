@@ -37,9 +37,14 @@ func main() {
 		Automigrate: true,
 	})
 
+	// NATS is best-effort: a misconfigured or unreachable endpoint must not
+	// block the kiosk from starting (the local ledger is authoritative).
+	// Connect itself doesn't fail on unreachable servers — it returns a
+	// buffering connection. Errors here are structural (empty URL, bad
+	// creds file, etc.); log and proceed without a publisher.
 	pub, err := events.Connect(cfg.NATS)
 	if err != nil {
-		log.Fatalf("nats connect: %v", err)
+		log.Printf("nats: continuing without event publishing — %v", err)
 	}
 	events.SetPublisher(pub)
 	app.OnTerminate().BindFunc(func(e *core.TerminateEvent) error {
