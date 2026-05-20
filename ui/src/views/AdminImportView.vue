@@ -56,7 +56,7 @@ async function onSubmit() {
     <h1 class="text-2xl font-semibold mb-2">Import items</h1>
     <p class="text-sm text-slate-400 mb-6">
       Upload a CSV with columns:
-      <code class="font-mono text-slate-300">code, name, type, unit, tracking_mode, serial, category, rfid_epc, active, notes</code>.
+      <code class="font-mono text-slate-300">code, name, type, unit, tracking_mode, serial, category, rfid_epc, active, notes, quantity_on_hand, reorder_threshold</code>.
       Rows match existing items by <code class="font-mono text-slate-300">code</code> (upsert). Items not in the CSV are left alone.
     </p>
 

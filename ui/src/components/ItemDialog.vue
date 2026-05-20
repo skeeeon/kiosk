@@ -24,6 +24,8 @@ const form = reactive<Partial<ItemRecord>>({
   rfid_epc: '',
   active: true,
   notes: '',
+  quantity_on_hand: 0,
+  reorder_threshold: 0,
 })
 
 watch(
@@ -41,6 +43,8 @@ watch(
       rfid_epc: '',
       active: true,
       notes: '',
+      quantity_on_hand: 0,
+      reorder_threshold: 0,
       ...(props.item ?? {}),
     })
   },
@@ -123,6 +127,36 @@ function onSubmit() {
           class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100"
         />
       </label>
+
+      <div class="grid grid-cols-2 gap-3">
+        <label class="flex flex-col gap-1">
+          <span class="text-sm text-slate-400">
+            {{ form.type === 'tool' ? 'Fleet quantity' : 'Quantity on hand' }}
+          </span>
+          <input
+            v-model.number="form.quantity_on_hand"
+            type="number"
+            step="1"
+            class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100"
+          />
+          <span class="text-xs text-slate-500">
+            {{ form.type === 'tool'
+              ? 'Total units owned. Does not change on checkout/return.'
+              : 'Current stock. Decrements automatically when consumed.' }}
+          </span>
+        </label>
+        <label class="flex flex-col gap-1">
+          <span class="text-sm text-slate-400">Reorder threshold</span>
+          <input
+            v-model.number="form.reorder_threshold"
+            type="number"
+            step="1"
+            min="0"
+            class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100"
+          />
+          <span class="text-xs text-slate-500">Alert when available at or below this. 0 = no alert.</span>
+        </label>
+      </div>
 
       <div class="grid grid-cols-2 gap-3">
         <label class="flex flex-col gap-1">

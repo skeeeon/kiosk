@@ -24,11 +24,27 @@ import (
 // for tests. Action counters are line counts (not qty totals) to match the
 // API spec in §7 of the plan.
 type Result struct {
-	TransactionID string `json:"transaction_id"`
-	LinesCount    int    `json:"lines_count"`
-	CheckedOut    int    `json:"checked_out"`
-	Returned      int    `json:"returned"`
-	Consumed      int    `json:"consumed"`
+	TransactionID string   `json:"transaction_id"`
+	LinesCount    int      `json:"lines_count"`
+	CheckedOut    int      `json:"checked_out"`
+	Returned      int      `json:"returned"`
+	Consumed      int      `json:"consumed"`
+	Warnings      []string `json:"warnings,omitempty"`
+}
+
+// Policy is the kiosk's return-acceptance configuration. Defaults are
+// permissive (matches the v1 behavior where these flags weren't enforced);
+// flip a field to false to reject the corresponding case at commit time
+// and roll the whole transaction back.
+type Policy struct {
+	AllowCrossUser    bool
+	AllowUncorrelated bool
+}
+
+// DefaultPolicy returns the permissive policy used by tests and as the
+// safe baseline when no config has been loaded.
+func DefaultPolicy() Policy {
+	return Policy{AllowCrossUser: true, AllowUncorrelated: true}
 }
 
 // PublishFunc is injected so tests can verify events without setting up a
@@ -39,7 +55,7 @@ type PublishFunc func(subject string, payload any)
 // writes the transactions + transaction_lines records, applies the per-line
 // open_checkouts side effects, and finally — outside the DB transaction —
 // emits one transaction.complete event plus one item.{action} event per line.
-func Commit(app core.App, c *cart.Cart, id kioskctx.Identity, publish PublishFunc) (*Result, error) {
+func Commit(app core.App, c *cart.Cart, id kioskctx.Identity, policy Policy, publish PublishFunc) (*Result, error) {
 	if c == nil {
 		return nil, errors.New("cart is nil")
 	}
@@ -48,6 +64,14 @@ func Commit(app core.App, c *cart.Cart, id kioskctx.Identity, publish PublishFun
 	}
 	if id.KioskCode == "" || id.LocationCode == "" {
 		return nil, errors.New("kiosk identity is not set")
+	}
+
+	if !policy.AllowCrossUser {
+		for _, l := range c.Lines {
+			if l.Action == "return" && l.OriginalCheckoutUserID != "" && l.OriginalCheckoutUserID != c.UserID {
+				return nil, fmt.Errorf("item %s is checked out to another worker; cross-user returns are not allowed", l.ItemCode)
+			}
+		}
 	}
 
 	completedAt := time.Now().UTC()
@@ -112,6 +136,9 @@ func Commit(app core.App, c *cart.Cart, id kioskctx.Identity, publish PublishFun
 					return err
 				}
 				if uncorrelated {
+					if !policy.AllowUncorrelated {
+						return fmt.Errorf("return of %s does not match any open checkout; uncorrelated returns are not allowed", itemRec.GetString("code"))
+					}
 					lineRec.Set("uncorrelated", true)
 					if err := tx.Save(lineRec); err != nil {
 						return fmt.Errorf("mark line uncorrelated: %w", err)
@@ -120,6 +147,14 @@ func Commit(app core.App, c *cart.Cart, id kioskctx.Identity, publish PublishFun
 				result.Returned++
 
 			case "consume":
+				// Decrement stock. Allowed to go negative — the ledger is the
+				// source of truth; if a worker takes more than was recorded,
+				// the low-stock report surfaces the discrepancy rather than
+				// blocking the take.
+				itemRec.Set("quantity_on_hand", itemRec.GetInt("quantity_on_hand")-l.Qty)
+				if err := tx.Save(itemRec); err != nil {
+					return fmt.Errorf("decrement quantity_on_hand for %s: %w", itemRec.GetString("code"), err)
+				}
 				result.Consumed++
 			}
 

@@ -4,9 +4,11 @@ import { storeToRefs } from 'pinia'
 import ScanInput from '../components/ScanInput.vue'
 import CartTable from '../components/CartTable.vue'
 import ItemBrowseDialog from '../components/ItemBrowseDialog.vue'
+import ConfirmDialog from '../components/ConfirmDialog.vue'
 import { useCart } from '../composables/useCart'
 import { useKioskIdentity } from '../composables/useKioskIdentity'
 import { useSessionStore } from '../stores/session'
+import { ApiError } from '../lib/api'
 import type { CartAction, CartLine, CommitResult, Item, User } from '../types'
 
 const session = useSessionStore()
@@ -37,7 +39,35 @@ const success = ref<Receipt | null>(null)
 const committing = ref(false)
 const browseOpen = ref(false)
 const browsePending = ref(false)
+const crossUserConfirmOpen = ref(false)
 let dismissHandle: ReturnType<typeof setTimeout> | null = null
+
+// True when the API error means "your cart is gone" (idle timeout or process
+// restart). Surfaces a friendly toast and resets local state so the next scan
+// starts fresh.
+function isCartExpiredError(e: unknown): boolean {
+  if (!(e instanceof ApiError)) return false
+  if (e.status !== 404) return false
+  const m = e.message.toLowerCase()
+  return m.includes('cart not found') || m.includes('cart expired')
+}
+
+function handleApiError(e: unknown, fallbackPrefix?: string) {
+  if (isCartExpiredError(e)) {
+    session.setCart(null)
+    session.setFlash('warn', 'Your session has expired. Scan your badge to begin again.', 6000)
+    return
+  }
+  const msg = (e as Error).message
+  session.setFlash('error', fallbackPrefix ? `${fallbackPrefix}: ${msg}` : msg)
+}
+
+const crossUserLines = computed<CartLine[]>(() => {
+  if (!cart.value) return []
+  return cart.value.lines.filter((l) =>
+    (l.warnings ?? []).some((w) => w.startsWith('cross_user_return:')),
+  )
+})
 
 const ACTION_LABEL: Record<CartAction, string> = {
   checkout: 'Checked out',
@@ -63,7 +93,7 @@ async function onScan(raw: string) {
   try {
     result = await c.scanDispatch(raw)
   } catch (e) {
-    session.setFlash('error', `Scan failed: ${(e as Error).message}`)
+    handleApiError(e, 'Scan failed')
     return
   }
 
@@ -85,7 +115,7 @@ async function onScan(raw: string) {
       await c.start(u.code)
       session.setFlash('info', `Welcome, ${u.name}`)
     } catch (e) {
-      session.setFlash('error', (e as Error).message)
+      handleApiError(e)
     }
     return
   }
@@ -104,7 +134,7 @@ async function onScan(raw: string) {
         }
       }
     } catch (e) {
-      session.setFlash('error', (e as Error).message)
+      handleApiError(e)
     }
   }
 }
@@ -113,7 +143,7 @@ async function onUpdate(id: string, patch: { qty?: number; action?: CartAction }
   try {
     await c.updateLine(id, patch)
   } catch (e) {
-    session.setFlash('error', (e as Error).message)
+    handleApiError(e)
   }
 }
 
@@ -121,7 +151,7 @@ async function onRemove(id: string) {
   try {
     await c.deleteLine(id)
   } catch (e) {
-    session.setFlash('error', (e as Error).message)
+    handleApiError(e)
   }
 }
 
@@ -130,7 +160,7 @@ async function onCancel() {
     await c.cancel()
     session.setFlash('info', 'Session ended')
   } catch (e) {
-    session.setFlash('error', (e as Error).message)
+    handleApiError(e)
   }
 }
 
@@ -148,13 +178,22 @@ async function onBrowsePick(code: string) {
       session.setFlash('info', `Added ${line.item_name}`)
     }
   } catch (e) {
-    session.setFlash('error', (e as Error).message)
+    handleApiError(e)
   } finally {
     browsePending.value = false
   }
 }
 
-async function onCommit() {
+function onCommit() {
+  if (committing.value || !cart.value) return
+  if (crossUserLines.value.length > 0) {
+    crossUserConfirmOpen.value = true
+    return
+  }
+  void doCommit()
+}
+
+async function doCommit() {
   if (committing.value || !cart.value) return
   committing.value = true
   // Snapshot lines + user before commit — useCart.commit() clears the store
@@ -167,11 +206,26 @@ async function onCommit() {
     if (dismissHandle) clearTimeout(dismissHandle)
     dismissHandle = setTimeout(dismissReceipt, SUCCESS_SCREEN_MS)
   } catch (e) {
-    session.setFlash('error', (e as Error).message)
+    handleApiError(e)
   } finally {
     committing.value = false
   }
 }
+
+function onConfirmCrossUser() {
+  crossUserConfirmOpen.value = false
+  void doCommit()
+}
+
+const crossUserSummary = computed(() =>
+  crossUserLines.value
+    .map((l) => {
+      const w = (l.warnings ?? []).find((x) => x.startsWith('cross_user_return:'))
+      const who = w ? w.slice('cross_user_return:'.length) : 'someone else'
+      return `${l.item_code} — ${who}`
+    })
+    .join('\n'),
+)
 
 const flashClasses = {
   info: 'bg-sky-900/60 border-sky-700/70 text-sky-100',
@@ -337,5 +391,14 @@ const flashClasses = {
     @update:open="browseOpen = $event"
     @pick="onBrowsePick"
     @error="session.setFlash('error', $event)"
+  />
+
+  <ConfirmDialog
+    :open="crossUserConfirmOpen"
+    title="Return on someone else's behalf?"
+    :message="`These items are checked out to other workers. Returning them on their behalf will close their open checkouts.\n\n${crossUserSummary}`"
+    confirm-label="Confirm return"
+    @update:open="crossUserConfirmOpen = $event"
+    @confirm="onConfirmCrossUser"
   />
 </template>

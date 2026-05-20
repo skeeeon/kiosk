@@ -43,9 +43,31 @@ type ScanningConfig struct {
 	ItemBarcodePrefix string `yaml:"item_barcode_prefix"`
 }
 
+// ReturnsConfig controls which return scenarios the commit hook will accept.
+// Pointers (not plain bools) so an omitted YAML key is distinguishable from
+// an explicit `false` — omission falls back to the permissive default rather
+// than silently enabling strict mode for kiosks that pre-date this config.
 type ReturnsConfig struct {
-	AllowCrossUser    bool `yaml:"allow_cross_user"`
-	AllowUncorrelated bool `yaml:"allow_uncorrelated"`
+	AllowCrossUser    *bool `yaml:"allow_cross_user"`
+	AllowUncorrelated *bool `yaml:"allow_uncorrelated"`
+}
+
+// CrossUserAllowed reports whether a return of a tool checked out to another
+// worker is permitted. Default (unset) is true.
+func (r ReturnsConfig) CrossUserAllowed() bool {
+	if r.AllowCrossUser == nil {
+		return true
+	}
+	return *r.AllowCrossUser
+}
+
+// UncorrelatedAllowed reports whether a return that doesn't match any open
+// checkout is permitted. Default (unset) is true.
+func (r ReturnsConfig) UncorrelatedAllowed() bool {
+	if r.AllowUncorrelated == nil {
+		return true
+	}
+	return *r.AllowUncorrelated
 }
 
 // BrandingConfig customizes the kiosk's visual identity. All fields are
@@ -144,10 +166,12 @@ func applyEnvOverrides(c *Config) {
 		c.Scanning.ItemBarcodePrefix = v
 	}
 	if v := os.Getenv("KIOSK_RETURNS_ALLOW_CROSS_USER"); v != "" {
-		c.Returns.AllowCrossUser = parseBool(v)
+		b := parseBool(v)
+		c.Returns.AllowCrossUser = &b
 	}
 	if v := os.Getenv("KIOSK_RETURNS_ALLOW_UNCORRELATED"); v != "" {
-		c.Returns.AllowUncorrelated = parseBool(v)
+		b := parseBool(v)
+		c.Returns.AllowUncorrelated = &b
 	}
 	if v := os.Getenv("KIOSK_BRANDING_LOGO_PATH"); v != "" {
 		c.Branding.LogoPath = v

@@ -85,6 +85,8 @@ export interface ItemRecord {
   rfid_epc: string
   active: boolean
   notes: string
+  quantity_on_hand: number
+  reorder_threshold: number
   created?: string
   updated?: string
 }

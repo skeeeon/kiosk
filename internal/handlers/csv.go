@@ -2,8 +2,10 @@ package handlers
 
 import (
 	"encoding/csv"
+	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
@@ -174,7 +176,7 @@ func validateImportRow(headers map[string]int, row []string) (map[string]any, []
 		return nil, errs
 	}
 
-	return map[string]any{
+	out := map[string]any{
 		"code":          code,
 		"name":          name,
 		"type":          typ,
@@ -185,7 +187,108 @@ func validateImportRow(headers map[string]int, row []string) (map[string]any, []
 		"rfid_epc":      csvCol(headers, row, "rfid_epc"),
 		"active":        parseCSVActive(csvCol(headers, row, "active")),
 		"notes":         csvCol(headers, row, "notes"),
-	}, nil
+	}
+	// Only set quantity fields if the column is present in the CSV — omission
+	// means "leave as-is" on update, "default to 0" on insert (PB's number
+	// field zero-default applies).
+	if _, ok := headers["quantity_on_hand"]; ok {
+		out["quantity_on_hand"] = parseCSVInt(csvCol(headers, row, "quantity_on_hand"))
+	}
+	if _, ok := headers["reorder_threshold"]; ok {
+		out["reorder_threshold"] = parseCSVInt(csvCol(headers, row, "reorder_threshold"))
+	}
+	return out, nil
+}
+
+// parseCSVInt parses a quantity column. Empty or unparseable input becomes 0
+// — the import path is upsert-on-code, so admins typing freeform values
+// shouldn't break the row over a stray space.
+func parseCSVInt(s string) int {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0
+	}
+	var n int
+	if _, err := fmt.Sscanf(s, "%d", &n); err != nil {
+		return 0
+	}
+	return n
+}
+
+// TransactionsExportCSV streams completed transactions as CSV. Optional
+// ?from= and ?to= ISO timestamps narrow the window; both are inclusive on
+// completed_at. Line counts are fetched per-transaction (one query each) —
+// fine for thousands of rows, would want batching for millions.
+func (h *Handlers) TransactionsExportCSV(re *core.RequestEvent) error {
+	if err := h.requireAdmin(re); err != nil {
+		return err
+	}
+
+	filter := `status = "completed"`
+	params := dbx.Params{}
+	if from := re.Request.URL.Query().Get("from"); from != "" {
+		if _, err := time.Parse(time.RFC3339, from); err != nil {
+			return re.BadRequestError("from must be RFC3339 (e.g. 2026-05-01T00:00:00Z)", err)
+		}
+		filter += " && completed_at >= {:from}"
+		params["from"] = from
+	}
+	if to := re.Request.URL.Query().Get("to"); to != "" {
+		if _, err := time.Parse(time.RFC3339, to); err != nil {
+			return re.BadRequestError("to must be RFC3339", err)
+		}
+		filter += " && completed_at <= {:to}"
+		params["to"] = to
+	}
+
+	txs, err := h.App.FindRecordsByFilter("transactions", filter, "-completed_at", 0, 0, params)
+	if err != nil {
+		return err
+	}
+
+	w := re.Response
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(
+		"attachment; filename=\"transactions-%s.csv\"", time.Now().UTC().Format("20060102-150405"),
+	))
+
+	cw := csv.NewWriter(w)
+	defer cw.Flush()
+
+	if err := cw.Write([]string{
+		"transaction_id", "completed_at", "user_code", "user_name",
+		"line_count", "kiosk_code", "location_code",
+	}); err != nil {
+		return err
+	}
+
+	userCache := map[string]*core.Record{}
+	for _, t := range txs {
+		userID := t.GetString("user")
+		u, ok := userCache[userID]
+		if !ok {
+			u, _ = h.App.FindRecordById("users", userID)
+			userCache[userID] = u
+		}
+		var userCode, userName string
+		if u != nil {
+			userCode = u.GetString("code")
+			userName = u.GetString("name")
+		}
+		lineCount, _ := h.App.CountRecords("transaction_lines", dbx.HashExp{"transaction": t.Id})
+
+		if err := cw.Write([]string{
+			t.Id,
+			t.GetDateTime("completed_at").Time().Format(time.RFC3339),
+			userCode, userName,
+			fmt.Sprintf("%d", lineCount),
+			t.GetString("kiosk_code"),
+			t.GetString("location_code"),
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // parseCSVActive treats empty as active=true; only explicit falsy values

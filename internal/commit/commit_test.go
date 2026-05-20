@@ -177,7 +177,7 @@ func TestCheckout_Tool_NotCurrentlyOut_InsertsOpenCheckout(t *testing.T) {
 	})
 	pub := &captured{}
 
-	result, err := commit.Commit(app, c, testIdentity, pub.publish)
+	result, err := commit.Commit(app, c, testIdentity, commit.DefaultPolicy(), pub.publish)
 	if err != nil {
 		t.Fatalf("commit: %v", err)
 	}
@@ -198,7 +198,7 @@ func TestCheckout_NonSerialized_QtyN_InsertsNRows(t *testing.T) {
 		ItemType: "tool", TrackingMode: "quantity",
 		Action: "checkout", Qty: 3,
 	})
-	if _, err := commit.Commit(app, c, testIdentity, (&captured{}).publish); err != nil {
+	if _, err := commit.Commit(app, c, testIdentity, commit.DefaultPolicy(), (&captured{}).publish); err != nil {
 		t.Fatalf("commit: %v", err)
 	}
 	if n := countOpenCheckouts(t, app, "user = {:u}", dbx.Params{"u": s.UserID}); n != 3 {
@@ -215,7 +215,7 @@ func TestCheckout_Serialized_QtyTwo_Rejected(t *testing.T) {
 		ItemType: "tool", TrackingMode: "serialized", Serial: "SN-042",
 		Action: "checkout", Qty: 2,
 	})
-	if _, err := commit.Commit(app, c, testIdentity, (&captured{}).publish); err == nil {
+	if _, err := commit.Commit(app, c, testIdentity, commit.DefaultPolicy(), (&captured{}).publish); err == nil {
 		t.Fatal("expected error for serialized qty>1, got nil")
 	}
 }
@@ -229,7 +229,7 @@ func TestReturn_Tool_CurrentlyOut_DeletesOpenCheckout(t *testing.T) {
 		ItemID: s.ToolQtyID, Action: "checkout", Qty: 1,
 		ItemType: "tool", TrackingMode: "quantity",
 	})
-	if _, err := commit.Commit(app, checkout, testIdentity, (&captured{}).publish); err != nil {
+	if _, err := commit.Commit(app, checkout, testIdentity, commit.DefaultPolicy(), (&captured{}).publish); err != nil {
 		t.Fatalf("seed checkout: %v", err)
 	}
 
@@ -238,7 +238,7 @@ func TestReturn_Tool_CurrentlyOut_DeletesOpenCheckout(t *testing.T) {
 		ItemID: s.ToolQtyID, Action: "return", Qty: 1,
 		ItemType: "tool", TrackingMode: "quantity",
 	})
-	if _, err := commit.Commit(app, returnCart, testIdentity, (&captured{}).publish); err != nil {
+	if _, err := commit.Commit(app, returnCart, testIdentity, commit.DefaultPolicy(), (&captured{}).publish); err != nil {
 		t.Fatalf("commit return: %v", err)
 	}
 
@@ -255,7 +255,7 @@ func TestReturn_Tool_NotCurrentlyOut_SetsUncorrelated(t *testing.T) {
 		ItemID: s.ToolQtyID, Action: "return", Qty: 1,
 		ItemType: "tool", TrackingMode: "quantity",
 	})
-	result, err := commit.Commit(app, c, testIdentity, (&captured{}).publish)
+	result, err := commit.Commit(app, c, testIdentity, commit.DefaultPolicy(), (&captured{}).publish)
 	if err != nil {
 		t.Fatalf("commit: %v", err)
 	}
@@ -282,7 +282,7 @@ func TestReturn_CrossUser_DeletesOriginalUsersOpenRow(t *testing.T) {
 	})
 	bobCheckout.UserCode = "EMP-2"
 	bobCheckout.UserName = "Bob"
-	if _, err := commit.Commit(app, bobCheckout, testIdentity, (&captured{}).publish); err != nil {
+	if _, err := commit.Commit(app, bobCheckout, testIdentity, commit.DefaultPolicy(), (&captured{}).publish); err != nil {
 		t.Fatalf("seed bob checkout: %v", err)
 	}
 
@@ -293,7 +293,7 @@ func TestReturn_CrossUser_DeletesOriginalUsersOpenRow(t *testing.T) {
 		ItemType: "tool", TrackingMode: "quantity",
 		OriginalCheckoutUserID: s.OtherUserID,
 	})
-	if _, err := commit.Commit(app, aliceReturn, testIdentity, (&captured{}).publish); err != nil {
+	if _, err := commit.Commit(app, aliceReturn, testIdentity, commit.DefaultPolicy(), (&captured{}).publish); err != nil {
 		t.Fatalf("commit alice return: %v", err)
 	}
 
@@ -310,7 +310,7 @@ func TestConsume_Consumable_NoOpenCheckoutChange(t *testing.T) {
 		ItemID: s.ConsumableID, Action: "consume", Qty: 99,
 		ItemType: "consumable", TrackingMode: "quantity",
 	})
-	if _, err := commit.Commit(app, c, testIdentity, (&captured{}).publish); err != nil {
+	if _, err := commit.Commit(app, c, testIdentity, commit.DefaultPolicy(), (&captured{}).publish); err != nil {
 		t.Fatalf("commit: %v", err)
 	}
 	if n := countOpenCheckouts(t, app, "", nil); n != 0 {
@@ -327,7 +327,7 @@ func TestCommit_MixedCart_ProducesAllExpectedSideEffects(t *testing.T) {
 		ItemID: s.ToolQtyID, Action: "checkout", Qty: 1,
 		ItemType: "tool", TrackingMode: "quantity",
 	})
-	if _, err := commit.Commit(app, pre, testIdentity, (&captured{}).publish); err != nil {
+	if _, err := commit.Commit(app, pre, testIdentity, commit.DefaultPolicy(), (&captured{}).publish); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
@@ -349,7 +349,7 @@ func TestCommit_MixedCart_ProducesAllExpectedSideEffects(t *testing.T) {
 			ItemType: "consumable", TrackingMode: "quantity",
 		},
 	)
-	result, err := commit.Commit(app, mixed, testIdentity, pub.publish)
+	result, err := commit.Commit(app, mixed, testIdentity, commit.DefaultPolicy(), pub.publish)
 	if err != nil {
 		t.Fatalf("commit: %v", err)
 	}
@@ -393,8 +393,137 @@ func TestCommit_MixedCart_ProducesAllExpectedSideEffects(t *testing.T) {
 func TestCommit_EmptyCart_Rejected(t *testing.T) {
 	app := setupApp(t)
 	c := &cart.Cart{ID: "x", UserID: "fake", Lines: []*cart.Line{}}
-	if _, err := commit.Commit(app, c, testIdentity, (&captured{}).publish); err == nil {
+	if _, err := commit.Commit(app, c, testIdentity, commit.DefaultPolicy(), (&captured{}).publish); err == nil {
 		t.Fatal("expected error for empty cart")
+	}
+}
+
+func TestConsume_DecrementsQuantityOnHand(t *testing.T) {
+	app := setupApp(t)
+	s := seedFixtures(t, app)
+
+	// Seed consumable with 10 on hand.
+	item, _ := app.FindRecordById("items", s.ConsumableID)
+	item.Set("quantity_on_hand", 10)
+	if err := app.Save(item); err != nil {
+		t.Fatalf("seed quantity_on_hand: %v", err)
+	}
+
+	c := newCart(s.UserID, &cart.Line{
+		ItemID: s.ConsumableID, Action: "consume", Qty: 4,
+		ItemType: "consumable", TrackingMode: "quantity",
+	})
+	if _, err := commit.Commit(app, c, testIdentity, commit.DefaultPolicy(), (&captured{}).publish); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	after, _ := app.FindRecordById("items", s.ConsumableID)
+	if got := after.GetInt("quantity_on_hand"); got != 6 {
+		t.Errorf("quantity_on_hand after consume 4 of 10: want 6, got %d", got)
+	}
+}
+
+func TestConsume_AllowedToGoNegative(t *testing.T) {
+	app := setupApp(t)
+	s := seedFixtures(t, app)
+
+	// Seed consumable with 2 on hand.
+	item, _ := app.FindRecordById("items", s.ConsumableID)
+	item.Set("quantity_on_hand", 2)
+	if err := app.Save(item); err != nil {
+		t.Fatalf("seed quantity_on_hand: %v", err)
+	}
+
+	c := newCart(s.UserID, &cart.Line{
+		ItemID: s.ConsumableID, Action: "consume", Qty: 5,
+		ItemType: "consumable", TrackingMode: "quantity",
+	})
+	if _, err := commit.Commit(app, c, testIdentity, commit.DefaultPolicy(), (&captured{}).publish); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	after, _ := app.FindRecordById("items", s.ConsumableID)
+	if got := after.GetInt("quantity_on_hand"); got != -3 {
+		t.Errorf("quantity_on_hand after consume 5 of 2: want -3, got %d", got)
+	}
+}
+
+func TestCheckout_DoesNotChangeQuantityOnHand(t *testing.T) {
+	app := setupApp(t)
+	s := seedFixtures(t, app)
+
+	// Tool fleet count = 5.
+	item, _ := app.FindRecordById("items", s.ToolQtyID)
+	item.Set("quantity_on_hand", 5)
+	if err := app.Save(item); err != nil {
+		t.Fatalf("seed tool fleet: %v", err)
+	}
+
+	c := newCart(s.UserID, &cart.Line{
+		ItemID: s.ToolQtyID, Action: "checkout", Qty: 3,
+		ItemType: "tool", TrackingMode: "quantity",
+	})
+	if _, err := commit.Commit(app, c, testIdentity, commit.DefaultPolicy(), (&captured{}).publish); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	after, _ := app.FindRecordById("items", s.ToolQtyID)
+	if got := after.GetInt("quantity_on_hand"); got != 5 {
+		t.Errorf("tool quantity_on_hand should not change on checkout: want 5, got %d", got)
+	}
+}
+
+func TestCrossUserReturn_RejectedWhenPolicyDenies(t *testing.T) {
+	app := setupApp(t)
+	s := seedFixtures(t, app)
+
+	// Bob checks out the tool.
+	bobCheckout := newCart(s.OtherUserID, &cart.Line{
+		ItemID: s.ToolQtyID, Action: "checkout", Qty: 1,
+		ItemType: "tool", TrackingMode: "quantity",
+	})
+	bobCheckout.UserCode = "EMP-2"
+	bobCheckout.UserName = "Bob"
+	if _, err := commit.Commit(app, bobCheckout, testIdentity, commit.DefaultPolicy(), (&captured{}).publish); err != nil {
+		t.Fatalf("seed bob checkout: %v", err)
+	}
+
+	// Alice tries to return Bob's tool under a strict policy.
+	aliceReturn := newCart(s.UserID, &cart.Line{
+		ItemID: s.ToolQtyID, Action: "return", Qty: 1,
+		ItemType: "tool", TrackingMode: "quantity",
+		OriginalCheckoutUserID: s.OtherUserID,
+	})
+	strict := commit.Policy{AllowCrossUser: false, AllowUncorrelated: true}
+	if _, err := commit.Commit(app, aliceReturn, testIdentity, strict, (&captured{}).publish); err == nil {
+		t.Fatal("expected error for cross-user return under strict policy")
+	}
+
+	// Bob's open checkout should still be there — the rejected commit must
+	// roll back, not leak state.
+	if n := countOpenCheckouts(t, app, "user = {:u}", dbx.Params{"u": s.OtherUserID}); n != 1 {
+		t.Errorf("bob's open rows after rejected return: want 1, got %d", n)
+	}
+}
+
+func TestUncorrelatedReturn_RejectedWhenPolicyDenies(t *testing.T) {
+	app := setupApp(t)
+	s := seedFixtures(t, app)
+
+	// Nothing is out — this return is uncorrelated by definition.
+	c := newCart(s.UserID, &cart.Line{
+		ItemID: s.ToolQtyID, Action: "return", Qty: 1,
+		ItemType: "tool", TrackingMode: "quantity",
+	})
+	strict := commit.Policy{AllowCrossUser: true, AllowUncorrelated: false}
+	if _, err := commit.Commit(app, c, testIdentity, strict, (&captured{}).publish); err == nil {
+		t.Fatal("expected error for uncorrelated return under strict policy")
+	}
+
+	// No transactions or open rows written.
+	txs, _ := app.FindRecordsByFilter("transactions", "", "", 0, 0)
+	if len(txs) != 0 {
+		t.Errorf("transactions after rejected return: want 0, got %d", len(txs))
 	}
 }
 
@@ -412,7 +541,7 @@ func TestCommit_TransactionRollsBackOnError(t *testing.T) {
 			ItemID: "nonexistent-item-id", Action: "checkout", Qty: 1,
 		},
 	)
-	if _, err := commit.Commit(app, c, testIdentity, (&captured{}).publish); err == nil {
+	if _, err := commit.Commit(app, c, testIdentity, commit.DefaultPolicy(), (&captured{}).publish); err == nil {
 		t.Fatal("expected error")
 	}
 

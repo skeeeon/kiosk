@@ -95,6 +95,14 @@ func (h *Handlers) CartAdd(re *core.RequestEvent) error {
 	}
 
 	c, added, err := h.Carts.AddLine(body.CartID, line)
+	if err == nil {
+		// Recompute low-stock against the stacked total qty (AddLine may have
+		// merged into an existing line). Warning is informational only —
+		// commit doesn't reject on it.
+		if w, werr := lowStockWarning(h.App, item, added.Action, added.Qty); werr == nil && w != "" {
+			added.Warnings = setLowStockWarning(added.Warnings, w)
+		}
+	}
 	if err != nil {
 		switch {
 		case errors.Is(err, cart.ErrQtyOutOfRange):
@@ -144,6 +152,16 @@ func (h *Handlers) CartUpdateLine(re *core.RequestEvent) error {
 		}
 		return re.NotFoundError("line not found or cart expired", nil)
 	}
+
+	// Recompute low-stock against the line's new qty/action. Failures here
+	// (item lookup, count query) don't fail the update — they just leave the
+	// chip absent.
+	if item, ierr := h.App.FindRecordById("items", line.ItemID); ierr == nil {
+		if w, werr := lowStockWarning(h.App, item, line.Action, line.Qty); werr == nil {
+			line.Warnings = setLowStockWarning(line.Warnings, w)
+		}
+	}
+
 	return re.JSON(http.StatusOK, map[string]any{"cart": c, "line": line})
 }
 
@@ -179,7 +197,10 @@ func (h *Handlers) CartCommit(re *core.RequestEvent) error {
 		return re.NotFoundError("cart not found or expired", nil)
 	}
 
-	result, err := commit.Commit(h.App, c, kioskctx.Get(), events.Publish)
+	result, err := commit.Commit(h.App, c, kioskctx.Get(), commit.Policy{
+		AllowCrossUser:    h.Cfg.Returns.CrossUserAllowed(),
+		AllowUncorrelated: h.Cfg.Returns.UncorrelatedAllowed(),
+	}, events.Publish)
 	if err != nil {
 		return re.InternalServerError("commit failed", err)
 	}

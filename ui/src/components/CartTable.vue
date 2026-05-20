@@ -40,7 +40,20 @@ function warningLabel(w: string): string {
   if (w.startsWith('cross_user_return:')) {
     return `Currently checked out to ${w.slice('cross_user_return:'.length)}`
   }
+  if (w.startsWith('low_stock:available=')) {
+    const n = w.slice('low_stock:available='.length)
+    return n === '0'
+      ? 'None currently available — proceeding anyway'
+      : `Only ${n} available — proceeding anyway`
+  }
   return w
+}
+
+function warningClasses(w: string): string {
+  if (w.startsWith('low_stock:')) {
+    return 'rounded-lg bg-red-900/40 border border-red-700/60 text-red-200 text-sm px-3 py-2'
+  }
+  return 'rounded-lg bg-amber-900/40 border border-amber-700/60 text-amber-200 text-sm px-3 py-2'
 }
 </script>
 
@@ -71,7 +84,7 @@ function warningLabel(w: string): string {
       <div
         v-for="w in line.warnings ?? []"
         :key="w"
-        class="rounded-lg bg-amber-900/40 border border-amber-700/60 text-amber-200 text-sm px-3 py-2"
+        :class="warningClasses(w)"
       >
         {{ warningLabel(w) }}
       </div>

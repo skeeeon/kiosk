@@ -51,7 +51,9 @@ func main() {
 		e.Router.POST("/api/kiosk/cart/cancel", h.CartCancel)
 		e.Router.POST("/api/kiosk/cart/commit", h.CartCommit)
 		e.Router.GET("/api/kiosk/integrity", h.Integrity)
+		e.Router.POST("/api/kiosk/integrity/rebuild", h.RebuildOpenCheckouts)
 		e.Router.POST("/api/kiosk/items/import", h.CSVImport)
+		e.Router.GET("/api/kiosk/transactions.csv", h.TransactionsExportCSV)
 
 		// Serve the Vue SPA from pb_public. indexFallback=true means unknown
 		// paths return index.html so client-side routes (/admin/*) resolve.
