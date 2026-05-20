@@ -12,6 +12,7 @@ import (
 
 	"github.com/skeeeon/kiosk/internal/cart"
 	"github.com/skeeeon/kiosk/internal/config"
+	"github.com/skeeeon/kiosk/internal/events"
 	"github.com/skeeeon/kiosk/internal/handlers"
 	"github.com/skeeeon/kiosk/internal/kioskctx"
 
@@ -34,6 +35,18 @@ func main() {
 	// Apply registered Go migrations automatically on startup.
 	migratecmd.MustRegister(app, app.RootCmd, migratecmd.Config{
 		Automigrate: true,
+	})
+
+	pub, err := events.Connect(cfg.NATS)
+	if err != nil {
+		log.Fatalf("nats connect: %v", err)
+	}
+	events.SetPublisher(pub)
+	app.OnTerminate().BindFunc(func(e *core.TerminateEvent) error {
+		if p := events.CurrentPublisher(); p != nil {
+			p.Close()
+		}
+		return e.Next()
 	})
 
 	carts := cart.NewStore(cfg.Session.IdleTimeout.AsDuration())

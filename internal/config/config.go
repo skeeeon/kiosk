@@ -21,6 +21,7 @@ type Config struct {
 	Scanning ScanningConfig `yaml:"scanning"`
 	Returns  ReturnsConfig  `yaml:"returns"`
 	Branding BrandingConfig `yaml:"branding"`
+	NATS     NATSConfig     `yaml:"nats"`
 }
 
 type KioskConfig struct {
@@ -68,6 +69,35 @@ func (r ReturnsConfig) UncorrelatedAllowed() bool {
 		return true
 	}
 	return *r.AllowUncorrelated
+}
+
+// NATSConfig drives the optional NATS publisher in internal/events. When
+// disabled (the default), events.Publish stays slog-only — same as v1.
+// When enabled, every event also publishes to NATS using whatever auth
+// fields are provided; leave them blank for anonymous access.
+//
+// Auth modes (use one — they compose in the order shown if multiple are
+// set, but the typical deployment picks exactly one):
+//
+//   - token            simple bearer token (`nats-server -auth token`)
+//   - username/password   basic auth
+//   - credentials_file    JWT .creds file (NGS / JetStream Cloud)
+//   - nkey_seed_file      ed25519 NKey seed
+//
+// TLS is auto-negotiated when URL starts with tls:// or nats+tls://; you
+// can also configure CA/cert/key paths explicitly. TLSInsecure is for dev.
+type NATSConfig struct {
+	Enabled         bool   `yaml:"enabled"`
+	URL             string `yaml:"url"`
+	Token           string `yaml:"token"`
+	Username        string `yaml:"username"`
+	Password        string `yaml:"password"`
+	CredentialsFile string `yaml:"credentials_file"`
+	NKeySeedFile    string `yaml:"nkey_seed_file"`
+	TLSCAFile       string `yaml:"tls_ca_file"`
+	TLSCertFile     string `yaml:"tls_cert_file"`
+	TLSKeyFile      string `yaml:"tls_key_file"`
+	TLSInsecure     bool   `yaml:"tls_insecure"`
 }
 
 // BrandingConfig customizes the kiosk's visual identity. All fields are
@@ -181,6 +211,39 @@ func applyEnvOverrides(c *Config) {
 	}
 	if v := os.Getenv("KIOSK_BRANDING_PRIMARY_COLOR"); v != "" {
 		c.Branding.PrimaryColor = v
+	}
+	if v := os.Getenv("KIOSK_NATS_ENABLED"); v != "" {
+		c.NATS.Enabled = parseBool(v)
+	}
+	if v := os.Getenv("KIOSK_NATS_URL"); v != "" {
+		c.NATS.URL = v
+	}
+	if v := os.Getenv("KIOSK_NATS_TOKEN"); v != "" {
+		c.NATS.Token = v
+	}
+	if v := os.Getenv("KIOSK_NATS_USERNAME"); v != "" {
+		c.NATS.Username = v
+	}
+	if v := os.Getenv("KIOSK_NATS_PASSWORD"); v != "" {
+		c.NATS.Password = v
+	}
+	if v := os.Getenv("KIOSK_NATS_CREDENTIALS_FILE"); v != "" {
+		c.NATS.CredentialsFile = v
+	}
+	if v := os.Getenv("KIOSK_NATS_NKEY_SEED_FILE"); v != "" {
+		c.NATS.NKeySeedFile = v
+	}
+	if v := os.Getenv("KIOSK_NATS_TLS_CA_FILE"); v != "" {
+		c.NATS.TLSCAFile = v
+	}
+	if v := os.Getenv("KIOSK_NATS_TLS_CERT_FILE"); v != "" {
+		c.NATS.TLSCertFile = v
+	}
+	if v := os.Getenv("KIOSK_NATS_TLS_KEY_FILE"); v != "" {
+		c.NATS.TLSKeyFile = v
+	}
+	if v := os.Getenv("KIOSK_NATS_TLS_INSECURE"); v != "" {
+		c.NATS.TLSInsecure = parseBool(v)
 	}
 }
 

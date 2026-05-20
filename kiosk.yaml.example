@@ -18,6 +18,24 @@ returns:
   allow_cross_user: true
   allow_uncorrelated: true
 
+# Optional NATS event publishing. When enabled, every event the commit
+# hook fires is published to subjects like kiosk.{kiosk_code}.transaction.complete
+# in addition to the local slog line. Disabled by default — leave it off
+# until you have a central reporting consumer to receive these.
+nats:
+  enabled: false
+  url: "nats://localhost:4222"
+  # Use whichever auth your nats-server expects; leave all blank for anonymous.
+  token: ""
+  username: ""
+  password: ""
+  credentials_file: ""    # JWT .creds file (e.g. NGS / JetStream Cloud)
+  nkey_seed_file: ""      # ed25519 NKey seed
+  tls_ca_file: ""
+  tls_cert_file: ""
+  tls_key_file: ""
+  tls_insecure: false     # skip cert verification — dev only
+
 # Optional. Customize the kiosk's visual identity. All keys are optional;
 # omitted values fall back to built-in defaults. The example logo + tagline
 # below match the file shipped at ./branding/logo.svg in the repo.
