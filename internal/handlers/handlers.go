@@ -1,0 +1,69 @@
+// Package handlers holds HTTP handlers for /api/kiosk/*. Each route is a
+// method on the Handlers struct so it can access shared dependencies (the
+// PocketBase app for DB reads, the in-memory cart store, and config).
+package handlers
+
+import (
+	"database/sql"
+	"errors"
+
+	"github.com/pocketbase/pocketbase/core"
+
+	"github.com/skeeeon/kiosk/internal/cart"
+	"github.com/skeeeon/kiosk/internal/config"
+	"github.com/skeeeon/kiosk/internal/scan"
+)
+
+type Handlers struct {
+	App   core.App
+	Cfg   *config.Config
+	Carts *cart.Store
+}
+
+func New(app core.App, cfg *config.Config, carts *cart.Store) *Handlers {
+	return &Handlers{App: app, Cfg: cfg, Carts: carts}
+}
+
+// requireAdmin enforces that the request carries a valid token for the
+// admins auth collection. Returns a 401/403 RequestEvent error on miss.
+// PocketBase populates re.Auth from a `Authorization: Bearer ...` header.
+func (h *Handlers) requireAdmin(re *core.RequestEvent) error {
+	if re.Auth == nil {
+		return re.UnauthorizedError("authentication required", nil)
+	}
+	if re.Auth.Collection() == nil || re.Auth.Collection().Name != "admins" {
+		return re.ForbiddenError("admin access required", nil)
+	}
+	return nil
+}
+
+// isNotFound reports whether an error from a PB find call means "no record
+// matched" (vs. a real DB error worth surfacing).
+func isNotFound(err error) bool {
+	return err != nil && errors.Is(err, sql.ErrNoRows)
+}
+
+// userFromRecord projects a PB users record into the SPA-facing shape.
+func userFromRecord(r *core.Record) *scan.User {
+	return &scan.User{
+		ID:    r.Id,
+		Code:  r.GetString("code"),
+		Name:  r.GetString("name"),
+		Role:  r.GetString("role"),
+		Email: r.GetString("email"),
+	}
+}
+
+// itemFromRecord projects a PB items record into the SPA-facing shape.
+func itemFromRecord(r *core.Record) *scan.Item {
+	return &scan.Item{
+		ID:           r.Id,
+		Code:         r.GetString("code"),
+		Name:         r.GetString("name"),
+		Type:         r.GetString("type"),
+		Unit:         r.GetString("unit"),
+		TrackingMode: r.GetString("tracking_mode"),
+		Serial:       r.GetString("serial"),
+		Category:     r.GetString("category"),
+	}
+}

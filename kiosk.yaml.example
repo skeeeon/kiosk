@@ -1,0 +1,19 @@
+kiosk:
+  code: "KC-MAIN-01"
+  location_code: "MAIN"
+
+server:
+  port: 8090
+  bind: "127.0.0.1"
+
+session:
+  idle_timeout: "5m"
+  cart_grace_period: "30s"
+
+scanning:
+  user_qr_prefix: "U:"
+  item_barcode_prefix: ""
+
+returns:
+  allow_cross_user: true
+  allow_uncorrelated: true

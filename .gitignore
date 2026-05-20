@@ -1,0 +1,11 @@
+/pb_data/
+/pb_public/
+/kiosk.yaml
+/kiosk-app
+/kiosk-app.exe
+/ui/node_modules/
+/ui/dist/
+/ui/.vite/
+*.log
+.DS_Store
+.env

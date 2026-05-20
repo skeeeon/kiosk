@@ -1,0 +1,94 @@
+export interface KioskIdentity {
+  kiosk_code: string
+  location_code: string
+}
+
+export interface User {
+  id: string
+  code: string
+  name: string
+  role: string
+  email?: string
+}
+
+export interface Item {
+  id: string
+  code: string
+  name: string
+  type: 'tool' | 'consumable'
+  unit?: string
+  tracking_mode: 'quantity' | 'serialized'
+  serial?: string
+  category?: string
+}
+
+export type ScanResult =
+  | { type: 'user'; record: User }
+  | { type: 'item'; record: Item }
+  | { type: 'unknown'; value?: string }
+
+export type CartAction = 'checkout' | 'return' | 'consume'
+
+export interface CartLine {
+  id: string
+  item_id: string
+  item_code: string
+  item_name: string
+  item_type: 'tool' | 'consumable'
+  tracking_mode: 'quantity' | 'serialized'
+  action: CartAction
+  qty: number
+  serial?: string
+  original_checkout_user_id?: string
+  original_checkout_user_name?: string
+  warnings?: string[]
+}
+
+export interface Cart {
+  id: string
+  user_id: string
+  user_code: string
+  user_name: string
+  started_at: string
+  expires_at: string
+  lines: CartLine[]
+}
+
+export interface CommitResult {
+  transaction_id: string
+  lines_count: number
+  checked_out: number
+  returned: number
+  consumed: number
+}
+
+// Admin-side records mirror what we persist in PocketBase. These are looser
+// than the kiosk DTOs because admin CRUD must handle partial records during
+// create/edit and PB returns extra fields (created, updated, collectionId).
+
+export interface ItemRecord {
+  id: string
+  code: string
+  name: string
+  type: 'tool' | 'consumable'
+  unit: string
+  tracking_mode: 'quantity' | 'serialized'
+  serial: string
+  category: string
+  rfid_epc: string
+  active: boolean
+  notes: string
+  created?: string
+  updated?: string
+}
+
+export interface WorkerRecord {
+  id: string
+  email: string
+  code: string
+  name: string
+  role: 'worker' | 'foreman'
+  active: boolean
+  created?: string
+  updated?: string
+}
