@@ -3,7 +3,10 @@ import { computed, onMounted, ref } from 'vue'
 import { pb } from '../lib/pb'
 import ItemDialog from '../components/ItemDialog.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
+import { useAdminToast } from '../composables/useAdminToast'
 import type { ItemRecord } from '../types'
+
+const toast = useAdminToast()
 
 const items = ref<ItemRecord[]>([])
 const loading = ref(false)
@@ -55,28 +58,46 @@ function openEdit(item: ItemRecord) {
 
 async function onSave(data: Partial<ItemRecord>) {
   error.value = null
+  const isEdit = !!data.id
   try {
-    if (data.id) {
-      await pb.collection('items').update<ItemRecord>(data.id, data)
+    if (isEdit) {
+      await pb.collection('items').update<ItemRecord>(data.id!, data)
     } else {
       await pb.collection('items').create<ItemRecord>(data)
     }
     editing.value = null
     await load()
+    toast.success(isEdit ? `Saved ${data.code ?? 'item'}` : `Created ${data.code ?? 'item'}`)
   } catch (e) {
-    error.value = (e as Error).message
+    const msg = (e as Error).message
+    error.value = msg
+    toast.error(msg)
   }
+}
+
+// Items referenced by any transaction line or open_checkouts row are FK-pinned;
+// PB rejects hard delete. Surface a friendly message and suggest soft-delete.
+function isFKConstraintError(msg: string): boolean {
+  const m = msg.toLowerCase()
+  return m.includes('foreign key') || m.includes('constraint') || m.includes('referenced')
 }
 
 async function onDelete() {
   if (!deleting.value) return
   error.value = null
+  const target = deleting.value
   try {
-    await pb.collection('items').delete(deleting.value.id)
+    await pb.collection('items').delete(target.id)
     deleting.value = null
     await load()
+    toast.success(`Deleted ${target.code}`)
   } catch (e) {
-    error.value = (e as Error).message
+    const raw = (e as Error).message
+    const friendly = isFKConstraintError(raw)
+      ? `${target.code} has transaction history and can't be deleted. Uncheck "Active" instead to retire it.`
+      : raw
+    error.value = friendly
+    toast.error(friendly)
   }
 }
 </script>

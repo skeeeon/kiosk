@@ -3,7 +3,10 @@ import { computed, onMounted, ref } from 'vue'
 import { pb } from '../lib/pb'
 import UserDialog from '../components/UserDialog.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
+import { useAdminToast } from '../composables/useAdminToast'
 import type { WorkerRecord } from '../types'
+
+const toast = useAdminToast()
 
 const users = ref<WorkerRecord[]>([])
 const loading = ref(false)
@@ -57,11 +60,17 @@ function randomPassword(): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
 }
 
+function isFKConstraintError(msg: string): boolean {
+  const m = msg.toLowerCase()
+  return m.includes('foreign key') || m.includes('constraint') || m.includes('referenced')
+}
+
 async function onSave(data: Partial<WorkerRecord>) {
   error.value = null
+  const isEdit = !!data.id
   try {
-    if (data.id) {
-      await pb.collection('users').update<WorkerRecord>(data.id, data)
+    if (isEdit) {
+      await pb.collection('users').update<WorkerRecord>(data.id!, data)
     } else {
       const pw = randomPassword()
       await pb.collection('users').create<WorkerRecord>({
@@ -72,20 +81,30 @@ async function onSave(data: Partial<WorkerRecord>) {
     }
     editing.value = null
     await load()
+    toast.success(isEdit ? `Saved ${data.code ?? 'worker'}` : `Created ${data.code ?? 'worker'}`)
   } catch (e) {
-    error.value = (e as Error).message
+    const msg = (e as Error).message
+    error.value = msg
+    toast.error(msg)
   }
 }
 
 async function onDelete() {
   if (!deleting.value) return
   error.value = null
+  const target = deleting.value
   try {
-    await pb.collection('users').delete(deleting.value.id)
+    await pb.collection('users').delete(target.id)
     deleting.value = null
     await load()
+    toast.success(`Deleted ${target.code}`)
   } catch (e) {
-    error.value = (e as Error).message
+    const raw = (e as Error).message
+    const friendly = isFKConstraintError(raw)
+      ? `${target.code} has transaction history and can't be deleted. Uncheck "Active" instead to retire them.`
+      : raw
+    error.value = friendly
+    toast.error(friendly)
   }
 }
 </script>

@@ -6,17 +6,47 @@ import CartTable from '../components/CartTable.vue'
 import ItemBrowseDialog from '../components/ItemBrowseDialog.vue'
 import { useCart } from '../composables/useCart'
 import { useSessionStore } from '../stores/session'
-import type { CartAction, CommitResult, Item, User } from '../types'
+import type { CartAction, CartLine, CommitResult, Item, User } from '../types'
 
 const session = useSessionStore()
 const { cart, flash } = storeToRefs(session)
 const c = useCart()
 
-const SUCCESS_SCREEN_MS = 3000
-const success = ref<CommitResult | null>(null)
+// Receipt auto-dismisses so the kiosk is ready for the next worker. Long
+// enough to actually read a multi-line receipt; the explicit "Done" button
+// lets impatient users skip the wait.
+const SUCCESS_SCREEN_MS = 8000
+
+interface Receipt {
+  result: CommitResult
+  lines: CartLine[]
+  userName: string
+}
+
+const success = ref<Receipt | null>(null)
 const committing = ref(false)
 const browseOpen = ref(false)
 const browsePending = ref(false)
+let dismissHandle: ReturnType<typeof setTimeout> | null = null
+
+const ACTION_LABEL: Record<CartAction, string> = {
+  checkout: 'Checked out',
+  return: 'Returned',
+  consume: 'Consumed',
+}
+const ACTION_TONE: Record<CartAction, string> = {
+  checkout: 'text-emerald-400',
+  return: 'text-amber-400',
+  consume: 'text-sky-400',
+}
+
+function dismissReceipt() {
+  if (dismissHandle) {
+    clearTimeout(dismissHandle)
+    dismissHandle = null
+  }
+  success.value = null
+}
 
 async function onScan(raw: string) {
   let result
@@ -115,14 +145,17 @@ async function onBrowsePick(code: string) {
 }
 
 async function onCommit() {
-  if (committing.value) return
+  if (committing.value || !cart.value) return
   committing.value = true
+  // Snapshot lines + user before commit — useCart.commit() clears the store
+  // on success, so this is the only chance to read them for the receipt.
+  const snapshotLines = cart.value.lines.map((l) => ({ ...l }))
+  const snapshotUser = cart.value.user_name
   try {
     const result = await c.commit()
-    success.value = result
-    setTimeout(() => {
-      success.value = null
-    }, SUCCESS_SCREEN_MS)
+    success.value = { result, lines: snapshotLines, userName: snapshotUser }
+    if (dismissHandle) clearTimeout(dismissHandle)
+    dismissHandle = setTimeout(dismissReceipt, SUCCESS_SCREEN_MS)
   } catch (e) {
     session.setFlash('error', (e as Error).message)
   } finally {
@@ -159,23 +192,65 @@ const flashClasses = {
 
   <main
     v-if="success"
-    class="flex flex-col items-center justify-center px-8 py-16 text-center"
+    class="flex flex-col items-center px-6 py-10"
   >
-    <div class="max-w-2xl">
-      <p class="text-6xl font-bold text-emerald-400 mb-4">Done</p>
-      <p class="text-2xl text-slate-300 mb-8">
-        {{ success.lines_count }} line<span v-if="success.lines_count !== 1">s</span> committed
-      </p>
-      <div class="flex justify-center gap-6 text-lg text-slate-400">
-        <span v-if="success.checked_out > 0">
-          <span class="text-emerald-400 font-semibold">{{ success.checked_out }}</span> checked out
-        </span>
-        <span v-if="success.returned > 0">
-          <span class="text-amber-400 font-semibold">{{ success.returned }}</span> returned
-        </span>
-        <span v-if="success.consumed > 0">
-          <span class="text-sky-400 font-semibold">{{ success.consumed }}</span> consumed
-        </span>
+    <div class="w-full max-w-2xl">
+      <div class="text-center mb-6">
+        <p class="text-5xl font-bold text-emerald-400 mb-2">Done</p>
+        <p class="text-lg text-slate-400">Thanks, {{ success.userName }}</p>
+      </div>
+
+      <div class="rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden">
+        <ul class="divide-y divide-slate-800">
+          <li
+            v-for="line in success.lines"
+            :key="line.id"
+            class="flex items-center gap-4 px-5 py-4"
+          >
+            <span
+              class="text-sm font-medium uppercase tracking-wide w-28 shrink-0"
+              :class="ACTION_TONE[line.action]"
+            >
+              {{ ACTION_LABEL[line.action] }}
+            </span>
+            <div class="min-w-0 flex-1">
+              <p class="text-lg font-medium text-slate-100 truncate">{{ line.item_name }}</p>
+              <p class="text-xs text-slate-500 truncate">
+                {{ line.item_code }}<span v-if="line.serial"> · SN {{ line.serial }}</span>
+              </p>
+            </div>
+            <span
+              v-if="line.tracking_mode !== 'serialized'"
+              class="text-2xl font-semibold tabular-nums text-slate-200 shrink-0"
+            >×{{ line.qty }}</span>
+          </li>
+        </ul>
+        <div class="flex justify-between items-center px-5 py-3 bg-slate-950/40 text-sm text-slate-400">
+          <span>
+            {{ success.result.lines_count }} line<span v-if="success.result.lines_count !== 1">s</span>
+          </span>
+          <div class="flex gap-4">
+            <span v-if="success.result.checked_out > 0">
+              <span class="text-emerald-400 font-semibold">{{ success.result.checked_out }}</span> out
+            </span>
+            <span v-if="success.result.returned > 0">
+              <span class="text-amber-400 font-semibold">{{ success.result.returned }}</span> back
+            </span>
+            <span v-if="success.result.consumed > 0">
+              <span class="text-sky-400 font-semibold">{{ success.result.consumed }}</span> consumed
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div class="flex justify-center mt-6">
+        <button
+          type="button"
+          class="px-8 py-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-base"
+          @click="dismissReceipt"
+        >
+          Done
+        </button>
       </div>
     </div>
   </main>

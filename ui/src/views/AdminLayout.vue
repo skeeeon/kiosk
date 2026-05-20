@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
+import AdminToast from '../components/AdminToast.vue'
 
 const auth = useAuthStore()
 const router = useRouter()
@@ -56,5 +57,6 @@ function onLogout() {
     <div class="flex-1 overflow-auto">
       <RouterView />
     </div>
+    <AdminToast />
   </div>
 </template>
