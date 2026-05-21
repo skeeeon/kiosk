@@ -265,9 +265,32 @@ const flashClasses = {
     </div>
   </Transition>
 
+  <!-- Chrome header for the active cart and the post-commit success screen.
+       The splash has its own centered logo treatment so we skip the chrome
+       header there to avoid showing the logo twice. The user identity chip
+       on the right only appears when a cart is active — success already
+       prints "Thanks, {name}" prominently. -->
+  <header
+    v-if="cart || success"
+    class="flex items-start justify-between gap-6 px-6 pt-6 pb-2 shrink-0"
+  >
+    <img
+      v-if="splashLogoUrl"
+      :src="splashLogoUrl"
+      alt="logo"
+      class="h-28 md:h-36 w-auto object-contain shrink-0"
+      @error="splashLogoBroken = true"
+    />
+    <span v-else class="text-3xl md:text-5xl font-semibold tracking-wide shrink-0">Kiosk</span>
+    <div v-if="cart" class="text-right shrink-0">
+      <p class="text-2xl text-slate-100">{{ cart.user_name }}</p>
+      <p class="text-sm text-slate-500 font-mono">{{ cart.user_code }}</p>
+    </div>
+  </header>
+
   <main
     v-if="success"
-    class="flex flex-col items-center px-6 py-10"
+    class="flex-1 flex flex-col items-center px-6 py-10"
   >
     <div class="w-full max-w-2xl">
       <div class="text-center mb-6">
@@ -349,28 +372,21 @@ const flashClasses = {
     </div>
   </main>
 
-  <main v-else class="px-6 py-8 max-w-4xl mx-auto w-full">
-    <header class="flex items-baseline justify-between mb-6">
-      <div>
-        <p class="text-sm text-slate-400">Signed in as</p>
-        <h1 class="text-3xl font-semibold">{{ cart.user_name }}</h1>
-        <p class="text-sm text-slate-500">{{ cart.user_code }}</p>
-      </div>
-      <p class="text-slate-500 text-sm">
-        Cart {{ cart.lines.length }} line<span v-if="cart.lines.length !== 1">s</span>
+  <main v-else class="flex-1 flex flex-col px-6 py-6 max-w-4xl mx-auto w-full">
+    <div class="flex-1">
+      <p
+        v-if="cart.lines.length === 0"
+        class="rounded-2xl bg-slate-900 border border-slate-800 border-dashed text-slate-500 text-center py-12 text-lg"
+      >
+        Scan items to add them to your cart.
       </p>
-    </header>
 
-    <p
-      v-if="cart.lines.length === 0"
-      class="rounded-2xl bg-slate-900 border border-slate-800 border-dashed text-slate-500 text-center py-12 text-lg"
-    >
-      Scan items to add them to your cart.
-    </p>
+      <CartTable v-else :lines="cart.lines" @update="onUpdate" @remove="onRemove" />
+    </div>
 
-    <CartTable v-else :lines="cart.lines" @update="onUpdate" @remove="onRemove" />
-
-    <div class="mt-8 flex gap-3 justify-end">
+    <!-- Pinned to the bottom of the main so the commit button sits in a
+         predictable place regardless of how many lines are in the cart. -->
+    <div class="mt-8 flex gap-3 justify-end shrink-0">
       <button
         type="button"
         class="px-6 py-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-lg mr-auto"
