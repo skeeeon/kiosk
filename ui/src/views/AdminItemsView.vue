@@ -114,13 +114,21 @@ async function onDelete() {
         <h1 class="text-2xl font-semibold">Items</h1>
         <p class="text-sm text-slate-400">{{ items.length }} total</p>
       </div>
-      <button
-        type="button"
-        class="px-4 py-2 rounded-lg bg-brand-primary hover:bg-brand-primary-hover text-white font-medium"
-        @click="openNew"
-      >
-        New item
-      </button>
+      <div class="flex items-center gap-3">
+        <a
+          href="/api/kiosk/items.csv"
+          class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm"
+        >
+          Export CSV
+        </a>
+        <button
+          type="button"
+          class="px-4 py-2 rounded-lg bg-brand-primary hover:bg-brand-primary-hover text-white font-medium"
+          @click="openNew"
+        >
+          New item
+        </button>
+      </div>
     </header>
 
     <div class="flex gap-3 mb-4">

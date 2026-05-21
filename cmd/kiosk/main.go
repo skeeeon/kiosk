@@ -71,6 +71,7 @@ func main() {
 		e.Router.GET("/api/kiosk/integrity", h.Integrity)
 		e.Router.POST("/api/kiosk/integrity/rebuild", h.RebuildOpenCheckouts)
 		e.Router.POST("/api/kiosk/items/import", h.CSVImport)
+		e.Router.GET("/api/kiosk/items.csv", h.ItemsExportCSV)
 		e.Router.POST("/api/kiosk/items/{id}/adjust", h.AdjustItemStock)
 		e.Router.GET("/api/kiosk/transactions.csv", h.TransactionsExportCSV)
 

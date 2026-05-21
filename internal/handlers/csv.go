@@ -167,10 +167,11 @@ func validateImportRow(headers map[string]int, row []string) (map[string]any, []
 	if tracking != "quantity" && tracking != "serialized" {
 		errs = append(errs, importError{Code: "INVALID_TRACKING_MODE", Message: "tracking_mode must be 'quantity' or 'serialized'"})
 	}
+	// items.serial used to be required for tracking_mode=serialized, but
+	// that data now lives on item_instances. The items row's serial column
+	// is optional and informational only; instances carry the authoritative
+	// per-unit serial.
 	serial := csvCol(headers, row, "serial")
-	if tracking == "serialized" && serial == "" {
-		errs = append(errs, importError{Code: "MISSING_SERIAL", Message: "serialized items require a serial"})
-	}
 
 	if len(errs) > 0 {
 		return nil, errs
@@ -284,6 +285,62 @@ func (h *Handlers) TransactionsExportCSV(re *core.RequestEvent) error {
 			fmt.Sprintf("%d", lineCount),
 			t.GetString("kiosk_code"),
 			t.GetString("location_code"),
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ItemsExportCSV streams the items collection as CSV with the same column
+// shape the importer accepts, so an export can round-trip back through
+// /items/import. Instances are intentionally not exported here — they live
+// in their own collection and aren't part of the items round-trip.
+func (h *Handlers) ItemsExportCSV(re *core.RequestEvent) error {
+	if err := h.requireAdmin(re); err != nil {
+		return err
+	}
+
+	items, err := h.App.FindRecordsByFilter("items", "", "code", 0, 0)
+	if err != nil {
+		return err
+	}
+
+	w := re.Response
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(
+		"attachment; filename=\"items-%s.csv\"", time.Now().UTC().Format("20060102-150405"),
+	))
+
+	cw := csv.NewWriter(w)
+	defer cw.Flush()
+
+	if err := cw.Write([]string{
+		"code", "name", "type", "unit", "tracking_mode", "serial",
+		"category", "rfid_epc", "active", "notes",
+		"quantity_on_hand", "reorder_threshold",
+	}); err != nil {
+		return err
+	}
+
+	for _, it := range items {
+		active := "false"
+		if it.GetBool("active") {
+			active = "true"
+		}
+		if err := cw.Write([]string{
+			it.GetString("code"),
+			it.GetString("name"),
+			it.GetString("type"),
+			it.GetString("unit"),
+			it.GetString("tracking_mode"),
+			it.GetString("serial"),
+			it.GetString("category"),
+			it.GetString("rfid_epc"),
+			active,
+			it.GetString("notes"),
+			fmt.Sprintf("%d", it.GetInt("quantity_on_hand")),
+			fmt.Sprintf("%d", it.GetInt("reorder_threshold")),
 		}); err != nil {
 			return err
 		}
