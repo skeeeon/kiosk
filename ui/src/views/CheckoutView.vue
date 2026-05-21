@@ -303,9 +303,14 @@ const flashClasses = {
     </div>
   </header>
 
+  <!-- Receipt scrolls within the viewport area when the transaction has
+       more lines than fit. Unlike the cart, the scroll position stays at
+       the top so the worker sees "Done / Thanks, {name}" and the first
+       few lines first; they can scroll down to read the rest or hit the
+       Done button at the bottom. -->
   <main
     v-if="success"
-    class="flex-1 flex flex-col items-center px-6 py-10"
+    class="flex-1 min-h-0 overflow-y-auto flex flex-col items-center px-6 py-10"
   >
     <div class="w-full max-w-2xl">
       <div class="text-center mb-6">
