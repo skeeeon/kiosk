@@ -12,17 +12,33 @@ type User struct {
 	Name  string `json:"name"`
 	Role  string `json:"role"`
 	Email string `json:"email,omitempty"`
+	// OpenCount is the number of open_checkouts rows currently held by this
+	// user. Populated on /scan responses so the SPA can welcome a worker
+	// with context ("3 items out") without a second round-trip.
+	OpenCount int `json:"open_count"`
 }
 
 type Item struct {
-	ID           string `json:"id"`
-	Code         string `json:"code"`
-	Name         string `json:"name"`
-	Type         string `json:"type"`
-	Unit         string `json:"unit,omitempty"`
-	TrackingMode string `json:"tracking_mode"`
-	Serial       string `json:"serial,omitempty"`
-	Category     string `json:"category,omitempty"`
+	ID             string `json:"id"`
+	Code           string `json:"code"`
+	Name           string `json:"name"`
+	Type           string `json:"type"`
+	Unit           string `json:"unit,omitempty"`
+	TrackingMode   string `json:"tracking_mode"`
+	Serial         string `json:"serial,omitempty"`
+	Category       string `json:"category,omitempty"`
+	Active         bool   `json:"active"`
+	QuantityOnHand int    `json:"quantity_on_hand"`
+	// OpenCount is how many physical units of this item are currently out
+	// (sum across all holders). Useful for the splash identify panel; not
+	// meaningful for consumables, which the SPA hides.
+	OpenCount int `json:"open_count"`
+	// Holder names the worker(s) currently holding open checkouts of this
+	// item. One name when the item is single-issued; empty string for
+	// consumables or items nobody has out. For multi-issue items the
+	// handler picks one representative holder; the count above tells the
+	// caller whether there are more.
+	Holder string `json:"holder,omitempty"`
 }
 
 // ItemInstance represents one physical unit of a serialized item. Returned

@@ -265,16 +265,15 @@ function openTxDetail(t: TxRow) {
               <th class="px-4 py-3 font-medium">Item</th>
               <th class="px-4 py-3 font-medium">Who</th>
               <th class="px-4 py-3 font-medium">Serial</th>
-              <th class="px-4 py-3 font-medium">Since</th>
-              <th class="px-4 py-3 font-medium">Duration</th>
+              <th class="px-4 py-3 font-medium">Out for</th>
             </tr>
           </thead>
           <tbody class="divide-y divide-slate-800">
             <tr v-if="loading">
-              <td colspan="5" class="text-center text-slate-500 py-8">Loading…</td>
+              <td colspan="4" class="text-center text-slate-500 py-8">Loading…</td>
             </tr>
             <tr v-else-if="filteredOpen.length === 0">
-              <td colspan="5" class="text-center text-slate-500 py-8">
+              <td colspan="4" class="text-center text-slate-500 py-8">
                 {{ openSearch ? 'No matches.' : 'Nothing is currently out.' }}
               </td>
             </tr>
@@ -288,10 +287,10 @@ function openTxDetail(t: TxRow) {
                 <div class="text-xs text-slate-500 font-mono">{{ r.expand?.user?.code }}</div>
               </td>
               <td class="px-4 py-3 font-mono text-slate-400">{{ r.serial || '—' }}</td>
-              <td class="px-4 py-3 text-slate-400" :title="formatDateTime(r.checked_out_at)">
-                {{ formatDateTime(r.checked_out_at) }}
-              </td>
-              <td class="px-4 py-3 text-slate-200 tabular-nums">
+              <td
+                class="px-4 py-3 text-slate-200 tabular-nums"
+                :title="formatDateTime(r.checked_out_at)"
+              >
                 {{ formatRelative(r.checked_out_at) }}
               </td>
             </tr>

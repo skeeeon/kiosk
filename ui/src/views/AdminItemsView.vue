@@ -11,6 +11,10 @@ const toast = useAdminToast()
 
 const items = ref<ItemRecord[]>([])
 const instanceCounts = ref<Record<string, number>>({})
+// Open-checkout count keyed by item id. Drives the "Out" column and the
+// low-stock row highlight; consumables stay at zero since they don't track
+// open_checkouts.
+const outCounts = ref<Record<string, number>>({})
 const loading = ref(false)
 const error = ref<string | null>(null)
 const search = ref('')
@@ -23,19 +27,39 @@ async function load() {
   loading.value = true
   error.value = null
   try {
-    const [itemsRes, instancesRes] = await Promise.all([
+    const [itemsRes, instancesRes, opensRes] = await Promise.all([
       pb.collection('items').getList<ItemRecord>(1, 500, { sort: '+code' }),
       pb.collection('item_instances').getFullList<{ item: string }>({ fields: 'item' }),
+      pb.collection('open_checkouts').getFullList<{ item: string }>({ fields: 'item' }),
     ])
     items.value = itemsRes.items
-    const counts: Record<string, number> = {}
-    for (const i of instancesRes) counts[i.item] = (counts[i.item] ?? 0) + 1
-    instanceCounts.value = counts
+    const instCounts: Record<string, number> = {}
+    for (const i of instancesRes) instCounts[i.item] = (instCounts[i.item] ?? 0) + 1
+    instanceCounts.value = instCounts
+    const oc: Record<string, number> = {}
+    for (const o of opensRes) oc[o.item] = (oc[o.item] ?? 0) + 1
+    outCounts.value = oc
   } catch (e) {
     error.value = (e as Error).message
   } finally {
     loading.value = false
   }
+}
+
+function outFor(item: ItemRecord): number {
+  return item.type === 'tool' ? (outCounts.value[item.id] ?? 0) : 0
+}
+
+function availableFor(item: ItemRecord): number {
+  if (item.type === 'tool') {
+    return Math.max(0, (item.quantity_on_hand ?? 0) - outFor(item))
+  }
+  return item.quantity_on_hand ?? 0
+}
+
+function isLowStock(item: ItemRecord): boolean {
+  const t = item.reorder_threshold ?? 0
+  return t > 0 && availableFor(item) <= t
 }
 
 onMounted(load)
@@ -170,7 +194,10 @@ async function onDelete() {
             <th class="px-4 py-3 font-medium">Name</th>
             <th class="px-4 py-3 font-medium">Type</th>
             <th class="px-4 py-3 font-medium">Tracking</th>
-            <th class="px-4 py-3 font-medium">Serial</th>
+            <th class="px-4 py-3 font-medium text-right">On hand</th>
+            <th class="px-4 py-3 font-medium text-right" title="Open checkouts (tools only)">Out</th>
+            <th class="px-4 py-3 font-medium text-right">Available</th>
+            <th class="px-4 py-3 font-medium text-right" title="Low-stock threshold; 0 disables the alert">Threshold</th>
             <th class="px-4 py-3 font-medium">Category</th>
             <th class="px-4 py-3 font-medium">Active</th>
             <th class="px-4 py-3"></th>
@@ -178,10 +205,10 @@ async function onDelete() {
         </thead>
         <tbody class="divide-y divide-slate-800">
           <tr v-if="loading">
-            <td colspan="8" class="text-center text-slate-500 py-8">Loading…</td>
+            <td colspan="11" class="text-center text-slate-500 py-8">Loading…</td>
           </tr>
           <tr v-else-if="filtered.length === 0">
-            <td colspan="8" class="text-center text-slate-500 py-8">
+            <td colspan="11" class="text-center text-slate-500 py-8">
               {{ items.length === 0 ? 'No items yet. Click "New item" to add one.' : 'No items match your filter.' }}
             </td>
           </tr>
@@ -189,6 +216,7 @@ async function onDelete() {
             v-for="item in filtered"
             :key="item.id"
             class="hover:bg-slate-800/50 cursor-pointer"
+            :class="isLowStock(item) ? 'bg-red-950/30' : ''"
             @click="openEdit(item)"
           >
             <td class="px-4 py-3 font-mono text-slate-200">{{ item.code }}</td>
@@ -209,7 +237,17 @@ async function onDelete() {
                 :title="`${instanceCounts[item.id] ?? 0} instance(s)`"
               >{{ instanceCounts[item.id] ?? 0 }} inst</span>
             </td>
-            <td class="px-4 py-3 font-mono text-slate-400">{{ item.serial || '—' }}</td>
+            <td class="px-4 py-3 text-right tabular-nums text-slate-300">{{ item.quantity_on_hand ?? 0 }}</td>
+            <td class="px-4 py-3 text-right tabular-nums text-slate-400">
+              {{ item.type === 'tool' ? outFor(item) : '—' }}
+            </td>
+            <td
+              class="px-4 py-3 text-right tabular-nums font-semibold"
+              :class="isLowStock(item) ? 'text-red-400' : 'text-slate-300'"
+            >
+              {{ availableFor(item) }}
+            </td>
+            <td class="px-4 py-3 text-right tabular-nums text-slate-400">{{ item.reorder_threshold ?? 0 }}</td>
             <td class="px-4 py-3 text-slate-400">{{ item.category || '—' }}</td>
             <td class="px-4 py-3">
               <span v-if="item.active" class="text-emerald-400">●</span>

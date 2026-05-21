@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 
@@ -11,6 +11,12 @@ const email = ref('')
 const password = ref('')
 const error = ref<string | null>(null)
 const submitting = ref(false)
+
+// Autofocus on mount so the admin can start typing immediately. The window
+// scan-keydown handler in useScan skips events fired from <input>, so this
+// doesn't interfere with the kiosk barcode flow on other pages.
+const emailInput = ref<HTMLInputElement | null>(null)
+onMounted(() => emailInput.value?.focus())
 
 async function onSubmit() {
   if (submitting.value) return
@@ -39,6 +45,7 @@ async function onSubmit() {
       <label class="flex flex-col gap-1">
         <span class="text-sm text-slate-400">Email</span>
         <input
+          ref="emailInput"
           v-model="email"
           type="email"
           required

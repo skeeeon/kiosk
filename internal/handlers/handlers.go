@@ -52,6 +52,8 @@ func isNotFound(err error) bool {
 }
 
 // userFromRecord projects a PB users record into the SPA-facing shape.
+// OpenCount is left at zero; callers that need it (the scan handler)
+// populate it via countOpenCheckoutsForUser.
 func userFromRecord(r *core.Record) *scan.User {
 	return &scan.User{
 		ID:    r.Id,
@@ -63,15 +65,21 @@ func userFromRecord(r *core.Record) *scan.User {
 }
 
 // itemFromRecord projects a PB items record into the SPA-facing shape.
+// Active and QuantityOnHand are filled from the record; OpenCount and
+// Holder default to zero/empty and are populated by the scan handler when
+// it returns the item to the SPA (cart browse skips them — it doesn't need
+// identify metadata).
 func itemFromRecord(r *core.Record) *scan.Item {
 	return &scan.Item{
-		ID:           r.Id,
-		Code:         r.GetString("code"),
-		Name:         r.GetString("name"),
-		Type:         r.GetString("type"),
-		Unit:         r.GetString("unit"),
-		TrackingMode: r.GetString("tracking_mode"),
-		Serial:       r.GetString("serial"),
-		Category:     r.GetString("category"),
+		ID:             r.Id,
+		Code:           r.GetString("code"),
+		Name:           r.GetString("name"),
+		Type:           r.GetString("type"),
+		Unit:           r.GetString("unit"),
+		TrackingMode:   r.GetString("tracking_mode"),
+		Serial:         r.GetString("serial"),
+		Category:       r.GetString("category"),
+		Active:         r.GetBool("active"),
+		QuantityOnHand: r.GetInt("quantity_on_hand"),
 	}
 }

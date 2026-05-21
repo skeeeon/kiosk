@@ -134,29 +134,31 @@ async function onSubmit() {
         Validation passed — uncheck "Dry run" and submit to write.
       </div>
 
-      <table
+      <div
         v-if="result.errors.length > 0"
-        class="w-full text-sm mt-3 rounded-lg overflow-hidden"
+        class="mt-3 rounded-lg overflow-hidden border border-slate-800 max-h-96 overflow-y-auto"
       >
-        <thead class="bg-slate-800 text-slate-300 text-left">
-          <tr>
-            <th class="px-3 py-2 font-medium w-16">Row</th>
-            <th class="px-3 py-2 font-medium w-48">Code</th>
-            <th class="px-3 py-2 font-medium">Message</th>
-          </tr>
-        </thead>
-        <tbody class="divide-y divide-slate-800">
-          <tr
-            v-for="(e, i) in result.errors"
-            :key="i"
-            class="bg-slate-900"
-          >
-            <td class="px-3 py-2 font-mono text-slate-300">{{ e.row }}</td>
-            <td class="px-3 py-2 font-mono text-amber-400">{{ e.code }}</td>
-            <td class="px-3 py-2 text-slate-300">{{ e.message }}</td>
-          </tr>
-        </tbody>
-      </table>
+        <table class="w-full text-sm">
+          <thead class="bg-slate-800 text-slate-300 text-left sticky top-0">
+            <tr>
+              <th class="px-3 py-2 font-medium w-16">Row</th>
+              <th class="px-3 py-2 font-medium w-48">Code</th>
+              <th class="px-3 py-2 font-medium">Message</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-800">
+            <tr
+              v-for="(e, i) in result.errors"
+              :key="i"
+              class="bg-slate-900"
+            >
+              <td class="px-3 py-2 font-mono text-slate-300">{{ e.row }}</td>
+              <td class="px-3 py-2 font-mono text-amber-400">{{ e.code }}</td>
+              <td class="px-3 py-2 text-slate-300">{{ e.message }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </section>
   </main>
 </template>

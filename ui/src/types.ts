@@ -17,6 +17,7 @@ export interface User {
   name: string
   role: string
   email?: string
+  open_count: number
 }
 
 export interface Item {
@@ -28,6 +29,10 @@ export interface Item {
   tracking_mode: 'quantity' | 'serialized'
   serial?: string
   category?: string
+  active: boolean
+  quantity_on_hand: number
+  open_count: number
+  holder?: string
 }
 
 export interface ItemInstance {

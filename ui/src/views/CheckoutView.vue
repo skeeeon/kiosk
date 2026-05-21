@@ -5,6 +5,7 @@ import ScanInput from '../components/ScanInput.vue'
 import CartTable from '../components/CartTable.vue'
 import ItemBrowseDialog from '../components/ItemBrowseDialog.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
+import IdentifyPanel from '../components/IdentifyPanel.vue'
 import { useCart } from '../composables/useCart'
 import { useKioskIdentity } from '../composables/useKioskIdentity'
 import { useSessionStore } from '../stores/session'
@@ -40,7 +41,29 @@ const committing = ref(false)
 const browseOpen = ref(false)
 const browsePending = ref(false)
 const crossUserConfirmOpen = ref(false)
+const cancelConfirmOpen = ref(false)
 let dismissHandle: ReturnType<typeof setTimeout> | null = null
+
+// identify holds the result of an item scan that landed before a badge —
+// the splash promises "scan an item code to identify it" and this drives
+// the panel that delivers on that. Cleared on next badge / item-with-cart
+// scan or via the panel's Dismiss button. Auto-dismisses so a curious
+// peek doesn't lock the splash forever.
+const identify = ref<{ item: Item | null; instance: InstanceMatch | null } | null>(null)
+const IDENTIFY_TIMEOUT_MS = 15000
+let identifyDismissHandle: ReturnType<typeof setTimeout> | null = null
+function showIdentify(payload: { item: Item | null; instance: InstanceMatch | null }) {
+  identify.value = payload
+  if (identifyDismissHandle) clearTimeout(identifyDismissHandle)
+  identifyDismissHandle = setTimeout(() => { identify.value = null }, IDENTIFY_TIMEOUT_MS)
+}
+function dismissIdentify() {
+  if (identifyDismissHandle) {
+    clearTimeout(identifyDismissHandle)
+    identifyDismissHandle = null
+  }
+  identify.value = null
+}
 
 // Ref to the scrollable cart-lines container so we can snap to the latest
 // addition. Called explicitly from the add handlers (scan + browse) rather
@@ -126,7 +149,11 @@ async function onScan(raw: string) {
     }
     try {
       await c.start(u.code)
-      session.setFlash('info', `Welcome, ${u.name}`)
+      dismissIdentify()
+      const welcome = u.open_count > 0
+        ? `Welcome, ${u.name} — ${u.open_count} item${u.open_count === 1 ? '' : 's'} out`
+        : `Welcome, ${u.name}`
+      session.setFlash('info', welcome)
     } catch (e) {
       handleApiError(e)
     }
@@ -135,7 +162,14 @@ async function onScan(raw: string) {
 
   if (result.type === 'item' || result.type === 'item_instance') {
     if (!cart.value) {
-      session.setFlash('warn', 'Scan your badge first')
+      // Splash identify: render the scanned item's info instead of nagging
+      // for a badge. The promise on the splash is "scan an item code to
+      // identify it"; this is where that lands.
+      if (result.type === 'item_instance') {
+        showIdentify({ item: null, instance: result.record as InstanceMatch })
+      } else {
+        showIdentify({ item: result.record as Item, instance: null })
+      }
       return
     }
     // For an instance scan, we pass the instance's own code — the backend
@@ -176,12 +210,27 @@ async function onRemove(id: string) {
 }
 
 async function onCancel() {
+  // Empty carts cancel without a prompt — there's nothing to lose. Non-empty
+  // carts surface the line count so a fat-finger doesn't discard work.
+  if (cart.value && cart.value.lines.length > 0) {
+    cancelConfirmOpen.value = true
+    return
+  }
+  await doCancel()
+}
+
+async function doCancel() {
   try {
     await c.cancel()
     session.setFlash('info', 'Session ended')
   } catch (e) {
     handleApiError(e)
   }
+}
+
+function onConfirmCancel() {
+  cancelConfirmOpen.value = false
+  void doCancel()
 }
 
 async function onBrowsePick(code: string) {
@@ -374,22 +423,30 @@ const flashClasses = {
   </main>
 
   <main v-else-if="!cart" class="flex-1 flex flex-col items-center justify-center px-8 py-16 text-center gap-10">
-    <div v-if="splashLogoUrl || splashTagline" class="flex flex-col items-center gap-4">
-      <img
-        v-if="splashLogoUrl"
-        :src="splashLogoUrl"
-        alt="logo"
-        class="h-28 md:h-36 w-auto object-contain"
-        @error="splashLogoBroken = true"
-      />
-      <p v-if="splashTagline" class="text-xl text-slate-400 max-w-2xl">
-        {{ splashTagline }}
-      </p>
-    </div>
-    <div class="max-w-2xl">
-      <p class="text-5xl font-bold tracking-tight mb-4">Scan your badge to begin</p>
-      <p class="text-xl text-slate-400">Or scan an item code to identify it.</p>
-    </div>
+    <IdentifyPanel
+      v-if="identify"
+      :item="identify.item"
+      :instance="identify.instance"
+      @dismiss="dismissIdentify"
+    />
+    <template v-else>
+      <div v-if="splashLogoUrl || splashTagline" class="flex flex-col items-center gap-4">
+        <img
+          v-if="splashLogoUrl"
+          :src="splashLogoUrl"
+          alt="logo"
+          class="h-28 md:h-36 w-auto object-contain"
+          @error="splashLogoBroken = true"
+        />
+        <p v-if="splashTagline" class="text-xl text-slate-400 max-w-2xl">
+          {{ splashTagline }}
+        </p>
+      </div>
+      <div class="max-w-2xl">
+        <p class="text-5xl font-bold tracking-tight mb-4">Scan your badge to begin</p>
+        <p class="text-xl text-slate-400">Or scan an item code to identify it.</p>
+      </div>
+    </template>
   </main>
 
   <main v-else class="flex-1 min-h-0 flex flex-col px-6 py-6 max-w-4xl mx-auto w-full">
@@ -455,6 +512,16 @@ const flashClasses = {
     confirm-label="Confirm return"
     @update:open="crossUserConfirmOpen = $event"
     @confirm="onConfirmCrossUser"
+  />
+
+  <ConfirmDialog
+    :open="cancelConfirmOpen"
+    title="Discard cart?"
+    :message="cart ? `You have ${cart.lines.length} item${cart.lines.length === 1 ? '' : 's'} in this cart. Cancelling will discard everything without committing.` : ''"
+    confirm-label="Discard cart"
+    destructive
+    @update:open="cancelConfirmOpen = $event"
+    @confirm="onConfirmCancel"
   />
   </div>
 </template>
