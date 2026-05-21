@@ -97,13 +97,17 @@ async function loadTransactions(page = 1) {
 // Fetches line counts for the current page in parallel. Each `getList` call
 // with perPage=1 returns `totalItems`, which avoids fetching the full payload
 // just to count rows. Cheap enough for 50 rows per page.
+//
+// requestKey: null disables the PB SDK's per-endpoint auto-cancellation —
+// without it, the SDK treats N parallel calls to the same collection as
+// duplicates and cancels all but the latest, leaving every cell as a "?".
 async function loadLineCounts(ids: string[]) {
   txLineCounts.value = {}
   const results = await Promise.all(
     ids.map((id) =>
       pb
         .collection('transaction_lines')
-        .getList(1, 1, { filter: `transaction = "${id}"` })
+        .getList(1, 1, { filter: `transaction = "${id}"`, requestKey: null })
         .then((r) => [id, r.totalItems] as const)
         .catch(() => [id, -1] as const),
     ),
