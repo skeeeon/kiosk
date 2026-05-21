@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, nextTick, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import ScanInput from '../components/ScanInput.vue'
 import CartTable from '../components/CartTable.vue'
@@ -41,6 +41,19 @@ const browseOpen = ref(false)
 const browsePending = ref(false)
 const crossUserConfirmOpen = ref(false)
 let dismissHandle: ReturnType<typeof setTimeout> | null = null
+
+// Ref to the scrollable cart-lines container so we can snap to the latest
+// addition. Called explicitly from the add handlers (scan + browse) rather
+// than via a length watcher — that way qty +/- changes and removals don't
+// trigger an unwanted scroll.
+const cartScroller = ref<HTMLElement | null>(null)
+async function scrollCartToBottom() {
+  await nextTick()
+  const el = cartScroller.value
+  if (el) {
+    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+  }
+}
 
 // True when the API error means "your cart is gone" (idle timeout or process
 // restart). Surfaces a friendly toast and resets local state so the next scan
@@ -139,6 +152,7 @@ async function onScan(raw: string) {
           session.setFlash('warn', `Returning ${first.slice('cross_user_return:'.length)}'s ${line.item_name}`)
         }
       }
+      await scrollCartToBottom()
     } catch (e) {
       handleApiError(e)
     }
@@ -183,6 +197,7 @@ async function onBrowsePick(code: string) {
     } else {
       session.setFlash('info', `Added ${line.item_name}`)
     }
+    await scrollCartToBottom()
   } catch (e) {
     handleApiError(e)
   } finally {
@@ -375,8 +390,13 @@ const flashClasses = {
   <main v-else class="flex-1 min-h-0 flex flex-col px-6 py-6 max-w-4xl mx-auto w-full">
     <!-- Scroll container: grows to fill the main, scrolls when lines exceed
          the available height. min-h-0 lets it shrink below content size so
-         the action row below stays in view and the logo/footer don't move. -->
-    <div class="flex-1 min-h-0 overflow-y-auto">
+         the action row below stays in view and the logo/footer don't move.
+         pr-3 + cart-scroll class give the scrollbar its own gutter so it
+         doesn't sit on top of the cart rows. -->
+    <div
+      ref="cartScroller"
+      class="flex-1 min-h-0 overflow-y-auto cart-scroll pr-3"
+    >
       <p
         v-if="cart.lines.length === 0"
         class="rounded-2xl bg-slate-900 border border-slate-800 border-dashed text-slate-500 text-center py-12 text-lg"
