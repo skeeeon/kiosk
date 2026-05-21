@@ -162,6 +162,7 @@ function onAdjusted(result: StockAdjustmentResult) {
             v-model.number="form.quantity_on_hand"
             type="number"
             step="1"
+            min="0"
             class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100"
           />
           <span class="text-xs text-slate-500">

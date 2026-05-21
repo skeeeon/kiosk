@@ -42,7 +42,33 @@ const browseOpen = ref(false)
 const browsePending = ref(false)
 const crossUserConfirmOpen = ref(false)
 const cancelConfirmOpen = ref(false)
-let dismissHandle: ReturnType<typeof setTimeout> | null = null
+
+// Receipt countdown: a normalized 0..1 ref that drives the progress bar at
+// the top of the success view. Each tick recomputes from the dismiss
+// deadline; the deadline gets pushed forward when the worker interacts
+// with the receipt (scroll, click), so reading the receipt doesn't trip
+// the auto-dismiss out from under them.
+const receiptProgress = ref(1)
+let receiptDismissAt = 0
+let receiptTickHandle: ReturnType<typeof setInterval> | null = null
+function startReceiptCountdown() {
+  receiptDismissAt = Date.now() + SUCCESS_SCREEN_MS
+  receiptProgress.value = 1
+  if (receiptTickHandle) clearInterval(receiptTickHandle)
+  receiptTickHandle = setInterval(() => {
+    const remaining = receiptDismissAt - Date.now()
+    if (remaining <= 0) {
+      dismissReceipt()
+      return
+    }
+    receiptProgress.value = remaining / SUCCESS_SCREEN_MS
+  }, 100)
+}
+function extendReceiptCountdown() {
+  if (!success.value) return
+  receiptDismissAt = Date.now() + SUCCESS_SCREEN_MS
+  receiptProgress.value = 1
+}
 
 // identify holds the result of an item scan that landed before a badge —
 // the splash promises "scan an item code to identify it" and this drives
@@ -117,9 +143,9 @@ const ACTION_TONE: Record<CartAction, string> = {
 }
 
 function dismissReceipt() {
-  if (dismissHandle) {
-    clearTimeout(dismissHandle)
-    dismissHandle = null
+  if (receiptTickHandle) {
+    clearInterval(receiptTickHandle)
+    receiptTickHandle = null
   }
   success.value = null
 }
@@ -273,8 +299,7 @@ async function doCommit() {
   try {
     const result = await c.commit()
     success.value = { result, lines: snapshotLines, userName: snapshotUser }
-    if (dismissHandle) clearTimeout(dismissHandle)
-    dismissHandle = setTimeout(dismissReceipt, SUCCESS_SCREEN_MS)
+    startReceiptCountdown()
   } catch (e) {
     handleApiError(e)
   } finally {
@@ -347,7 +372,15 @@ const flashClasses = {
     />
     <span v-else class="text-3xl md:text-5xl font-semibold tracking-wide shrink-0">Kiosk</span>
     <div v-if="cart" class="text-right shrink-0">
-      <p class="text-2xl text-slate-100">{{ cart.user_name }}</p>
+      <div class="flex items-center justify-end gap-2">
+        <span
+          v-if="cart.lines.length > 0"
+          class="inline-block px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 text-sm tabular-nums"
+        >
+          {{ cart.lines.length }} {{ cart.lines.length === 1 ? 'item' : 'items' }}
+        </span>
+        <p class="text-2xl text-slate-100">{{ cart.user_name }}</p>
+      </div>
       <p class="text-sm text-slate-500 font-mono">{{ cart.user_code }}</p>
     </div>
   </header>
@@ -356,10 +389,20 @@ const flashClasses = {
        more lines than fit. Unlike the cart, the scroll position stays at
        the top so the worker sees "Done / Thanks, {name}" and the first
        few lines first; they can scroll down to read the rest or hit the
-       Done button at the bottom. -->
+       Done button at the bottom. The countdown bar drains over
+       SUCCESS_SCREEN_MS; any scroll/click inside the main pushes it back
+       to full so a worker reading the receipt doesn't get bumped. -->
+  <div
+    v-if="success"
+    class="h-1 bg-emerald-500 transition-[width] duration-100 ease-linear shrink-0"
+    :style="{ width: `${Math.round(receiptProgress * 100)}%` }"
+    aria-hidden="true"
+  ></div>
   <main
     v-if="success"
     class="flex-1 min-h-0 overflow-y-auto flex flex-col items-center px-6 py-10"
+    @scroll.passive="extendReceiptCountdown"
+    @click="extendReceiptCountdown"
   >
     <div class="w-full max-w-2xl">
       <div class="text-center mb-6">
@@ -409,6 +452,10 @@ const flashClasses = {
           </div>
         </div>
       </div>
+
+      <p class="text-center text-xs text-slate-600 font-mono mt-4 select-all">
+        Tx {{ success.result.transaction_id }}
+      </p>
 
       <div class="flex justify-center mt-6">
         <button
@@ -492,7 +539,11 @@ const flashClasses = {
         :disabled="cart.lines.length === 0 || committing"
         @click="onCommit"
       >
-        {{ committing ? 'Committing…' : 'Commit' }}
+        <template v-if="committing">Finishing…</template>
+        <template v-else-if="cart.lines.length === 0">Finish</template>
+        <template v-else>
+          Finish · {{ cart.lines.length }} {{ cart.lines.length === 1 ? 'item' : 'items' }}
+        </template>
       </button>
     </div>
   </main>

@@ -53,6 +53,20 @@ const projected = computed(() =>
   form.mode === 'delta' ? props.currentQty + (form.value || 0) : (form.value || 0),
 )
 
+// Common reasons surface as one-tap chips above the textarea — most
+// adjustments fall into a handful of buckets. Tapping a chip drops the
+// label into the reason field; admin can append context (PO number,
+// shelf location, etc.) before submitting.
+const REASON_PRESETS = [
+  'Restock from PO',
+  'Physical count',
+  'Damaged / broken',
+  'Found extra',
+] as const
+function applyPreset(text: string) {
+  form.reason = text
+}
+
 async function submit() {
   if (inFlight) return
   if (!form.reason.trim()) {
@@ -121,16 +135,27 @@ async function submit() {
         </span>
       </label>
 
-      <label class="flex flex-col gap-1">
+      <div class="flex flex-col gap-1">
         <span class="text-sm text-slate-400">Reason</span>
+        <div class="flex flex-wrap gap-1.5">
+          <button
+            v-for="r in REASON_PRESETS"
+            :key="r"
+            type="button"
+            class="px-2 py-1 rounded-md text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700"
+            @click="applyPreset(r)"
+          >
+            {{ r }}
+          </button>
+        </div>
         <textarea
           v-model="form.reason"
           rows="2"
           required
           placeholder="e.g. restock from PO-42, found broken box, physical count"
-          class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 resize-none"
+          class="mt-1 rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 resize-none"
         ></textarea>
-      </label>
+      </div>
 
       <div class="flex justify-end gap-3 mt-2">
         <button

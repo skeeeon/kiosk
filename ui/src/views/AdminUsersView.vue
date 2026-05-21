@@ -20,10 +20,11 @@ async function load() {
   loading.value = true
   error.value = null
   try {
-    const res = await pb.collection('users').getList<WorkerRecord>(1, 500, {
+    // getFullList paginates internally so a roster larger than one page
+    // doesn't silently truncate the list.
+    users.value = await pb.collection('users').getFullList<WorkerRecord>({
       sort: '+code',
     })
-    users.value = res.items
   } catch (e) {
     error.value = (e as Error).message
   } finally {

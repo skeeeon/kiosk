@@ -28,11 +28,13 @@ async function load() {
   error.value = null
   try {
     const [itemsRes, instancesRes, opensRes] = await Promise.all([
-      pb.collection('items').getList<ItemRecord>(1, 500, { sort: '+code' }),
+      // getFullList paginates internally — avoids silently capping at 500
+      // for catalogs that grow past that.
+      pb.collection('items').getFullList<ItemRecord>({ sort: '+code' }),
       pb.collection('item_instances').getFullList<{ item: string }>({ fields: 'item' }),
       pb.collection('open_checkouts').getFullList<{ item: string }>({ fields: 'item' }),
     ])
-    items.value = itemsRes.items
+    items.value = itemsRes
     const instCounts: Record<string, number> = {}
     for (const i of instancesRes) instCounts[i.item] = (instCounts[i.item] ?? 0) + 1
     instanceCounts.value = instCounts
