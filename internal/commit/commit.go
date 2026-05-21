@@ -196,6 +196,14 @@ func Commit(app core.App, c *cart.Cart, id kioskctx.Identity, policy Policy, pub
 		}
 
 		result.LinesCount = len(c.Lines)
+
+		// Denormalize the line count onto the transaction so list views and
+		// the CSV export can render it without an N+1 COUNT(*) per row.
+		txRec.Set("lines_count", result.LinesCount)
+		if err := tx.Save(txRec); err != nil {
+			return fmt.Errorf("set lines_count on transaction: %w", err)
+		}
+
 		txCompleted = lineEvent{
 			Subject: fmt.Sprintf("kiosk.%s.transaction.complete", id.KioskCode),
 			Payload: map[string]any{

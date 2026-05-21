@@ -54,8 +54,11 @@ func (h *Handlers) CSVImport(re *core.RequestEvent) error {
 	if err != nil {
 		return re.BadRequestError("invalid CSV", err)
 	}
+	if len(rows) == 0 {
+		return re.BadRequestError("CSV is empty", nil)
+	}
 	if len(rows) < 2 {
-		return re.JSON(http.StatusOK, importResult{DryRun: dryRun})
+		return re.BadRequestError("CSV contains a header row but no data rows", nil)
 	}
 
 	headers := normalizeHeaders(rows[0])
@@ -218,8 +221,8 @@ func parseCSVInt(s string) int {
 
 // TransactionsExportCSV streams completed transactions as CSV. Optional
 // ?from= and ?to= ISO timestamps narrow the window; both are inclusive on
-// completed_at. Line counts are fetched per-transaction (one query each) —
-// fine for thousands of rows, would want batching for millions.
+// completed_at. Line counts are read from transactions.lines_count
+// (denormalized at commit time), so the export is a single SELECT.
 func (h *Handlers) TransactionsExportCSV(re *core.RequestEvent) error {
 	if err := h.requireAdmin(re); err != nil {
 		return err
@@ -276,13 +279,11 @@ func (h *Handlers) TransactionsExportCSV(re *core.RequestEvent) error {
 			userCode = u.GetString("code")
 			userName = u.GetString("name")
 		}
-		lineCount, _ := h.App.CountRecords("transaction_lines", dbx.HashExp{"transaction": t.Id})
-
 		if err := cw.Write([]string{
 			t.Id,
 			t.GetDateTime("completed_at").Time().Format(time.RFC3339),
 			userCode, userName,
-			fmt.Sprintf("%d", lineCount),
+			fmt.Sprintf("%d", t.GetInt("lines_count")),
 			t.GetString("kiosk_code"),
 			t.GetString("location_code"),
 		}); err != nil {

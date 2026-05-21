@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { pb } from '../lib/pb'
-import { api } from '../lib/api'
+import { api, download } from '../lib/api'
 import { useAdminToast } from '../composables/useAdminToast'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import TransactionDetailDialog, {
@@ -30,6 +30,7 @@ interface TxRow {
   started_at: string
   completed_at: string
   status: string
+  lines_count: number
   expand?: { user?: { id: string; code: string; name: string } }
 }
 
@@ -43,9 +44,6 @@ interface LowStockRow {
 const openRows = ref<OpenRow[]>([])
 const openSearch = ref('')
 const txRows = ref<TxRow[]>([])
-// Line counts are fetched per-row after the page loads. Keyed by transaction
-// id; undefined means "not loaded yet" so the cell shows a dash rather than 0.
-const txLineCounts = ref<Record<string, number>>({})
 const txPage = ref(1)
 const txTotalPages = ref(1)
 const lowStockRows = ref<LowStockRow[]>([])
@@ -86,35 +84,11 @@ async function loadTransactions(page = 1) {
     txRows.value = res.items
     txPage.value = res.page
     txTotalPages.value = res.totalPages
-    void loadLineCounts(res.items.map((t) => t.id))
   } catch (e) {
     error.value = (e as Error).message
   } finally {
     loading.value = false
   }
-}
-
-// Fetches line counts for the current page in parallel. Each `getList` call
-// with perPage=1 returns `totalItems`, which avoids fetching the full payload
-// just to count rows. Cheap enough for 50 rows per page.
-//
-// requestKey: null disables the PB SDK's per-endpoint auto-cancellation —
-// without it, the SDK treats N parallel calls to the same collection as
-// duplicates and cancels all but the latest, leaving every cell as a "?".
-async function loadLineCounts(ids: string[]) {
-  txLineCounts.value = {}
-  const results = await Promise.all(
-    ids.map((id) =>
-      pb
-        .collection('transaction_lines')
-        .getList(1, 1, { filter: `transaction = "${id}"`, requestKey: null })
-        .then((r) => [id, r.totalItems] as const)
-        .catch(() => [id, -1] as const),
-    ),
-  )
-  const next: Record<string, number> = {}
-  for (const [id, n] of results) next[id] = n
-  txLineCounts.value = next
 }
 
 async function loadLowStock() {
@@ -171,8 +145,12 @@ async function onRebuild() {
   }
 }
 
-function csvExportUrl(): string {
-  return '/api/kiosk/transactions.csv'
+async function exportCsv() {
+  try {
+    await download('/api/kiosk/transactions.csv')
+  } catch (e) {
+    toast.error(`Export failed: ${(e as Error).message}`)
+  }
 }
 
 watch(
@@ -380,12 +358,13 @@ function openTxDetail(t: TxRow) {
     <!-- Recent transactions -->
     <div v-else-if="tab === 'recent'" class="flex flex-col gap-3">
       <div class="flex justify-end">
-        <a
-          :href="csvExportUrl()"
+        <button
+          type="button"
           class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm"
+          @click="exportCsv"
         >
           Export CSV
-        </a>
+        </button>
       </div>
       <div class="rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden">
       <table class="w-full text-left text-sm">
@@ -419,11 +398,7 @@ function openTxDetail(t: TxRow) {
             </td>
             <td class="px-4 py-3 font-mono text-slate-400">{{ t.kiosk_code }}</td>
             <td class="px-4 py-3 text-slate-400">{{ t.location_code }}</td>
-            <td class="px-4 py-3 tabular-nums text-slate-300">
-              <template v-if="txLineCounts[t.id] === undefined">—</template>
-              <template v-else-if="txLineCounts[t.id] < 0">?</template>
-              <template v-else>{{ txLineCounts[t.id] }}</template>
-            </td>
+            <td class="px-4 py-3 tabular-nums text-slate-300">{{ t.lines_count }}</td>
             <td class="px-4 py-3">
               <span class="inline-block px-2 py-0.5 rounded text-xs bg-emerald-900/60 text-emerald-200">
                 {{ t.status }}

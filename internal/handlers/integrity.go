@@ -30,24 +30,26 @@ func expectedOpenCheckouts(app core.App) (map[openKey]int, int, error) {
 		return nil, 0, err
 	}
 
-	txCache := map[string]*core.Record{}
-	getTx := func(id string) (*core.Record, error) {
-		if r, ok := txCache[id]; ok {
-			return r, nil
-		}
-		r, err := app.FindRecordById("transactions", id)
-		if err != nil {
-			return nil, err
-		}
-		txCache[id] = r
-		return r, nil
+	// One bulk fetch instead of per-line FindRecordById: the prior version
+	// did N round-trips through an in-process cache; this is a single SELECT
+	// followed by map lookups.
+	txs, err := app.FindRecordsByFilter("transactions", "", "", 0, 0)
+	if err != nil {
+		return nil, 0, fmt.Errorf("load transactions: %w", err)
+	}
+	txByID := make(map[string]*core.Record, len(txs))
+	for _, t := range txs {
+		txByID[t.Id] = t
 	}
 
 	expected := map[openKey]int{}
 	for _, line := range lines {
-		tx, err := getTx(line.GetString("transaction"))
-		if err != nil {
-			return nil, 0, err
+		tx, ok := txByID[line.GetString("transaction")]
+		if !ok {
+			// Orphan line (parent transaction missing) — skip rather than
+			// fail the whole integrity check; the rebuild path doesn't need
+			// to fabricate counts for a transaction that no longer exists.
+			continue
 		}
 		if tx.GetString("status") != "completed" {
 			continue

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { pb } from '../lib/pb'
+import { download } from '../lib/api'
 import ItemDialog from '../components/ItemDialog.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import { useAdminToast } from '../composables/useAdminToast'
@@ -87,6 +88,14 @@ function isFKConstraintError(msg: string): boolean {
   return m.includes('foreign key') || m.includes('constraint') || m.includes('referenced')
 }
 
+async function exportCsv() {
+  try {
+    await download('/api/kiosk/items.csv')
+  } catch (e) {
+    toast.error(`Export failed: ${(e as Error).message}`)
+  }
+}
+
 async function onDelete() {
   if (!deleting.value) return
   error.value = null
@@ -115,12 +124,13 @@ async function onDelete() {
         <p class="text-sm text-slate-400">{{ items.length }} total</p>
       </div>
       <div class="flex items-center gap-3">
-        <a
-          href="/api/kiosk/items.csv"
+        <button
+          type="button"
           class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm"
+          @click="exportCsv"
         >
           Export CSV
-        </a>
+        </button>
         <button
           type="button"
           class="px-4 py-2 rounded-lg bg-brand-primary hover:bg-brand-primary-hover text-white font-medium"

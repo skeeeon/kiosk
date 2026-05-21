@@ -1,5 +1,7 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import type { CartAction, CartLine } from '../types'
+import { useKioskIdentity } from '../composables/useKioskIdentity'
 
 defineProps<{ lines: CartLine[] }>()
 
@@ -8,8 +10,11 @@ const emit = defineEmits<{
   remove: [id: string]
 }>()
 
-// Keep in sync with cart.MaxQty in internal/cart/store.go.
-const MAX_QTY = 99
+// MaxQty comes from /api/kiosk/identity so client and server share one source
+// of truth (cart.MaxQty in Go). 99 is the bootstrap fallback used before the
+// identity payload lands.
+const { identity } = useKioskIdentity()
+const maxQty = computed(() => identity.value?.max_qty ?? 99)
 
 // Tools can be checked out or returned; consumables can only be consumed.
 // Source of truth for this rule lives in cart.ValidActionForType (Go).
@@ -110,7 +115,7 @@ function warningClasses(w: string): string {
           <button
             type="button"
             class="w-11 h-11 rounded-lg bg-slate-800 text-xl hover:bg-slate-700 disabled:opacity-40"
-            :disabled="line.qty >= MAX_QTY"
+            :disabled="line.qty >= maxQty"
             aria-label="Increase quantity"
             @click="emit('update', line.id, { qty: line.qty + 1 })"
           >+</button>

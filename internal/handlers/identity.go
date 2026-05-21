@@ -6,6 +6,7 @@ import (
 
 	"github.com/pocketbase/pocketbase/core"
 
+	"github.com/skeeeon/kiosk/internal/cart"
 	"github.com/skeeeon/kiosk/internal/kioskctx"
 )
 
@@ -21,12 +22,19 @@ type brandingPayload struct {
 type identityPayload struct {
 	kioskctx.Identity
 	Branding brandingPayload `json:"branding"`
+	// MaxQty is published so the SPA's +/- button can disable at the same
+	// ceiling the server enforces, without hardcoding the constant on both
+	// sides. Source of truth is cart.MaxQty.
+	MaxQty int `json:"max_qty"`
 }
 
 // Identity returns the kiosk's stable identity (kiosk_code + location_code)
 // plus the configured branding. The SPA fetches this once on boot.
 func (h *Handlers) Identity(re *core.RequestEvent) error {
-	out := identityPayload{Identity: kioskctx.Get()}
+	out := identityPayload{
+		Identity: kioskctx.Get(),
+		MaxQty:   cart.MaxQty,
+	}
 	if strings.TrimSpace(h.Cfg.Branding.LogoPath) != "" {
 		out.Branding.LogoURL = "/branding/logo"
 	}

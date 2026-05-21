@@ -8,6 +8,7 @@ export interface KioskIdentity {
   kiosk_code: string
   location_code: string
   branding: KioskBranding
+  max_qty: number
 }
 
 export interface User {
