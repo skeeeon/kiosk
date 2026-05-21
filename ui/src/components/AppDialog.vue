@@ -46,7 +46,7 @@ const sizeClass = computed(() => {
       />
       <DialogContent
         :class="[
-          'fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[92vw] max-h-[90vh] overflow-y-auto bg-slate-900 rounded-2xl border border-slate-800 p-6 z-40 shadow-2xl',
+          'fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[92vw] max-h-[90vh] flex flex-col overflow-y-auto bg-slate-900 rounded-2xl border border-slate-800 p-6 z-40 shadow-2xl',
           sizeClass,
         ]"
       >

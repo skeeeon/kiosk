@@ -110,16 +110,20 @@ const TYPE_FILTERS: { value: TypeFilter; label: string }[] = [
     description="Tap an item to add it to the cart."
     @update:open="emit('update:open', $event)"
   >
-    <div class="flex flex-col gap-3">
+    <!-- flex-1 min-h-0 lets the items list inside use overflow-y-auto without
+         the dialog also showing its outer scrollbar. AppDialog's DialogContent
+         is flex-col + max-h-[90vh], so this fills the available dialog height
+         and the items ul claims what's left after the search / filter chrome. -->
+    <div class="flex-1 min-h-0 flex flex-col gap-3">
       <input
         v-model="query"
         type="search"
         placeholder="Search by name or code"
         autocomplete="off"
-        class="w-full rounded-lg bg-slate-800 border border-slate-700 px-3 py-3 text-slate-100 text-base"
+        class="w-full rounded-lg bg-slate-800 border border-slate-700 px-3 py-3 text-slate-100 text-base shrink-0"
       />
 
-      <div class="inline-flex rounded-xl overflow-hidden border border-slate-700 self-start">
+      <div class="inline-flex rounded-xl overflow-hidden border border-slate-700 self-start shrink-0">
         <button
           v-for="opt in TYPE_FILTERS"
           :key="opt.value"
@@ -138,7 +142,7 @@ const TYPE_FILTERS: { value: TypeFilter; label: string }[] = [
 
       <ul
         v-if="items.length > 0"
-        class="flex flex-col gap-2 max-h-[55vh] overflow-y-auto -mx-1 px-1"
+        class="flex-1 min-h-0 flex flex-col gap-2 overflow-y-auto -mx-1 px-1"
       >
         <li v-for="item in items" :key="item.id">
           <button
@@ -174,12 +178,12 @@ const TYPE_FILTERS: { value: TypeFilter; label: string }[] = [
       </ul>
       <p
         v-else-if="!loading"
-        class="text-center text-slate-500 py-8"
+        class="flex-1 min-h-0 text-center text-slate-500 py-8"
       >
         {{ query ? 'No items match that search.' : 'No items available.' }}
       </p>
 
-      <div class="flex items-center justify-between gap-3 pt-1">
+      <div class="flex items-center justify-between gap-3 pt-1 shrink-0">
         <span class="text-xs text-slate-500">
           <template v-if="loading">Loading…</template>
           <template v-else>{{ items.length }} shown</template>
@@ -194,7 +198,7 @@ const TYPE_FILTERS: { value: TypeFilter; label: string }[] = [
         </button>
       </div>
 
-      <div class="flex justify-end pt-2">
+      <div class="flex justify-end pt-2 shrink-0">
         <button
           type="button"
           class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200"

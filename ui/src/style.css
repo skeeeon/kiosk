@@ -18,26 +18,35 @@ html, body, #app {
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 
-/* Custom scrollbar for the cart's scrollable lines pane. Thin, dark, and
-   anchored to its own gutter so it never overlaps a row or shifts the row
-   layout when items push the list past the visible area. The container is
-   marked with `cart-scroll`; pair with `overflow-y-auto` and a right
-   padding (pr-3) to give the rows breathing room from the bar. */
-.cart-scroll {
-  scrollbar-gutter: stable;
+/* Consistent scrollbar styling across the whole app — the cart pane, every
+   AppDialog modal, the admin views' main scroll area, anywhere overflow
+   produces a bar. Thin, dark, slate-700 thumb on a transparent track with
+   a slightly lighter hover. Firefox uses scrollbar-width / scrollbar-color
+   (inheritable from html); Chromium / WebKit uses the unscoped pseudo-
+   elements which apply per scrollable element. */
+html {
   scrollbar-width: thin;
   scrollbar-color: #334155 transparent; /* slate-700 thumb, transparent track */
 }
-.cart-scroll::-webkit-scrollbar {
+::-webkit-scrollbar {
   width: 8px;
+  height: 8px;
 }
-.cart-scroll::-webkit-scrollbar-track {
+::-webkit-scrollbar-track {
   background: transparent;
 }
-.cart-scroll::-webkit-scrollbar-thumb {
+::-webkit-scrollbar-thumb {
   background-color: #334155; /* slate-700 */
   border-radius: 4px;
 }
-.cart-scroll::-webkit-scrollbar-thumb:hover {
+::-webkit-scrollbar-thumb:hover {
   background-color: #475569; /* slate-600 */
+}
+
+/* Cart-specific behavior: reserve the scrollbar's gutter even when the
+   list isn't yet long enough to need it, so adding the line that crosses
+   the overflow threshold doesn't shift every row sideways. The visual
+   styling is inherited from the global rules above. */
+.cart-scroll {
+  scrollbar-gutter: stable;
 }
