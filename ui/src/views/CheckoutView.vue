@@ -243,9 +243,9 @@ const flashClasses = {
 <template>
   <!-- Single flex-col root so RouterView's flex-1 class can apply and the
        inner mains can use flex-1 to fill the viewport area between the
-       app-level header and footer. Without this wrapper the multi-root
-       fragment broke vertical centering of the splash. -->
-  <div class="flex-1 flex flex-col">
+       app-level header and footer. min-h-0 lets the inner cart-lines area
+       overflow without pushing the chrome and footer off-screen. -->
+  <div class="flex-1 flex flex-col min-h-0">
   <ScanInput @scan="onScan" />
 
   <Transition
@@ -372,8 +372,11 @@ const flashClasses = {
     </div>
   </main>
 
-  <main v-else class="flex-1 flex flex-col px-6 py-6 max-w-4xl mx-auto w-full">
-    <div class="flex-1">
+  <main v-else class="flex-1 min-h-0 flex flex-col px-6 py-6 max-w-4xl mx-auto w-full">
+    <!-- Scroll container: grows to fill the main, scrolls when lines exceed
+         the available height. min-h-0 lets it shrink below content size so
+         the action row below stays in view and the logo/footer don't move. -->
+    <div class="flex-1 min-h-0 overflow-y-auto">
       <p
         v-if="cart.lines.length === 0"
         class="rounded-2xl bg-slate-900 border border-slate-800 border-dashed text-slate-500 text-center py-12 text-lg"

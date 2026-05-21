@@ -58,47 +58,32 @@ function warningClasses(w: string): string {
 </script>
 
 <template>
-  <ul class="flex flex-col gap-3">
+  <ul class="flex flex-col gap-2">
     <li
       v-for="line in lines"
       :key="line.id"
-      class="rounded-2xl bg-slate-900 border border-slate-800 p-5 flex flex-col gap-3"
+      class="rounded-xl bg-slate-900 border border-slate-800 p-3 flex flex-col gap-2"
     >
-      <div class="flex items-baseline justify-between gap-4">
-        <div class="min-w-0">
-          <p class="text-2xl font-semibold truncate">{{ line.item_name }}</p>
-          <p class="text-sm text-slate-400 truncate">
+      <!-- Primary row: item info on the left, controls inline on the right.
+           Wraps when narrower than ~640px so qty/delete can drop to a new
+           line rather than crushing the item name. -->
+      <div class="flex items-center gap-3 flex-wrap">
+        <div class="min-w-0 flex-1">
+          <p class="text-xl font-semibold truncate leading-tight">{{ line.item_name }}</p>
+          <p class="text-xs text-slate-400 truncate font-mono">
             {{ line.item_code }}<span v-if="line.serial"> · SN {{ line.serial }}</span>
           </p>
         </div>
-        <button
-          type="button"
-          class="shrink-0 w-12 h-12 rounded-full bg-slate-800 text-slate-300 hover:bg-red-700 hover:text-white text-2xl leading-none"
-          aria-label="Remove line"
-          @click="emit('remove', line.id)"
-        >
-          ×
-        </button>
-      </div>
 
-      <div
-        v-for="w in line.warnings ?? []"
-        :key="w"
-        :class="warningClasses(w)"
-      >
-        {{ warningLabel(w) }}
-      </div>
-
-      <div class="flex flex-wrap items-center gap-3">
         <div
           v-if="actionsFor(line).length > 1"
-          class="inline-flex rounded-xl overflow-hidden border border-slate-700"
+          class="inline-flex rounded-lg overflow-hidden border border-slate-700 shrink-0"
         >
           <button
             v-for="opt in actionsFor(line)"
             :key="opt.value"
             type="button"
-            class="px-4 py-3 text-base font-medium transition-colors"
+            class="px-3 py-2 text-sm font-medium transition-colors"
             :class="actionClasses(line, opt.value)"
             @click="emit('update', line.id, { action: opt.value })"
           >
@@ -107,29 +92,48 @@ function warningClasses(w: string): string {
         </div>
         <span
           v-else-if="actionsFor(line).length === 1"
-          class="px-4 py-3 rounded-xl text-base font-medium"
+          class="px-3 py-2 rounded-lg text-sm font-medium shrink-0"
           :class="actionClasses(line, line.action)"
         >
           {{ actionsFor(line)[0].label }}
         </span>
 
-        <div v-if="line.tracking_mode !== 'serialized'" class="inline-flex items-center gap-2 ml-auto">
+        <div v-if="line.tracking_mode !== 'serialized'" class="inline-flex items-center gap-1 shrink-0">
           <button
             type="button"
-            class="w-12 h-12 rounded-xl bg-slate-800 text-2xl hover:bg-slate-700 disabled:opacity-40"
+            class="w-11 h-11 rounded-lg bg-slate-800 text-xl hover:bg-slate-700 disabled:opacity-40"
             :disabled="line.qty <= 1"
             aria-label="Decrease quantity"
             @click="emit('update', line.id, { qty: line.qty - 1 })"
           >−</button>
-          <span class="w-12 text-center text-2xl tabular-nums">{{ line.qty }}</span>
+          <span class="w-10 text-center text-xl tabular-nums">{{ line.qty }}</span>
           <button
             type="button"
-            class="w-12 h-12 rounded-xl bg-slate-800 text-2xl hover:bg-slate-700 disabled:opacity-40"
+            class="w-11 h-11 rounded-lg bg-slate-800 text-xl hover:bg-slate-700 disabled:opacity-40"
             :disabled="line.qty >= MAX_QTY"
             aria-label="Increase quantity"
             @click="emit('update', line.id, { qty: line.qty + 1 })"
           >+</button>
         </div>
+
+        <button
+          type="button"
+          class="shrink-0 w-11 h-11 rounded-lg bg-slate-800 text-slate-300 hover:bg-red-700 hover:text-white text-2xl leading-none"
+          aria-label="Remove line"
+          @click="emit('remove', line.id)"
+        >
+          ×
+        </button>
+      </div>
+
+      <!-- Warnings stay full-width below; cross-user returns especially need
+           to be obvious before commit. -->
+      <div
+        v-for="w in line.warnings ?? []"
+        :key="w"
+        :class="warningClasses(w)"
+      >
+        {{ warningLabel(w) }}
       </div>
     </li>
   </ul>
