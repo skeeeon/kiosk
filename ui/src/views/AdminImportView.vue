@@ -69,8 +69,8 @@ async function onSubmit() {
 
     <p v-if="!managed" class="text-sm text-slate-400 mb-6">
       Upload a CSV with columns:
-      <code class="font-mono text-slate-300">code, name, type, unit, tracking_mode, serial, category, rfid_epc, active, notes, quantity_on_hand, reorder_threshold</code>.
-      Rows match existing items by <code class="font-mono text-slate-300">code</code> (upsert). Items not in the CSV are left alone.
+      <code class="font-mono text-slate-300">code, name, type, unit, tracking_mode, category, active, notes, quantity_on_hand, reorder_threshold</code>.
+      Rows match existing items by <code class="font-mono text-slate-300">code</code> (upsert). Items not in the CSV are left alone. Per-unit serials and RFID EPCs belong on item instances, not the SKU row.
     </p>
 
     <form

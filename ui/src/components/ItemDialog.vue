@@ -26,20 +26,45 @@ const emit = defineEmits<{
   save: [data: Partial<ItemRecord>]
 }>()
 
+// `kind` collapses the two underlying axes (type, tracking_mode) into one
+// picker. consumable+serialized isn't a real combination, so we don't expose
+// it. Mapping is one-way deterministic on save; on load we project the two
+// fields back into the right kind.
+type Kind = 'tool-qty' | 'tool-serial' | 'consumable'
+
+function kindFromItem(it: Partial<ItemRecord> | null): Kind {
+  if (!it) return 'tool-qty'
+  if (it.type === 'consumable') return 'consumable'
+  return it.tracking_mode === 'serialized' ? 'tool-serial' : 'tool-qty'
+}
+
+function applyKindToForm(k: Kind) {
+  if (k === 'consumable') {
+    form.type = 'consumable'
+    form.tracking_mode = 'quantity'
+  } else if (k === 'tool-serial') {
+    form.type = 'tool'
+    form.tracking_mode = 'serialized'
+  } else {
+    form.type = 'tool'
+    form.tracking_mode = 'quantity'
+  }
+}
+
 const form = reactive<Partial<ItemRecord>>({
   code: '',
   name: '',
   type: 'tool',
   unit: 'each',
   tracking_mode: 'quantity',
-  serial: '',
   category: '',
-  rfid_epc: '',
   active: true,
   notes: '',
   quantity_on_hand: 0,
   reorder_threshold: 0,
 })
+
+const kind = ref<Kind>('tool-qty')
 
 watch(
   () => props.open,
@@ -51,21 +76,23 @@ watch(
       type: 'tool',
       unit: 'each',
       tracking_mode: 'quantity',
-      serial: '',
       category: '',
-      rfid_epc: '',
       active: true,
       notes: '',
       quantity_on_hand: 0,
       reorder_threshold: 0,
       ...(props.item ?? {}),
     })
+    kind.value = kindFromItem(props.item)
   },
   { immediate: true },
 )
 
+watch(kind, (k) => applyKindToForm(k))
+
 const isEdit = computed(() => !!props.item?.id)
-const isSerialized = computed(() => form.tracking_mode === 'serialized')
+const isSerialized = computed(() => kind.value === 'tool-serial')
+const isConsumable = computed(() => kind.value === 'consumable')
 
 const adjustOpen = ref(false)
 const historyOpen = ref(false)
@@ -110,28 +137,25 @@ function onAdjusted(result: StockAdjustmentResult) {
         </label>
       </div>
 
-      <div class="grid grid-cols-3 gap-3">
+      <div class="grid grid-cols-2 gap-3">
         <label class="flex flex-col gap-1">
-          <span class="text-sm text-slate-400">Type</span>
+          <span class="text-sm text-slate-400">Kind</span>
           <select
-            v-model="form.type"
+            v-model="kind"
             :disabled="managed"
             class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 disabled:opacity-60 disabled:cursor-not-allowed"
           >
-            <option value="tool">Tool</option>
+            <option value="tool-qty">Tool — quantity tracked</option>
+            <option value="tool-serial">Tool — serialized</option>
             <option value="consumable">Consumable</option>
           </select>
-        </label>
-        <label class="flex flex-col gap-1">
-          <span class="text-sm text-slate-400">Tracking</span>
-          <select
-            v-model="form.tracking_mode"
-            :disabled="managed"
-            class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 disabled:opacity-60 disabled:cursor-not-allowed"
-          >
-            <option value="quantity">Quantity</option>
-            <option value="serialized">Serialized</option>
-          </select>
+          <span class="text-xs text-slate-500">
+            {{ isSerialized
+              ? 'Each unit has its own identity (per-unit code, serial, RFID).'
+              : isConsumable
+                ? 'Depletes when consumed — no checkout/return.'
+                : 'A pool of interchangeable units, tracked by quantity.' }}
+          </span>
         </label>
         <label class="flex flex-col gap-1">
           <span class="text-sm text-slate-400">Unit</span>
@@ -209,27 +233,16 @@ function onAdjusted(result: StockAdjustmentResult) {
         </label>
       </div>
 
-      <div class="grid grid-cols-2 gap-3">
-        <label class="flex flex-col gap-1">
-          <span class="text-sm text-slate-400">Category</span>
-          <input
-            v-model="form.category"
-            type="text"
-            placeholder="e.g. Power Tools"
-            :disabled="managed"
-            class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 disabled:opacity-60 disabled:cursor-not-allowed"
-          />
-        </label>
-        <label v-if="!isSerialized" class="flex flex-col gap-1">
-          <span class="text-sm text-slate-400">RFID EPC</span>
-          <input
-            v-model="form.rfid_epc"
-            type="text"
-            :disabled="managed"
-            class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 disabled:opacity-60 disabled:cursor-not-allowed"
-          />
-        </label>
-      </div>
+      <label class="flex flex-col gap-1">
+        <span class="text-sm text-slate-400">Category</span>
+        <input
+          v-model="form.category"
+          type="text"
+          placeholder="e.g. Power Tools"
+          :disabled="managed"
+          class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 disabled:opacity-60 disabled:cursor-not-allowed"
+        />
+      </label>
 
       <ItemInstancesPanel
         v-if="!isController && isSerialized && isEdit && form.id"

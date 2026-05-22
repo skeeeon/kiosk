@@ -206,12 +206,10 @@ func (w *Watcher) upsertItem(p ItemPayload) error {
 	}
 
 	rec.Set("code", p.Code)
-	rec.Set("rfid_epc", p.RFIDEPC)
 	rec.Set("name", p.Name)
 	rec.Set("type", p.Type)
 	rec.Set("unit", p.Unit)
 	rec.Set("tracking_mode", p.TrackingMode)
-	rec.Set("serial", p.Serial)
 	rec.Set("category", p.Category)
 	rec.Set("active", p.Active)
 	rec.Set("notes", p.Notes)

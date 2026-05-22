@@ -16,14 +16,15 @@ import (
 // ItemPayload is the cross-fleet view of an items record. `Code` is the
 // natural join key; the same SKU at multiple kiosks shares this code but
 // each kiosk holds its own row (with its own qty / instances) locally.
+//
+// RFID EPCs and per-unit serials live on item_instances, not on the SKU,
+// so neither field is part of this payload.
 type ItemPayload struct {
 	Code         string `json:"code"`
-	RFIDEPC      string `json:"rfid_epc,omitempty"`
 	Name         string `json:"name"`
 	Type         string `json:"type"`          // "tool" | "consumable"
 	Unit         string `json:"unit,omitempty"`
 	TrackingMode string `json:"tracking_mode"` // "quantity" | "serialized"
-	Serial       string `json:"serial,omitempty"`
 	Category     string `json:"category,omitempty"`
 	Active       bool   `json:"active"`
 	Notes        string `json:"notes,omitempty"`

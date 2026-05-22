@@ -85,7 +85,7 @@ func RegisterSeedCommand(app *pocketbase.PocketBase, cfg *config.Config) {
 			return nil
 		},
 	}
-	cmd.Flags().String("items", "", "path to items CSV (columns: code,name,type,tracking_mode,...)")
+	cmd.Flags().String("items", "", "path to items CSV (columns: code,name,type,tracking_mode,unit,category,active,notes)")
 	cmd.Flags().String("users", "", "path to users CSV (columns: code,name,email,role,active)")
 	cmd.Flags().Bool("no-publish", false, "import locally only; skip JetStream KV fan-out")
 	app.RootCmd.AddCommand(cmd)
@@ -140,9 +140,7 @@ func seedItems(app core.App, path string) error {
 		rec.Set("type", typ)
 		rec.Set("tracking_mode", tracking)
 		rec.Set("unit", csvCol(headers, row, "unit"))
-		rec.Set("serial", csvCol(headers, row, "serial"))
 		rec.Set("category", csvCol(headers, row, "category"))
-		rec.Set("rfid_epc", csvCol(headers, row, "rfid_epc"))
 		rec.Set("notes", csvCol(headers, row, "notes"))
 		rec.Set("active", parseCSVBool(csvCol(headers, row, "active"), true))
 

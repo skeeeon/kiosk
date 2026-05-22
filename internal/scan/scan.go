@@ -25,7 +25,6 @@ type Item struct {
 	Type           string `json:"type"`
 	Unit           string `json:"unit,omitempty"`
 	TrackingMode   string `json:"tracking_mode"`
-	Serial         string `json:"serial,omitempty"`
 	Category       string `json:"category,omitempty"`
 	Active         bool   `json:"active"`
 	QuantityOnHand int    `json:"quantity_on_hand"`
@@ -80,12 +79,14 @@ type Result struct {
 // Lookups is the data-access side of resolution, injected so the resolver
 // can be unit-tested without a database. Functions return (nil, nil) when
 // no record matches; any non-nil error short-circuits with Unknown.
+//
+// RFID lookups are instance-only — EPCs are per-tag and live on
+// item_instances, never on the SKU itself.
 type Lookups struct {
-	UserByCode             func(code string) (*User, error)
-	ItemByCode             func(code string) (*Item, error)
-	ItemByRFID             func(epc string) (*Item, error)
-	ItemInstanceByCode     func(code string) (*InstanceMatch, error)
-	ItemInstanceByRFID     func(epc string) (*InstanceMatch, error)
+	UserByCode         func(code string) (*User, error)
+	ItemByCode         func(code string) (*Item, error)
+	ItemInstanceByCode func(code string) (*InstanceMatch, error)
+	ItemInstanceByRFID func(epc string) (*InstanceMatch, error)
 }
 
 type Resolver struct {
@@ -103,9 +104,8 @@ type Resolver struct {
 //
 //  1. If UserPrefix is set and value has it: strip and look up user only.
 //  2. If ItemPrefix is set and value has it: strip and try instance code →
-//     item code → instance rfid → item rfid.
-//  3. Otherwise: try instance code → item code → instance rfid → item rfid
-//     → user code.
+//     item code → instance rfid.
+//  3. Otherwise: try instance code → item code → instance rfid → user code.
 func (r *Resolver) Resolve(raw string) Result {
 	value := strings.TrimSpace(raw)
 	if value == "" {
@@ -131,9 +131,6 @@ func (r *Resolver) Resolve(raw string) Result {
 		if m, _ := tryInstanceByRFID(r.Lookups, code); m != nil {
 			return Result{Type: ResultItemInstance, Record: m}
 		}
-		if i, _ := r.Lookups.ItemByRFID(code); i != nil {
-			return Result{Type: ResultItem, Record: i}
-		}
 		return Result{Type: ResultUnknown, Value: value}
 	}
 
@@ -145,9 +142,6 @@ func (r *Resolver) Resolve(raw string) Result {
 	}
 	if m, _ := tryInstanceByRFID(r.Lookups, value); m != nil {
 		return Result{Type: ResultItemInstance, Record: m}
-	}
-	if i, _ := r.Lookups.ItemByRFID(value); i != nil {
-		return Result{Type: ResultItem, Record: i}
 	}
 	if u, _ := r.Lookups.UserByCode(value); u != nil {
 		return Result{Type: ResultUser, Record: u}

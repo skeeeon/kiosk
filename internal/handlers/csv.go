@@ -172,11 +172,6 @@ func validateImportRow(headers map[string]int, row []string) (map[string]any, []
 	if tracking != "quantity" && tracking != "serialized" {
 		errs = append(errs, importError{Code: "INVALID_TRACKING_MODE", Message: "tracking_mode must be 'quantity' or 'serialized'"})
 	}
-	// items.serial used to be required for tracking_mode=serialized, but
-	// that data now lives on item_instances. The items row's serial column
-	// is optional and informational only; instances carry the authoritative
-	// per-unit serial.
-	serial := csvCol(headers, row, "serial")
 
 	if len(errs) > 0 {
 		return nil, errs
@@ -188,9 +183,7 @@ func validateImportRow(headers map[string]int, row []string) (map[string]any, []
 		"type":          typ,
 		"unit":          csvCol(headers, row, "unit"),
 		"tracking_mode": tracking,
-		"serial":        serial,
 		"category":      csvCol(headers, row, "category"),
-		"rfid_epc":      csvCol(headers, row, "rfid_epc"),
 		"active":        parseCSVActive(csvCol(headers, row, "active")),
 		"notes":         csvCol(headers, row, "notes"),
 	}

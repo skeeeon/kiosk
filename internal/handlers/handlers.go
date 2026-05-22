@@ -77,7 +77,6 @@ func itemFromRecord(r *core.Record) *scan.Item {
 		Type:           r.GetString("type"),
 		Unit:           r.GetString("unit"),
 		TrackingMode:   r.GetString("tracking_mode"),
-		Serial:         r.GetString("serial"),
 		Category:       r.GetString("category"),
 		Active:         r.GetBool("active"),
 		QuantityOnHand: r.GetInt("quantity_on_hand"),

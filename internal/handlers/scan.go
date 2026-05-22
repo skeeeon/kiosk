@@ -31,7 +31,6 @@ func (h *Handlers) Scan(re *core.RequestEvent) error {
 		Lookups: scan.Lookups{
 			UserByCode:         h.scanUserByCode,
 			ItemByCode:         h.scanItemByCode,
-			ItemByRFID:         h.scanItemByRFID,
 			ItemInstanceByCode: h.scanInstanceByCode,
 			ItemInstanceByRFID: h.scanInstanceByRFID,
 		},
@@ -114,20 +113,6 @@ func (h *Handlers) scanUserByCode(code string) (*scan.User, error) {
 
 func (h *Handlers) scanItemByCode(code string) (*scan.Item, error) {
 	rec, err := h.App.FindFirstRecordByFilter("items", "code = {:code}", dbx.Params{"code": code})
-	if isNotFound(err) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	return itemFromRecord(rec), nil
-}
-
-func (h *Handlers) scanItemByRFID(epc string) (*scan.Item, error) {
-	if epc == "" {
-		return nil, nil
-	}
-	rec, err := h.App.FindFirstRecordByFilter("items", "rfid_epc = {:epc}", dbx.Params{"epc": epc})
 	if isNotFound(err) {
 		return nil, nil
 	}

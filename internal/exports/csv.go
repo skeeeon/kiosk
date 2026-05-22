@@ -42,8 +42,8 @@ func WriteItemsCSV(app core.App, w io.Writer) error {
 	defer cw.Flush()
 
 	if err := cw.Write([]string{
-		"code", "name", "type", "unit", "tracking_mode", "serial",
-		"category", "rfid_epc", "active", "notes",
+		"code", "name", "type", "unit", "tracking_mode",
+		"category", "active", "notes",
 		"quantity_on_hand", "reorder_threshold",
 	}); err != nil {
 		return err
@@ -60,9 +60,7 @@ func WriteItemsCSV(app core.App, w io.Writer) error {
 			it.GetString("type"),
 			it.GetString("unit"),
 			it.GetString("tracking_mode"),
-			it.GetString("serial"),
 			it.GetString("category"),
-			it.GetString("rfid_epc"),
 			active,
 			it.GetString("notes"),
 			fmt.Sprintf("%d", it.GetInt("quantity_on_hand")),

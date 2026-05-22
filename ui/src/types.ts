@@ -35,7 +35,6 @@ export interface Item {
   type: 'tool' | 'consumable'
   unit?: string
   tracking_mode: 'quantity' | 'serialized'
-  serial?: string
   category?: string
   active: boolean
   quantity_on_hand: number
@@ -112,9 +111,7 @@ export interface ItemRecord {
   type: 'tool' | 'consumable'
   unit: string
   tracking_mode: 'quantity' | 'serialized'
-  serial: string
   category: string
-  rfid_epc: string
   active: boolean
   notes: string
   quantity_on_hand: number

@@ -467,17 +467,18 @@ Cardinality rules for `open_checkouts`:
 CSV import (`POST /api/kiosk/items/import`) format:
 
 ```csv
-code,name,type,unit,tracking_mode,serial,category,rfid_epc,active,notes,quantity_on_hand,reorder_threshold
-DR-IMPACT-042,Impact Driver,tool,each,serialized,SN-1234,Power Tools,E280117020000042,true,,1,0
-SCREW-DECK-3IN,Deck Screws 3in,consumable,box of 100,quantity,,Fasteners,,true,,25,5
+code,name,type,unit,tracking_mode,category,active,notes,quantity_on_hand,reorder_threshold
+DR-IMPACT-042,Impact Driver,tool,each,serialized,Power Tools,true,,1,0
+SCREW-DECK-3IN,Deck Screws 3in,consumable,box of 100,quantity,Fasteners,true,,25,5
 ```
 
 Empty cells are nulls. `active` accepts `true|false|1|0|yes|no|y|n`. The
 `quantity_on_hand` and `reorder_threshold` columns are optional; if
 omitted, existing rows keep their current values and new rows default to
 zero. Items are matched by `code` (upsert). Items not in the CSV are left
-alone. CSV import targets `items` only — serialized SKUs created via CSV
-still need their instances added through the admin UI's instances panel.
+alone. Per-unit serials and RFID EPCs live on `item_instances`, not on the
+SKU row — serialized SKUs created via CSV still need their instances
+added through the admin UI's instances panel.
 
 ## Operations
 
@@ -801,7 +802,7 @@ in place to make them additive rather than rewrites.
   determined admin poking PB directly can't drift the catalog.
 - **RFID reader integration.** Impinj reader publishes scans to
   `kiosk.{kiosk_code}.scan.rfid`. The scan dispatcher already resolves
-  `rfid_epc` for both items and instances — no new dispatch logic needed.
+  `rfid_epc` against `item_instances` — no new dispatch logic needed.
 - **Per-kiosk / location-aware availability.** All kiosks currently share
   the same catalog; narrow visibility to what the kiosk's location
   actually stocks.

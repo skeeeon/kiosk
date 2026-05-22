@@ -282,16 +282,12 @@ func createLine(tx core.App, col *core.Collection, txRec *core.Record, l *cart.L
 // tools always have qty=1 and carry an item_instance FK (validated above);
 // non-serialized may have qty>1 and carry no instance.
 func openCheckoutsForLine(tx core.App, col *core.Collection, line *cart.Line, lineRec, itemRec *core.Record, userID string, completedAt time.Time, qty int) error {
-	serial := line.Serial
-	if serial == "" {
-		serial = itemRec.GetString("serial")
-	}
 	for i := 0; i < qty; i++ {
 		rec := core.NewRecord(col)
 		rec.Set("item", itemRec.Id)
 		rec.Set("user", userID)
-		if serial != "" {
-			rec.Set("serial", serial)
+		if line.Serial != "" {
+			rec.Set("serial", line.Serial)
 		}
 		if line.ItemInstanceID != "" {
 			rec.Set("item_instance", line.ItemInstanceID)

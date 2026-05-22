@@ -87,8 +87,7 @@ const filtered = computed(() => {
     return (
       i.code.toLowerCase().includes(q) ||
       i.name.toLowerCase().includes(q) ||
-      i.category.toLowerCase().includes(q) ||
-      i.serial.toLowerCase().includes(q)
+      i.category.toLowerCase().includes(q)
     )
   })
 })
@@ -185,7 +184,7 @@ async function onDelete() {
       <input
         v-model="search"
         type="search"
-        placeholder="Search code, name, category, serial…"
+        placeholder="Search code, name, category…"
         class="flex-1 rounded-lg bg-slate-900 border border-slate-800 px-3 py-2 text-slate-100"
       />
       <select

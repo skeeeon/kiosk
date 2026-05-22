@@ -93,12 +93,10 @@ func (p *CatalogPublisher) bindHooks(app core.App) {
 func (p *CatalogPublisher) publishItem(rec *core.Record) {
 	payload := catalog.ItemPayload{
 		Code:         rec.GetString("code"),
-		RFIDEPC:      rec.GetString("rfid_epc"),
 		Name:         rec.GetString("name"),
 		Type:         rec.GetString("type"),
 		Unit:         rec.GetString("unit"),
 		TrackingMode: rec.GetString("tracking_mode"),
-		Serial:       rec.GetString("serial"),
 		Category:     rec.GetString("category"),
 		Active:       rec.GetBool("active"),
 		Notes:        rec.GetString("notes"),

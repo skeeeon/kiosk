@@ -9,7 +9,6 @@ import (
 type fakeLookups struct {
 	usersByCode     map[string]*User
 	itemsByCode     map[string]*Item
-	itemsByRFID     map[string]*Item
 	instancesByCode map[string]*InstanceMatch
 	instancesByRFID map[string]*InstanceMatch
 	calls           []string // ordered list of lookup calls, for verifying dispatch
@@ -22,10 +21,6 @@ func (f *fakeLookups) UserByCode(c string) (*User, error) {
 func (f *fakeLookups) ItemByCode(c string) (*Item, error) {
 	f.calls = append(f.calls, "ItemByCode:"+c)
 	return f.itemsByCode[c], nil
-}
-func (f *fakeLookups) ItemByRFID(c string) (*Item, error) {
-	f.calls = append(f.calls, "ItemByRFID:"+c)
-	return f.itemsByRFID[c], nil
 }
 func (f *fakeLookups) ItemInstanceByCode(c string) (*InstanceMatch, error) {
 	f.calls = append(f.calls, "ItemInstanceByCode:"+c)
@@ -45,9 +40,6 @@ func newFake() *fakeLookups {
 		itemsByCode: map[string]*Item{
 			"DR-042": item1,
 			"SCREW":  {ID: "i2", Code: "SCREW", Name: "Deck Screws", Type: "consumable", TrackingMode: "quantity"},
-		},
-		itemsByRFID: map[string]*Item{
-			"E280-RFID-ITEM": {ID: "i2", Code: "SCREW", Name: "Deck Screws", Type: "consumable", TrackingMode: "quantity"},
 		},
 		instancesByCode: map[string]*InstanceMatch{
 			"DR-042-B": {
@@ -113,17 +105,6 @@ func TestResolve(t *testing.T) {
 			wantCalls:  []string{"ItemInstanceByCode:DR-042", "ItemByCode:DR-042"},
 		},
 		{
-			name:       "item prefix falls back to rfid (item)",
-			itemPrefix: "I:",
-			value:      "I:E280-RFID-ITEM",
-			wantType:   ResultItem,
-			wantRecord: &Item{ID: "i2", Code: "SCREW", Name: "Deck Screws", Type: "consumable", TrackingMode: "quantity"},
-			wantCalls: []string{
-				"ItemInstanceByCode:E280-RFID-ITEM", "ItemByCode:E280-RFID-ITEM",
-				"ItemInstanceByRFID:E280-RFID-ITEM", "ItemByRFID:E280-RFID-ITEM",
-			},
-		},
-		{
 			name:       "item prefix with no match is unknown, does not try users",
 			itemPrefix: "I:",
 			value:      "I:NOPE",
@@ -131,7 +112,7 @@ func TestResolve(t *testing.T) {
 			wantValue:  "I:NOPE",
 			wantCalls: []string{
 				"ItemInstanceByCode:NOPE", "ItemByCode:NOPE",
-				"ItemInstanceByRFID:NOPE", "ItemByRFID:NOPE",
+				"ItemInstanceByRFID:NOPE",
 			},
 		},
 		{
@@ -142,23 +123,13 @@ func TestResolve(t *testing.T) {
 			wantCalls:  []string{"ItemInstanceByCode:DR-042", "ItemByCode:DR-042"},
 		},
 		{
-			name:       "no prefix falls through to item rfid",
-			value:      "E280-RFID-ITEM",
-			wantType:   ResultItem,
-			wantRecord: &Item{ID: "i2", Code: "SCREW", Name: "Deck Screws", Type: "consumable", TrackingMode: "quantity"},
-			wantCalls: []string{
-				"ItemInstanceByCode:E280-RFID-ITEM", "ItemByCode:E280-RFID-ITEM",
-				"ItemInstanceByRFID:E280-RFID-ITEM", "ItemByRFID:E280-RFID-ITEM",
-			},
-		},
-		{
 			name:       "no prefix falls through to user code",
 			value:      "EMP-1",
 			wantType:   ResultUser,
 			wantRecord: &User{ID: "u1", Code: "EMP-1", Name: "Alice", Role: "worker"},
 			wantCalls: []string{
 				"ItemInstanceByCode:EMP-1", "ItemByCode:EMP-1",
-				"ItemInstanceByRFID:EMP-1", "ItemByRFID:EMP-1",
+				"ItemInstanceByRFID:EMP-1",
 				"UserByCode:EMP-1",
 			},
 		},
@@ -169,7 +140,7 @@ func TestResolve(t *testing.T) {
 			wantValue: "DOES-NOT-EXIST",
 			wantCalls: []string{
 				"ItemInstanceByCode:DOES-NOT-EXIST", "ItemByCode:DOES-NOT-EXIST",
-				"ItemInstanceByRFID:DOES-NOT-EXIST", "ItemByRFID:DOES-NOT-EXIST",
+				"ItemInstanceByRFID:DOES-NOT-EXIST",
 				"UserByCode:DOES-NOT-EXIST",
 			},
 		},
@@ -181,7 +152,7 @@ func TestResolve(t *testing.T) {
 			wantRecord: &User{ID: "u1", Code: "EMP-1", Name: "Alice", Role: "worker"},
 			wantCalls: []string{
 				"ItemInstanceByCode:EMP-1", "ItemByCode:EMP-1",
-				"ItemInstanceByRFID:EMP-1", "ItemByRFID:EMP-1",
+				"ItemInstanceByRFID:EMP-1",
 				"UserByCode:EMP-1",
 			},
 		},
@@ -219,7 +190,6 @@ func TestResolve(t *testing.T) {
 				Lookups: Lookups{
 					UserByCode:         fake.UserByCode,
 					ItemByCode:         fake.ItemByCode,
-					ItemByRFID:         fake.ItemByRFID,
 					ItemInstanceByCode: fake.ItemInstanceByCode,
 					ItemInstanceByRFID: fake.ItemInstanceByRFID,
 				},

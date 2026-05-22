@@ -156,7 +156,6 @@ const TYPE_FILTERS: { value: TypeFilter; label: string }[] = [
               <p class="text-base font-medium text-slate-100 truncate">{{ item.name }}</p>
               <p class="text-xs text-slate-400 truncate">
                 {{ item.code }}
-                <span v-if="item.serial"> · SN {{ item.serial }}</span>
                 <span v-if="item.category"> · {{ item.category }}</span>
                 <span v-if="item.tracking_mode === 'serialized'" class="text-amber-300">
                   · scan unit barcode

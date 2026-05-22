@@ -88,8 +88,7 @@ func (h *Handlers) CartAdd(re *core.RequestEvent) error {
 	}
 
 	lineCode := item.GetString("code")
-	lineSerial := item.GetString("serial")
-	var instanceID, instanceCode string
+	var lineSerial, instanceID, instanceCode string
 	if instance != nil {
 		lineCode = instance.GetString("code")
 		lineSerial = instance.GetString("serial")
@@ -245,10 +244,10 @@ func (h *Handlers) CartCancel(re *core.RequestEvent) error {
 }
 
 // resolveScannableForCart mirrors the scan resolver's precedence: instance
-// code → item code → instance RFID → item RFID. Returns (item, instance|nil,
-// err). For non-instance matches, instance is nil and the item is the
-// matched SKU. For instance matches, the instance is loaded and the item
-// is its parent SKU.
+// code → item code → instance RFID. Returns (item, instance|nil, err). For
+// non-instance matches, instance is nil and the item is the matched SKU.
+// For instance matches, the instance is loaded and the item is its parent
+// SKU. RFID lookups are instance-only — EPCs live on item_instances.
 func (h *Handlers) resolveScannableForCart(code string) (*core.Record, *core.Record, error) {
 	if code == "" {
 		return nil, nil, &notFoundErr{}
@@ -269,9 +268,6 @@ func (h *Handlers) resolveScannableForCart(code string) (*core.Record, *core.Rec
 			return nil, nil, ierr
 		}
 		return item, inst, nil
-	}
-	if item, err := h.App.FindFirstRecordByFilter("items", "rfid_epc = {:epc}", dbx.Params{"epc": code}); err == nil && item != nil {
-		return item, nil, nil
 	}
 	return nil, nil, &notFoundErr{}
 }

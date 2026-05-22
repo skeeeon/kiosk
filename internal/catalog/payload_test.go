@@ -9,7 +9,6 @@ import (
 func TestItemPayload_RoundTrip(t *testing.T) {
 	in := ItemPayload{
 		Code:         "WRENCH-10",
-		RFIDEPC:      "E2806894...",
 		Name:         "10mm Wrench",
 		Type:         "tool",
 		Unit:         "ea",
@@ -49,6 +48,7 @@ func TestItemPayload_ExcludesSystemFields(t *testing.T) {
 	for _, banned := range []string{
 		"id", "created", "updated",
 		"quantity_on_hand", "reorder_threshold",
+		"rfid_epc", "serial",
 		"collectionId", "collectionName",
 	} {
 		if _, ok := generic[banned]; ok {

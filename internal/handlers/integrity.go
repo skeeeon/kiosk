@@ -185,12 +185,10 @@ func (h *Handlers) RebuildOpenCheckouts(re *core.RequestEvent) error {
 			if count <= 0 {
 				continue
 			}
-			item, err := tx.FindRecordById("items", k.item)
-			if err != nil {
+			if _, err := tx.FindRecordById("items", k.item); err != nil {
 				return fmt.Errorf("find item %s: %w", k.item, err)
 			}
-			serial := item.GetString("serial")
-			// Per-instance serial wins when known.
+			var serial string
 			if k.instance != "" {
 				if inst, ierr := tx.FindRecordById("item_instances", k.instance); ierr == nil {
 					serial = inst.GetString("serial")
