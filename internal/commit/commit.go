@@ -201,23 +201,23 @@ func Commit(app core.App, c *cart.Cart, id kioskctx.Identity, policy Policy, pub
 
 			lineEvents = append(lineEvents, lineEvent{
 				Subject: events.ItemActionSubject(id.KioskCode, l.Action),
-				Payload: map[string]any{
-					"transaction_id": txRec.Id,
-					"line_id":        lineRec.Id,
-					"kiosk_code":     id.KioskCode,
-					"location_code":  id.LocationCode,
-					"user_id":        c.UserID,
-					"user_code":      c.UserCode,
-					"user_group":     cartUserGroup,
-					"item_id":        itemRec.Id,
-					"item_code":      itemRec.GetString("code"),
-					"item_name":      itemRec.GetString("name"),
-					"action":         l.Action,
-					"qty":            l.Qty,
-					"serial":         l.Serial,
-					"uncorrelated":   lineRec.GetBool("uncorrelated"),
-					"completed_at":   completedAt,
-				},
+				Payload: events.BuildItemActionPayload(events.ItemActionInput{
+					TransactionID: txRec.Id,
+					LineID:        lineRec.Id,
+					KioskCode:     id.KioskCode,
+					LocationCode:  id.LocationCode,
+					UserID:        c.UserID,
+					UserCode:      c.UserCode,
+					UserGroup:     cartUserGroup,
+					ItemID:        itemRec.Id,
+					ItemCode:      itemRec.GetString("code"),
+					ItemName:      itemRec.GetString("name"),
+					Action:        l.Action,
+					Qty:           l.Qty,
+					Serial:        l.Serial,
+					Uncorrelated:  lineRec.GetBool("uncorrelated"),
+					CompletedAt:   completedAt,
+				}),
 			})
 		}
 
@@ -232,21 +232,21 @@ func Commit(app core.App, c *cart.Cart, id kioskctx.Identity, policy Policy, pub
 
 		txCompleted = lineEvent{
 			Subject: events.TransactionCompleteSubject(id.KioskCode),
-			Payload: map[string]any{
-				"transaction_id": txRec.Id,
-				"kiosk_code":     id.KioskCode,
-				"location_code":  id.LocationCode,
-				"user_id":        c.UserID,
-				"user_code":      c.UserCode,
-				"user_name":      userRec.GetString("name"),
-				"user_group":     cartUserGroup,
-				"started_at":     c.StartedAt,
-				"completed_at":   completedAt,
-				"lines_count":    result.LinesCount,
-				"checked_out":    result.CheckedOut,
-				"returned":       result.Returned,
-				"consumed":       result.Consumed,
-			},
+			Payload: events.BuildTransactionCompletePayload(events.TransactionCompleteInput{
+				TransactionID: txRec.Id,
+				KioskCode:     id.KioskCode,
+				LocationCode:  id.LocationCode,
+				UserID:        c.UserID,
+				UserCode:      c.UserCode,
+				UserName:      userRec.GetString("name"),
+				UserGroup:     cartUserGroup,
+				StartedAt:     c.StartedAt,
+				CompletedAt:   completedAt,
+				LinesCount:    result.LinesCount,
+				CheckedOut:    result.CheckedOut,
+				Returned:      result.Returned,
+				Consumed:      result.Consumed,
+			}),
 		}
 		return nil
 	})

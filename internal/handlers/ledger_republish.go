@@ -122,21 +122,22 @@ func republishLedger(app core.App, filter string, params dbx.Params, publish fun
 		locationCode := tx.GetString("location_code")
 		completedAt := tx.GetDateTime("completed_at").Time()
 
-		publish(events.TransactionCompleteSubject(kioskCode), map[string]any{
-			"transaction_id": tx.Id,
-			"kiosk_code":     kioskCode,
-			"location_code":  locationCode,
-			"user_id":        userRec.Id,
-			"user_code":      userRec.GetString("code"),
-			"user_name":      userRec.GetString("name"),
-			"user_group":     tx.GetString("user_group"),
-			"started_at":     tx.GetDateTime("started_at").Time(),
-			"completed_at":   completedAt,
-			"lines_count":    len(lines),
-			"checked_out":    checkedOut,
-			"returned":       returned,
-			"consumed":       consumed,
-		})
+		publish(events.TransactionCompleteSubject(kioskCode),
+			events.BuildTransactionCompletePayload(events.TransactionCompleteInput{
+				TransactionID: tx.Id,
+				KioskCode:     kioskCode,
+				LocationCode:  locationCode,
+				UserID:        userRec.Id,
+				UserCode:      userRec.GetString("code"),
+				UserName:      userRec.GetString("name"),
+				UserGroup:     tx.GetString("user_group"),
+				StartedAt:     tx.GetDateTime("started_at").Time(),
+				CompletedAt:   completedAt,
+				LinesCount:    len(lines),
+				CheckedOut:    checkedOut,
+				Returned:      returned,
+				Consumed:      consumed,
+			}))
 		out.TransactionsPublished++
 
 		for _, l := range lines {
@@ -144,23 +145,24 @@ func republishLedger(app core.App, filter string, params dbx.Params, publish fun
 			if err != nil {
 				continue
 			}
-			publish(events.ItemActionSubject(kioskCode, l.GetString("action")), map[string]any{
-				"transaction_id": tx.Id,
-				"line_id":        l.Id,
-				"kiosk_code":     kioskCode,
-				"location_code":  locationCode,
-				"user_id":        userRec.Id,
-				"user_code":      userRec.GetString("code"),
-				"user_group":     tx.GetString("user_group"),
-				"item_id":        itemRec.Id,
-				"item_code":      itemRec.GetString("code"),
-				"item_name":      itemRec.GetString("name"),
-				"action":         l.GetString("action"),
-				"qty":            l.GetInt("qty"),
-				"serial":         l.GetString("serial"),
-				"uncorrelated":   l.GetBool("uncorrelated"),
-				"completed_at":   completedAt,
-			})
+			publish(events.ItemActionSubject(kioskCode, l.GetString("action")),
+				events.BuildItemActionPayload(events.ItemActionInput{
+					TransactionID: tx.Id,
+					LineID:        l.Id,
+					KioskCode:     kioskCode,
+					LocationCode:  locationCode,
+					UserID:        userRec.Id,
+					UserCode:      userRec.GetString("code"),
+					UserGroup:     tx.GetString("user_group"),
+					ItemID:        itemRec.Id,
+					ItemCode:      itemRec.GetString("code"),
+					ItemName:      itemRec.GetString("name"),
+					Action:        l.GetString("action"),
+					Qty:           l.GetInt("qty"),
+					Serial:        l.GetString("serial"),
+					Uncorrelated:  l.GetBool("uncorrelated"),
+					CompletedAt:   completedAt,
+				}))
 			out.LinesPublished++
 		}
 	}
