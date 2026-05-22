@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/apis"
@@ -22,6 +23,12 @@ import (
 	// Register schema migrations via init() side effects.
 	_ "github.com/skeeeon/kiosk/migrations"
 )
+
+// sendLogRetentionDays bounds the notification_send_log table. 90 days is
+// enough lookback to debug "did that alert fire last quarter?" without the
+// table growing unbounded on a busy kiosk. Configurability is intentionally
+// deferred until someone asks.
+const sendLogRetentionDays = 90
 
 func main() {
 	cfg, err := config.Load(configPath())
@@ -96,6 +103,22 @@ func main() {
 	carts := cart.NewStore(cfg.Session.IdleTimeout.AsDuration())
 	notifier := notifications.New(app)
 	h := handlers.New(app, cfg, carts, notifier)
+
+	// Daily retention pass on the notifications send log. Runs at 03:15
+	// local time — well outside the kiosk's busy windows. PB's Cron is a
+	// process-local scheduler; if the kiosk is down at fire time, the
+	// next live tick handles the backlog on its next eligible slot.
+	app.Cron().Add("notifications_send_log_prune", "15 3 * * *", func() {
+		cutoff := time.Now().UTC().AddDate(0, 0, -sendLogRetentionDays).Format("2006-01-02 15:04:05.000Z")
+		deleted, err := notifier.PruneSendLog(cutoff)
+		if err != nil {
+			log.Printf("send log prune: %v", err)
+			return
+		}
+		if deleted > 0 {
+			log.Printf("send log prune: removed %d rows older than %d days", deleted, sendLogRetentionDays)
+		}
+	})
 
 	app.OnServe().BindFunc(func(e *core.ServeEvent) error {
 		e.Router.GET("/health", func(re *core.RequestEvent) error {

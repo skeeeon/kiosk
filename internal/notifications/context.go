@@ -10,6 +10,13 @@ import (
 	"github.com/skeeeon/kiosk/internal/kioskctx"
 )
 
+// WorkerEmail implements WorkerEmailProvider so the notifier's recipient
+// resolver can include the worker for templates whose Recipients have
+// worker_email=true.
+func (r ReceiptContext) WorkerEmail() string {
+	return r.User.Email
+}
+
 // ReceiptContext is the single template payload for receipt.transaction.
 // Field names mirror the event payload keys already emitted by commit.go
 // (see internal/events/payloads.go); operators editing templates use the

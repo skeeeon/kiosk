@@ -6,6 +6,12 @@ import { useAdminToast } from '../composables/useAdminToast'
 import { useKioskIdentity } from '../composables/useKioskIdentity'
 import AppDialog from '../components/AppDialog.vue'
 
+interface Recipients {
+  worker_email: boolean
+  all_admins: boolean
+  extras: string[]
+}
+
 interface NotificationTemplate {
   id: string
   event_type: string
@@ -15,6 +21,8 @@ interface NotificationTemplate {
   body: string
   updated: string
   updated_by: string
+  recipients: Recipients
+  supports_worker: boolean
 }
 
 interface TemplatesResponse {
@@ -82,6 +90,22 @@ const errors = ref<Record<string, string>>({})
 // every render. Empty string for rows that haven't been saved since phase 2
 // added the column.
 const editorEmails = ref<Record<string, string>>({})
+// Recipients.extras is a string[] on the wire but a textarea on the UI —
+// store the joined-by-newlines text per event_type so the textarea binds
+// to a plain string. Parsed back into a string[] at save time.
+const extrasText = ref<Record<string, string>>({})
+
+function extrasToText(list: string[]): string {
+  return (list ?? []).join('\n')
+}
+
+function parseExtras(text: string): string[] {
+  // Split on newlines OR commas so a copy-paste of "ops@…, ml@…" still works.
+  return text
+    .split(/[\n,]/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+}
 
 async function load() {
   // The controller binary doesn't register the notifications routes —
@@ -98,7 +122,10 @@ async function load() {
     const res = await api.get<TemplatesResponse>('/api/kiosk/notifications')
     const list = res?.templates ?? []
     templates.value = list
-    drafts.value = Object.fromEntries(list.map((t) => [t.event_type, { ...t }]))
+    drafts.value = Object.fromEntries(
+      list.map((t) => [t.event_type, { ...t, recipients: { ...t.recipients, extras: [...t.recipients.extras] } }]),
+    )
+    extrasText.value = Object.fromEntries(list.map((t) => [t.event_type, extrasToText(t.recipients.extras)]))
     errors.value = {}
     await resolveEditorEmails(list)
   } catch (e) {
@@ -142,11 +169,15 @@ function dirty(eventType: string): boolean {
   const orig = templates.value.find((t) => t.event_type === eventType)
   const draft = drafts.value[eventType]
   if (!orig || !draft) return false
-  return (
-    orig.subject !== draft.subject ||
-    orig.body !== draft.body ||
-    orig.enabled !== draft.enabled
-  )
+  if (orig.subject !== draft.subject) return true
+  if (orig.body !== draft.body) return true
+  if (orig.enabled !== draft.enabled) return true
+  if (orig.recipients.worker_email !== draft.recipients.worker_email) return true
+  if (orig.recipients.all_admins !== draft.recipients.all_admins) return true
+  // Compare extras as the user-typed text so trailing-whitespace tweaks
+  // surface as dirty (matches how the textarea actually looks).
+  if (extrasText.value[eventType] !== extrasToText(orig.recipients.extras)) return true
+  return false
 }
 
 async function save(eventType: string) {
@@ -154,13 +185,27 @@ async function save(eventType: string) {
   if (!draft) return
   saving.value = { ...saving.value, [eventType]: true }
   errors.value = { ...errors.value, [eventType]: '' }
+  const extras = parseExtras(extrasText.value[eventType] ?? '')
   try {
     const updated = await api.patch<NotificationTemplate>(
       `/api/kiosk/notifications/${encodeURIComponent(eventType)}`,
-      { subject: draft.subject, body: draft.body, enabled: draft.enabled },
+      {
+        subject: draft.subject,
+        body: draft.body,
+        enabled: draft.enabled,
+        recipients: {
+          worker_email: draft.recipients.worker_email,
+          all_admins: draft.recipients.all_admins,
+          extras,
+        },
+      },
     )
     templates.value = templates.value.map((t) => (t.event_type === eventType ? updated : t))
-    drafts.value = { ...drafts.value, [eventType]: { ...updated } }
+    drafts.value = {
+      ...drafts.value,
+      [eventType]: { ...updated, recipients: { ...updated.recipients, extras: [...updated.recipients.extras] } },
+    }
+    extrasText.value = { ...extrasText.value, [eventType]: extrasToText(updated.recipients.extras) }
     await resolveEditorEmails([updated])
     toast.success(`Saved ${updated.name}`)
   } catch (e) {
@@ -192,7 +237,11 @@ async function resetToDefaults(eventType: string) {
 function revert(eventType: string) {
   const orig = templates.value.find((t) => t.event_type === eventType)
   if (!orig) return
-  drafts.value = { ...drafts.value, [eventType]: { ...orig } }
+  drafts.value = {
+    ...drafts.value,
+    [eventType]: { ...orig, recipients: { ...orig.recipients, extras: [...orig.recipients.extras] } },
+  }
+  extrasText.value = { ...extrasText.value, [eventType]: extrasToText(orig.recipients.extras) }
 }
 
 onMounted(load)
@@ -208,13 +257,22 @@ onMounted(load)
           PocketBase&rsquo;s superuser UI (<code class="text-slate-300">/_/</code> &rarr; Settings &rarr; Mail).
         </p>
       </div>
-      <button
-        type="button"
-        class="shrink-0 px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm"
-        @click="showHelp = true"
-      >
-        Template syntax & variables
-      </button>
+      <div class="shrink-0 flex items-center gap-2">
+        <RouterLink
+          v-if="!isController"
+          :to="{ name: 'admin-notifications-log' }"
+          class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm"
+        >
+          Recent sends
+        </RouterLink>
+        <button
+          type="button"
+          class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm"
+          @click="showHelp = true"
+        >
+          Template syntax & variables
+        </button>
+      </div>
     </header>
 
     <div
@@ -270,6 +328,45 @@ onMounted(load)
         rows="14"
         class="w-full rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-slate-100 font-mono text-sm disabled:opacity-60"
       ></textarea>
+
+      <fieldset class="mt-4 rounded-lg border border-slate-800 p-3">
+        <legend class="px-1 text-sm text-slate-400">Recipients</legend>
+        <label class="flex items-start gap-2 text-sm text-slate-300 mb-2">
+          <input
+            type="checkbox"
+            :checked="drafts[t.event_type].recipients.worker_email"
+            :disabled="managed || !t.supports_worker"
+            class="mt-1 disabled:opacity-50"
+            @change="drafts[t.event_type].recipients.worker_email = ($event.target as HTMLInputElement).checked"
+          />
+          <span class="flex flex-col">
+            <span>Send to the worker who scanned</span>
+            <span v-if="!t.supports_worker" class="text-xs text-slate-500">
+              Not available — this event type doesn&rsquo;t carry a worker identity.
+            </span>
+          </span>
+        </label>
+        <label class="flex items-start gap-2 text-sm text-slate-300 mb-2">
+          <input
+            type="checkbox"
+            :checked="drafts[t.event_type].recipients.all_admins"
+            :disabled="managed"
+            class="mt-1"
+            @change="drafts[t.event_type].recipients.all_admins = ($event.target as HTMLInputElement).checked"
+          />
+          Send to every active admin
+        </label>
+        <label class="block text-sm text-slate-300 mt-3">
+          <span class="block text-slate-400 mb-1">Additional recipients</span>
+          <textarea
+            v-model="extrasText[t.event_type]"
+            :disabled="managed"
+            rows="3"
+            placeholder="One email per line — commas also work."
+            class="w-full rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-slate-100 text-sm disabled:opacity-60"
+          ></textarea>
+        </label>
+      </fieldset>
 
       <p
         v-if="errors[t.event_type]"

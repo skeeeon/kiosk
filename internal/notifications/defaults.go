@@ -57,3 +57,55 @@ func DefaultName(eventType string) string {
 func SeededEventTypes() []string {
 	return []string{EventTypeReceiptTransaction}
 }
+
+// Recipients is the editable per-template audience descriptor stored in the
+// recipients JSON column on notification_templates. The notifier resolves
+// it to a concrete []mail.Address at send time:
+//
+//   - WorkerEmail: if true and the event's payload implements
+//     WorkerEmailProvider, the worker's email is included.
+//   - AllAdmins:   if true, every admins-collection row with active=true is
+//     expanded into the recipient list.
+//   - Extras:      free-form addresses (e.g., a shared ops mailbox).
+//
+// An empty/missing JSON column is treated as the event's compiled-in
+// default — see DefaultRecipients. Empty Extras + AllAdmins=false +
+// WorkerEmail=false produces a no-op skip rather than an error.
+type Recipients struct {
+	WorkerEmail bool     `json:"worker_email"`
+	AllAdmins   bool     `json:"all_admins"`
+	Extras      []string `json:"extras"`
+}
+
+// DefaultRecipients returns the audience an event type ships with. Used by
+// the recipients migration (to seed existing rows) and by the notifier (to
+// fall back when a row's recipients column is null/empty).
+func DefaultRecipients(eventType string) Recipients {
+	switch eventType {
+	case EventTypeReceiptTransaction:
+		return Recipients{WorkerEmail: true, Extras: []string{}}
+	}
+	// Conservative default for unrecognized event types: address nobody.
+	// Operators must explicitly opt in to a recipient class.
+	return Recipients{Extras: []string{}}
+}
+
+// SupportsWorker reports whether the event type's payload implements
+// WorkerEmailProvider — i.e., whether the SPA's recipients editor should
+// expose the worker_email checkbox. Per-event-type registry rather than
+// runtime introspection so the SPA can render the right form before any
+// send has fired.
+func SupportsWorker(eventType string) bool {
+	switch eventType {
+	case EventTypeReceiptTransaction:
+		return true
+	}
+	return false
+}
+
+// WorkerEmailProvider is implemented by payload types whose recipient set
+// can include the worker associated with the event. Receipts implement it;
+// future alert/digest contexts (low-stock, scheduled reports) do not.
+type WorkerEmailProvider interface {
+	WorkerEmail() string
+}

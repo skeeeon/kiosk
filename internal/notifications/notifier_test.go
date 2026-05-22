@@ -96,20 +96,73 @@ func TestRenderRejectsBadFieldRef(t *testing.T) {
 	}
 }
 
-func TestRecipientForReceiptTransaction(t *testing.T) {
-	got := recipientFor(EventTypeReceiptTransaction, ReceiptContext{
-		User: UserInfo{Email: "  worker@example.com  "},
-	})
-	if got != "worker@example.com" {
-		t.Errorf("recipient = %q; want trimmed worker@example.com", got)
+func TestReceiptContextImplementsWorkerEmailProvider(t *testing.T) {
+	// Compile-time check via interface assignment, then a value assertion
+	// so a future struct-field rename surfaces here too.
+	var p WorkerEmailProvider = ReceiptContext{User: UserInfo{Email: "worker@example.com"}}
+	if p.WorkerEmail() != "worker@example.com" {
+		t.Errorf("WorkerEmail() = %q; want worker@example.com", p.WorkerEmail())
+	}
+}
+
+func TestDefaultRecipients(t *testing.T) {
+	r := DefaultRecipients(EventTypeReceiptTransaction)
+	if !r.WorkerEmail {
+		t.Error("receipt default should include worker_email")
+	}
+	if r.AllAdmins {
+		t.Error("receipt default should not blast all admins")
+	}
+	if len(r.Extras) != 0 {
+		t.Errorf("receipt default extras should be empty, got %v", r.Extras)
 	}
 
-	if recipientFor(EventTypeReceiptTransaction, ReceiptContext{}) != "" {
-		t.Error("empty email should produce empty recipient")
+	r = DefaultRecipients("unknown.event")
+	if r.WorkerEmail || r.AllAdmins {
+		t.Error("unknown event types should default to addressing nobody")
 	}
+}
 
-	if recipientFor("nope", ReceiptContext{User: UserInfo{Email: "a@b"}}) != "" {
-		t.Error("unknown event type should produce empty recipient")
+func TestParseRecipientsFallback(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want *Recipients
+	}{
+		{"empty string falls back", "", nil},
+		{"literal null falls back", "null", nil},
+		{"invalid json falls back", "{not json", nil},
+		{
+			"valid json parsed",
+			`{"worker_email":true,"all_admins":false,"extras":["ops@example.com"]}`,
+			&Recipients{WorkerEmail: true, Extras: []string{"ops@example.com"}},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := parseRecipients(c.raw)
+			if (got == nil) != (c.want == nil) {
+				t.Fatalf("parseRecipients(%q) nil-ness = %v; want %v", c.raw, got == nil, c.want == nil)
+			}
+			if got == nil {
+				return
+			}
+			if got.WorkerEmail != c.want.WorkerEmail || got.AllAdmins != c.want.AllAdmins {
+				t.Errorf("flags = %+v; want %+v", got, c.want)
+			}
+			if strings.Join(got.Extras, ",") != strings.Join(c.want.Extras, ",") {
+				t.Errorf("extras = %v; want %v", got.Extras, c.want.Extras)
+			}
+		})
+	}
+}
+
+func TestSupportsWorker(t *testing.T) {
+	if !SupportsWorker(EventTypeReceiptTransaction) {
+		t.Error("receipt.transaction should support worker")
+	}
+	if SupportsWorker("alert.lowstock") {
+		t.Error("future alert event types should not claim to support worker")
 	}
 }
 

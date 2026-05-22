@@ -1,7 +1,11 @@
 package handlers
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/mail"
+	"strings"
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
@@ -13,29 +17,47 @@ import (
 // Mirrors the collection columns; `id` is included so the SPA can issue
 // further requests by primary key if needed (today it routes by event_type).
 type notificationTemplateDTO struct {
-	ID        string `json:"id"`
-	EventType string `json:"event_type"`
-	Name      string `json:"name"`
-	Enabled   bool   `json:"enabled"`
-	Subject   string `json:"subject"`
-	Body      string `json:"body"`
-	Updated   string `json:"updated"`
-	// UpdatedBy is the admin id of the last editor (or empty for rows that
-	// haven't been saved since phase 2 added the column). The SPA resolves
-	// it to an email via a side fetch — same shape as stock_adjustments.
-	UpdatedBy string `json:"updated_by"`
+	ID        string                   `json:"id"`
+	EventType string                   `json:"event_type"`
+	Name      string                   `json:"name"`
+	Enabled   bool                     `json:"enabled"`
+	Subject   string                   `json:"subject"`
+	Body      string                   `json:"body"`
+	Updated   string                   `json:"updated"`
+	UpdatedBy string                   `json:"updated_by"`
+	// Recipients reflects the stored recipients spec. Empty/null persisted
+	// values are normalized to the event-type's default so the SPA always
+	// renders concrete checkbox state.
+	Recipients notifications.Recipients `json:"recipients"`
+	// SupportsWorker mirrors notifications.SupportsWorker. The SPA uses it
+	// to enable/disable the worker_email checkbox without per-event-type
+	// knowledge of its own.
+	SupportsWorker bool `json:"supports_worker"`
 }
 
 func toNotificationTemplateDTO(r *core.Record) notificationTemplateDTO {
+	eventType := r.GetString("event_type")
+	recipients := notifications.DefaultRecipients(eventType)
+	if raw := strings.TrimSpace(r.GetString("recipients")); raw != "" && raw != "null" {
+		var parsed notifications.Recipients
+		if err := json.Unmarshal([]byte(raw), &parsed); err == nil {
+			recipients = parsed
+		}
+	}
+	if recipients.Extras == nil {
+		recipients.Extras = []string{}
+	}
 	return notificationTemplateDTO{
-		ID:        r.Id,
-		EventType: r.GetString("event_type"),
-		Name:      r.GetString("name"),
-		Enabled:   r.GetBool("enabled"),
-		Subject:   r.GetString("subject"),
-		Body:      r.GetString("body"),
-		Updated:   r.GetDateTime("updated").String(),
-		UpdatedBy: r.GetString("updated_by"),
+		ID:             r.Id,
+		EventType:      eventType,
+		Name:           r.GetString("name"),
+		Enabled:        r.GetBool("enabled"),
+		Subject:        r.GetString("subject"),
+		Body:           r.GetString("body"),
+		Updated:        r.GetDateTime("updated").String(),
+		UpdatedBy:      r.GetString("updated_by"),
+		Recipients:     recipients,
+		SupportsWorker: notifications.SupportsWorker(eventType),
 	}
 }
 
@@ -70,15 +92,16 @@ func (h *Handlers) UpdateNotificationTemplate(re *core.RequestEvent) error {
 	}
 
 	var body struct {
-		Subject *string `json:"subject,omitempty"`
-		Body    *string `json:"body,omitempty"`
-		Enabled *bool   `json:"enabled,omitempty"`
+		Subject    *string                   `json:"subject,omitempty"`
+		Body       *string                   `json:"body,omitempty"`
+		Enabled    *bool                     `json:"enabled,omitempty"`
+		Recipients *notifications.Recipients `json:"recipients,omitempty"`
 	}
 	if err := re.BindBody(&body); err != nil {
 		return re.BadRequestError("invalid request body", err)
 	}
-	if body.Subject == nil && body.Body == nil && body.Enabled == nil {
-		return re.BadRequestError("at least one of subject, body, enabled is required", nil)
+	if body.Subject == nil && body.Body == nil && body.Enabled == nil && body.Recipients == nil {
+		return re.BadRequestError("at least one of subject, body, enabled, recipients is required", nil)
 	}
 
 	rec, err := h.App.FindFirstRecordByFilter(
@@ -116,12 +139,57 @@ func (h *Handlers) UpdateNotificationTemplate(re *core.RequestEvent) error {
 	if body.Enabled != nil {
 		rec.Set("enabled", *body.Enabled)
 	}
+	if body.Recipients != nil {
+		normalized, err := normalizeRecipients(*body.Recipients, rec.GetString("event_type"))
+		if err != nil {
+			return re.BadRequestError(err.Error(), nil)
+		}
+		raw, err := json.Marshal(normalized)
+		if err != nil {
+			return re.InternalServerError("encode recipients", err)
+		}
+		rec.Set("recipients", string(raw))
+	}
 	rec.Set("updated_by", re.Auth.Id)
 
 	if err := h.App.Save(rec); err != nil {
 		return re.InternalServerError("save failed", err)
 	}
 	return re.JSON(http.StatusOK, toNotificationTemplateDTO(rec))
+}
+
+// normalizeRecipients trims and validates the supplied spec. Empties are
+// coerced to empty slices (never nil) so the persisted JSON shape is
+// stable, and extras are validated as parseable mail addresses so the
+// notifier doesn't have to choke on bad input at send time. worker_email
+// can only be true for event types whose payload implements
+// WorkerEmailProvider — guarded by notifications.SupportsWorker.
+func normalizeRecipients(in notifications.Recipients, eventType string) (notifications.Recipients, error) {
+	out := notifications.Recipients{
+		WorkerEmail: in.WorkerEmail,
+		AllAdmins:   in.AllAdmins,
+		Extras:      []string{},
+	}
+	if out.WorkerEmail && !notifications.SupportsWorker(eventType) {
+		return out, fmt.Errorf("worker_email is not supported by event type %q", eventType)
+	}
+	seen := map[string]bool{}
+	for _, raw := range in.Extras {
+		addr := strings.TrimSpace(raw)
+		if addr == "" {
+			continue
+		}
+		if _, err := mail.ParseAddress(addr); err != nil {
+			return out, fmt.Errorf("invalid extras email %q: %v", addr, err)
+		}
+		key := strings.ToLower(addr)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out.Extras = append(out.Extras, addr)
+	}
+	return out, nil
 }
 
 // GetNotificationTemplateDefaults returns the compiled-in subject + body
