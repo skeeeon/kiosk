@@ -126,7 +126,23 @@ export interface WorkerRecord {
   code: string
   name: string
   role: 'worker' | 'foreman'
+  // FK id pointing at a groups record. Empty string for ungrouped workers.
   group?: string
+  active: boolean
+  created?: string
+  updated?: string
+  expand?: {
+    group?: GroupRecord
+  }
+}
+
+export interface GroupRecord {
+  id: string
+  code: string
+  name: string
+  contact_email: string
+  contact_phone: string
+  notes: string
   active: boolean
   created?: string
   updated?: string
@@ -190,6 +206,7 @@ export interface CatalogIntegrityBucket {
 export interface CatalogIntegrityReport {
   items: CatalogIntegrityBucket
   users: CatalogIntegrityBucket
+  groups: CatalogIntegrityBucket
 }
 
 // CatalogReconcileBucket / Report mirror the response from
@@ -206,6 +223,7 @@ export interface CatalogReconcileBucket {
 export interface CatalogReconcileReport {
   items: CatalogReconcileBucket
   users: CatalogReconcileBucket
+  groups: CatalogReconcileBucket
 }
 
 // LedgerRepublishResult mirrors POST /api/kiosk/ledger/republish.

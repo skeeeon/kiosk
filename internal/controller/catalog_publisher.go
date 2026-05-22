@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 
 	"github.com/skeeeon/kiosk/internal/catalog"
@@ -34,24 +35,32 @@ import (
 // CatalogPublisher owns no goroutines — PB invokes hooks synchronously on the
 // request path; the NATS conn buffers in-memory if the broker is unreachable.
 type CatalogPublisher struct {
-	items jetstream.KeyValue
-	users jetstream.KeyValue
-	app   core.App
+	items  jetstream.KeyValue
+	users  jetstream.KeyValue
+	groups jetstream.KeyValue
+	app    core.App
 
 	// pendingMembershipDelete: kiosk_items.id → "<kiosk_code>.<item_code>"
 	// captured in OnRecordDelete so AfterDeleteSuccess has the key to delete
 	// even after cascade has wiped the referenced rows.
 	pendingMembershipDelete sync.Map
+
+	// pendingGroupDelete: groups.id → group code, captured before delete so
+	// AfterDeleteSuccess can emit the KV delete by code.
+	pendingGroupDelete sync.Map
 }
 
-// NewCatalogPublisher provisions the two KV buckets (idempotent) and binds
+// NewCatalogPublisher provisions the three KV buckets (idempotent) and binds
 // the PB record hooks on the supplied app.
-func NewCatalogPublisher(ctx context.Context, app core.App, js jetstream.JetStream, itemsBucket, usersBucket string) (*CatalogPublisher, error) {
+func NewCatalogPublisher(ctx context.Context, app core.App, js jetstream.JetStream, itemsBucket, usersBucket, groupsBucket string) (*CatalogPublisher, error) {
 	if itemsBucket == "" {
 		itemsBucket = catalog.ItemsBucket
 	}
 	if usersBucket == "" {
 		usersBucket = catalog.UsersBucket
+	}
+	if groupsBucket == "" {
+		groupsBucket = catalog.GroupsBucket
 	}
 
 	items, err := js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
@@ -70,8 +79,16 @@ func NewCatalogPublisher(ctx context.Context, app core.App, js jetstream.JetStre
 	if err != nil {
 		return nil, fmt.Errorf("create users KV %q: %w", usersBucket, err)
 	}
+	groups, err := js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
+		Bucket:      groupsBucket,
+		Description: "Catalog: groups, keyed by code. Source of truth for managed kiosks.",
+		History:     1,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create groups KV %q: %w", groupsBucket, err)
+	}
 
-	cp := &CatalogPublisher{items: items, users: users, app: app}
+	cp := &CatalogPublisher{items: items, users: users, groups: groups, app: app}
 	cp.bindHooks(app)
 	return cp, nil
 }
@@ -137,6 +154,32 @@ func (p *CatalogPublisher) bindHooks(app core.App) {
 	})
 	app.OnRecordAfterDeleteSuccess("users").BindFunc(func(e *core.RecordEvent) error {
 		p.deleteUser(e.Record.GetString("code"))
+		return e.Next()
+	})
+
+	// Groups hooks. Org-wide bucket; one KV entry per group keyed by code.
+	app.OnRecordAfterCreateSuccess("groups").BindFunc(func(e *core.RecordEvent) error {
+		p.publishGroup(e.Record)
+		return e.Next()
+	})
+	app.OnRecordAfterUpdateSuccess("groups").BindFunc(func(e *core.RecordEvent) error {
+		p.publishGroup(e.Record)
+		return e.Next()
+	})
+	// Capture the code before delete: by AfterDeleteSuccess the row is gone
+	// and rec.GetString("code") returns empty.
+	app.OnRecordDelete("groups").BindFunc(func(e *core.RecordEvent) error {
+		if code := e.Record.GetString("code"); code != "" {
+			p.pendingGroupDelete.Store(e.Record.Id, code)
+		}
+		return e.Next()
+	})
+	app.OnRecordAfterDeleteSuccess("groups").BindFunc(func(e *core.RecordEvent) error {
+		v, ok := p.pendingGroupDelete.LoadAndDelete(e.Record.Id)
+		if !ok {
+			return e.Next()
+		}
+		p.deleteGroup(v.(string))
 		return e.Next()
 	})
 }
@@ -239,13 +282,22 @@ func itemPayloadFrom(rec *core.Record) catalog.ItemPayload {
 }
 
 func (p *CatalogPublisher) publishUser(rec *core.Record) {
+	// users.group is an FK to groups.id; the wire carries the human-readable
+	// code so the receiving kiosk can resolve to its own local id. Blank when
+	// the user is ungrouped or when the group record can't be found.
+	groupCode := ""
+	if gID := rec.GetString("group"); gID != "" {
+		if g, err := p.app.FindRecordById("groups", gID); err == nil {
+			groupCode = g.GetString("code")
+		}
+	}
 	payload := catalog.UserPayload{
-		Code:   rec.GetString("code"),
-		Name:   rec.GetString("name"),
-		Email:  rec.GetString("email"),
-		Role:   rec.GetString("role"),
-		Group:  rec.GetString("group"),
-		Active: rec.GetBool("active"),
+		Code:      rec.GetString("code"),
+		Name:      rec.GetString("name"),
+		Email:     rec.GetString("email"),
+		Role:      rec.GetString("role"),
+		GroupCode: groupCode,
+		Active:    rec.GetBool("active"),
 	}
 	data, err := catalog.MarshalUser(payload)
 	if err != nil {
@@ -271,4 +323,54 @@ func (p *CatalogPublisher) deleteUser(code string) {
 		return
 	}
 	slog.Info("controller.catalog.delete_user", "code", code)
+}
+
+func (p *CatalogPublisher) publishGroup(rec *core.Record) {
+	payload := catalog.GroupPayload{
+		Code:         rec.GetString("code"),
+		Name:         rec.GetString("name"),
+		ContactEmail: rec.GetString("contact_email"),
+		ContactPhone: rec.GetString("contact_phone"),
+		Notes:        rec.GetString("notes"),
+		Active:       rec.GetBool("active"),
+	}
+	data, err := catalog.MarshalGroup(payload)
+	if err != nil {
+		slog.Warn("controller.catalog.marshal_group_failed",
+			"code", payload.Code, "error", err)
+		return
+	}
+	if _, err := p.groups.Put(context.Background(), payload.Code, data); err != nil {
+		slog.Warn("controller.catalog.put_group_failed",
+			"code", payload.Code, "error", err)
+		return
+	}
+	slog.Info("controller.catalog.put_group", "code", payload.Code)
+
+	// When a group changes, every user that references it needs a fresh
+	// payload so receivers re-resolve to (potentially new) local FK ids and
+	// pick up changes like contact_email going to receipts. This is a
+	// fan-out write keyed off the group; for the GC-renting-to-subs scale
+	// (tens of subs, hundreds of users) it's negligible.
+	users, err := p.app.FindRecordsByFilter("users", "group = {:g}", "", 0, 0, dbx.Params{"g": rec.Id})
+	if err != nil {
+		slog.Warn("controller.catalog.group_user_lookup_failed",
+			"group", payload.Code, "error", err)
+		return
+	}
+	for _, u := range users {
+		p.publishUser(u)
+	}
+}
+
+func (p *CatalogPublisher) deleteGroup(code string) {
+	if code == "" {
+		return
+	}
+	if err := p.groups.Delete(context.Background(), code); err != nil {
+		slog.Warn("controller.catalog.delete_group_failed",
+			"code", code, "error", err)
+		return
+	}
+	slog.Info("controller.catalog.delete_group", "code", code)
 }

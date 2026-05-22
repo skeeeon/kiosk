@@ -52,6 +52,13 @@ function onLogout() {
         Workers
       </RouterLink>
       <RouterLink
+        :to="{ name: 'admin-groups' }"
+        class="px-3 py-2 rounded-lg text-slate-300 hover:bg-slate-800"
+        active-class="bg-slate-800 text-slate-100"
+      >
+        Groups
+      </RouterLink>
+      <RouterLink
         v-if="isController"
         :to="{ name: 'admin-kiosks' }"
         class="px-3 py-2 rounded-lg text-slate-300 hover:bg-slate-800"

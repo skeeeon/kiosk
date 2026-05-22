@@ -66,12 +66,13 @@ func TestExpectedOpenCheckouts_FallbackDivergence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("find users: %v", err)
 	}
+	electricalID := ensureGroupForTest(t, app, "electrical")
 	alice := core.NewRecord(users)
 	alice.Set("email", "alice@test.local")
 	alice.Set("name", "Alice")
 	alice.Set("code", "EMP-A")
 	alice.Set("role", "worker")
-	alice.Set("group", "electrical")
+	alice.Set("group", electricalID)
 	alice.Set("active", true)
 	alice.SetPassword("password-aaaaaaaaaaaa")
 	if err := app.Save(alice); err != nil {
@@ -82,7 +83,7 @@ func TestExpectedOpenCheckouts_FallbackDivergence(t *testing.T) {
 	bob.Set("name", "Bob")
 	bob.Set("code", "EMP-B")
 	bob.Set("role", "worker")
-	bob.Set("group", "electrical")
+	bob.Set("group", electricalID)
 	bob.Set("active", true)
 	bob.SetPassword("password-bbbbbbbbbbbb")
 	if err := app.Save(bob); err != nil {
@@ -336,4 +337,27 @@ func TestReplayOpenRows_SerializedInstanceReturn(t *testing.T) {
 	if len(rows) != 0 {
 		t.Fatalf("rows after serialized return: want 0, got %d", len(rows))
 	}
+}
+
+// ensureGroupForTest returns the id of a groups row with the given code,
+// creating it on first use. Allows tests in this package to set users.group
+// using a human-readable label.
+func ensureGroupForTest(t *testing.T, app core.App, code string) string {
+	t.Helper()
+	if existing, err := app.FindFirstRecordByFilter("groups",
+		"code = {:c}", map[string]any{"c": code}); err == nil {
+		return existing.Id
+	}
+	col, err := app.FindCollectionByNameOrId("groups")
+	if err != nil {
+		t.Fatalf("find groups collection: %v", err)
+	}
+	rec := core.NewRecord(col)
+	rec.Set("code", code)
+	rec.Set("name", code)
+	rec.Set("active", true)
+	if err := app.Save(rec); err != nil {
+		t.Fatalf("save group %q: %v", code, err)
+	}
+	return rec.Id
 }

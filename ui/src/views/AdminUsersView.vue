@@ -2,32 +2,40 @@
 import { computed, onMounted, ref } from 'vue'
 import { pb } from '../lib/pb'
 import UserDialog from '../components/UserDialog.vue'
+import GroupDialog from '../components/GroupDialog.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import { useAdminToast } from '../composables/useAdminToast'
 import { useKioskIdentity } from '../composables/useKioskIdentity'
-import type { WorkerRecord } from '../types'
+import type { GroupRecord, WorkerRecord } from '../types'
 
 const toast = useAdminToast()
 const { identity } = useKioskIdentity()
 const managed = computed(() => identity.value?.managed ?? false)
 
 const users = ref<WorkerRecord[]>([])
+const groups = ref<GroupRecord[]>([])
 const loading = ref(false)
 const error = ref<string | null>(null)
 const search = ref('')
 
 const editing = ref<Partial<WorkerRecord> | null>(null)
 const deleting = ref<WorkerRecord | null>(null)
+const creatingGroup = ref<Partial<GroupRecord> | null>(null)
 
 async function load() {
   loading.value = true
   error.value = null
   try {
     // getFullList paginates internally so a roster larger than one page
-    // doesn't silently truncate the list.
-    users.value = await pb.collection('users').getFullList<WorkerRecord>({
-      sort: '+code',
-    })
+    // doesn't silently truncate the list. Groups are fetched separately
+    // (rather than via expand on each user) because the select needs the
+    // full catalog regardless of which workers are loaded.
+    const [u, g] = await Promise.all([
+      pb.collection('users').getFullList<WorkerRecord>({ sort: '+code' }),
+      pb.collection('groups').getFullList<GroupRecord>({ sort: '+code' }),
+    ])
+    users.value = u
+    groups.value = g
   } catch (e) {
     error.value = (e as Error).message
   } finally {
@@ -37,24 +45,29 @@ async function load() {
 
 onMounted(load)
 
-// Distinct non-empty groups across the current roster, surfaced as
-// <datalist> suggestions in UserDialog so admins reuse existing values
-// instead of typing fresh ones. Free-text still works for the first user
-// in a new group.
-const existingGroups = computed(() =>
-  [...new Set(users.value.map((u) => u.group).filter((g): g is string => !!g))].sort(),
-)
+const groupByID = computed(() => {
+  const m = new Map<string, GroupRecord>()
+  for (const g of groups.value) m.set(g.id, g)
+  return m
+})
+
+function groupLabel(id: string | undefined): string {
+  if (!id) return ''
+  return groupByID.value.get(id)?.code ?? ''
+}
 
 const filtered = computed(() => {
   const q = search.value.trim().toLowerCase()
   if (!q) return users.value
-  return users.value.filter(
-    (u) =>
+  return users.value.filter((u) => {
+    const groupCode = groupLabel(u.group).toLowerCase()
+    return (
       u.code.toLowerCase().includes(q) ||
       u.name.toLowerCase().includes(q) ||
       u.email.toLowerCase().includes(q) ||
-      (u.group ?? '').toLowerCase().includes(q),
-  )
+      groupCode.includes(q)
+    )
+  })
 })
 
 function openNew() {
@@ -120,6 +133,22 @@ async function onDelete() {
     toast.error(friendly)
   }
 }
+
+async function onCreateGroupFromUser(data: Partial<GroupRecord>) {
+  try {
+    const created = await pb.collection('groups').create<GroupRecord>(data as Record<string, unknown>)
+    groups.value = [...groups.value, created].sort((a, b) => a.code.localeCompare(b.code))
+    if (editing.value) {
+      editing.value = { ...editing.value, group: created.id }
+    }
+    creatingGroup.value = null
+    toast.success(`Created group ${created.code}`)
+  } catch (e) {
+    const msg = (e as Error).message
+    error.value = msg
+    toast.error(msg)
+  }
+}
 </script>
 
 <template>
@@ -182,7 +211,7 @@ async function onDelete() {
             <td class="px-4 py-3">{{ user.name }}</td>
             <td class="px-4 py-3 text-slate-400">{{ user.email }}</td>
             <td class="px-4 py-3 text-slate-400">{{ user.role }}</td>
-            <td class="px-4 py-3 text-slate-400">{{ user.group || '—' }}</td>
+            <td class="px-4 py-3 text-slate-400">{{ groupLabel(user.group) || '—' }}</td>
             <td class="px-4 py-3">
               <span v-if="user.active" class="text-emerald-400">●</span>
               <span v-else class="text-slate-600">●</span>
@@ -206,9 +235,18 @@ async function onDelete() {
       :open="editing !== null"
       :user="editing"
       :managed="managed"
-      :existing-groups="existingGroups"
+      :groups="groups"
       @update:open="(v) => { if (!v) editing = null }"
       @save="onSave"
+      @create-group="creatingGroup = {}"
+    />
+
+    <GroupDialog
+      :open="creatingGroup !== null"
+      :group="creatingGroup"
+      :managed="managed"
+      @update:open="(v) => { if (!v) creatingGroup = null }"
+      @save="onCreateGroupFromUser"
     />
 
     <ConfirmDialog

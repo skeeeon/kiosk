@@ -34,13 +34,30 @@ type ItemPayload struct {
 // PB-internal auth fields are intentionally absent — workers don't log in
 // in v1, and projecting an opaque random password locally is enough to
 // satisfy PB's auth-collection constraints without exposing a vector.
+//
+// GroupCode is the human-readable code from the user's assigned group (the
+// `code` field on the groups collection), not the FK id — id values differ
+// across kiosks since each PB instance assigns its own. The receiver
+// resolves the code to a local groups.id at projection time.
 type UserPayload struct {
-	Code   string `json:"code"`
-	Name   string `json:"name"`
-	Email  string `json:"email,omitempty"`
-	Role   string `json:"role"`            // "worker" | "foreman"
-	Group  string `json:"group,omitempty"` // free-text crew/trade, e.g. "electrical"
-	Active bool   `json:"active"`
+	Code      string `json:"code"`
+	Name      string `json:"name"`
+	Email     string `json:"email,omitempty"`
+	Role      string `json:"role"`                 // "worker" | "foreman"
+	GroupCode string `json:"group_code,omitempty"` // resolves to groups.id locally
+	Active    bool   `json:"active"`
+}
+
+// GroupPayload is the cross-fleet view of a groups record. Code is the
+// natural join key shared across the fleet; metadata (contact info, notes)
+// is propagated as-is.
+type GroupPayload struct {
+	Code         string `json:"code"`
+	Name         string `json:"name"`
+	ContactEmail string `json:"contact_email,omitempty"`
+	ContactPhone string `json:"contact_phone,omitempty"`
+	Notes        string `json:"notes,omitempty"`
+	Active       bool   `json:"active"`
 }
 
 // MarshalItem encodes an item for storage in the catalog_items KV bucket.
@@ -83,8 +100,29 @@ func UnmarshalUser(data []byte) (UserPayload, error) {
 	return p, nil
 }
 
+// MarshalGroup encodes a group for storage in the catalog_groups KV bucket.
+func MarshalGroup(p GroupPayload) ([]byte, error) {
+	if p.Code == "" {
+		return nil, fmt.Errorf("group payload missing code")
+	}
+	return json.Marshal(p)
+}
+
+// UnmarshalGroup decodes a KV value into a GroupPayload.
+func UnmarshalGroup(data []byte) (GroupPayload, error) {
+	var p GroupPayload
+	if err := json.Unmarshal(data, &p); err != nil {
+		return GroupPayload{}, fmt.Errorf("decode group payload: %w", err)
+	}
+	if p.Code == "" {
+		return GroupPayload{}, fmt.Errorf("group payload missing code")
+	}
+	return p, nil
+}
+
 // Bucket names. Centralized so both sides agree without a config dance.
 const (
-	ItemsBucket = "catalog_items"
-	UsersBucket = "catalog_users"
+	ItemsBucket  = "catalog_items"
+	UsersBucket  = "catalog_users"
+	GroupsBucket = "catalog_groups"
 )

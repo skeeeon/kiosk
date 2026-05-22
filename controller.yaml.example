@@ -12,10 +12,12 @@ server:
 
 # JetStream KV bucket names the controller publishes catalog to. Managed
 # kiosks must point at the same names on their side (controller.* block in
-# kiosk.yaml). Defaults to "catalog_items" / "catalog_users" when blank.
+# kiosk.yaml). Defaults to "catalog_items" / "catalog_users" /
+# "catalog_groups" when blank.
 controller:
   catalog_items_bucket: "catalog_items"
   catalog_users_bucket: "catalog_users"
+  catalog_groups_bucket: "catalog_groups"
 
 # Optional. Customize the controller admin UI's visual identity. All keys
 # are optional; omitted values fall back to built-in SPA defaults.

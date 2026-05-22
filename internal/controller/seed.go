@@ -67,7 +67,8 @@ func RegisterSeedCommand(app *pocketbase.PocketBase, cfg *config.Config) {
 				}
 				if _, err := NewCatalogPublisher(context.Background(), app, js,
 					cfg.Controller.CatalogItemsBucket,
-					cfg.Controller.CatalogUsersBucket); err != nil {
+					cfg.Controller.CatalogUsersBucket,
+					cfg.Controller.CatalogGroupsBucket); err != nil {
 					return fmt.Errorf("catalog publisher: %w", err)
 				}
 			}
@@ -217,7 +218,19 @@ func seedUsers(app core.App, path string) error {
 		rec.Set("name", name)
 		rec.Set("email", csvCol(headers, row, "email"))
 		rec.Set("role", role)
-		rec.Set("group", csvCol(headers, row, "group"))
+		// group column carries the group's code; resolve to FK, auto-creating
+		// the row on first sight so existing CSVs Just Work. Admins enrich
+		// auto-created rows with contact metadata post-import.
+		groupCode := strings.TrimSpace(csvCol(headers, row, "group"))
+		groupID := ""
+		if groupCode != "" {
+			gID, err := ensureGroupByCode(app, groupCode)
+			if err != nil {
+				return fmt.Errorf("resolve group %q for user %s: %w", groupCode, code, err)
+			}
+			groupID = gID
+		}
+		rec.Set("group", groupID)
 		rec.Set("active", parseCSVBool(csvCol(headers, row, "active"), true))
 
 		if err := app.Save(rec); err != nil {
@@ -231,6 +244,33 @@ func seedUsers(app core.App, path string) error {
 	}
 	log.Printf("seed-catalog users: %d inserted, %d updated, %d skipped", inserted, updated, skipped)
 	return nil
+}
+
+// ensureGroupByCode returns the id of a groups row with the given code,
+// auto-creating it (code=name=code, active=true) if none exists. Used by
+// user-CSV import so existing CSV formats keep working — operators don't
+// have to pre-seed groups.
+func ensureGroupByCode(app core.App, code string) (string, error) {
+	existing, err := app.FindFirstRecordByFilter("groups",
+		"code = {:c}", dbx.Params{"c": code})
+	if err == nil {
+		return existing.Id, nil
+	}
+	if !isNotFound(err) {
+		return "", err
+	}
+	col, err := app.FindCollectionByNameOrId("groups")
+	if err != nil {
+		return "", fmt.Errorf("find groups collection: %w", err)
+	}
+	rec := core.NewRecord(col)
+	rec.Set("code", code)
+	rec.Set("name", code)
+	rec.Set("active", true)
+	if err := app.Save(rec); err != nil {
+		return "", fmt.Errorf("create group %q: %w", code, err)
+	}
+	return rec.Id, nil
 }
 
 func readCSV(path string) ([][]string, error) {

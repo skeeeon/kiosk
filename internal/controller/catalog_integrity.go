@@ -20,8 +20,9 @@ import (
 // Used for both /api/kiosk/catalog/integrity (read-only inspection) and as
 // the input to /api/kiosk/catalog/reconcile (which acts on the deltas).
 type CatalogIntegrityReport struct {
-	Items CatalogIntegrityBucket `json:"items"`
-	Users CatalogIntegrityBucket `json:"users"`
+	Items  CatalogIntegrityBucket `json:"items"`
+	Users  CatalogIntegrityBucket `json:"users"`
+	Groups CatalogIntegrityBucket `json:"groups"`
 }
 
 // CatalogIntegrityBucket is the per-bucket slice of the report. Keys are
@@ -37,8 +38,9 @@ type CatalogIntegrityBucket struct {
 
 // CatalogReconcileReport summarizes a reconcile run.
 type CatalogReconcileReport struct {
-	Items CatalogReconcileBucket `json:"items"`
-	Users CatalogReconcileBucket `json:"users"`
+	Items  CatalogReconcileBucket `json:"items"`
+	Users  CatalogReconcileBucket `json:"users"`
+	Groups CatalogReconcileBucket `json:"groups"`
 }
 
 // CatalogReconcileBucket counts the work done in one direction. Errors are
@@ -101,11 +103,21 @@ func expectedItemKeys(app core.App) (map[string][]byte, error) {
 
 // expectedUserKeys walks the users collection and resolves each to its KV
 // key (the user's code) plus a payload. Users are not kiosk-scoped — the
-// bucket is shared.
+// bucket is shared. The user's `group` FK is resolved to the group's code
+// here so the wire carries the human-readable identifier, not the
+// controller-local id (kiosks have their own ids per record).
 func expectedUserKeys(app core.App) (map[string][]byte, error) {
 	users, err := app.FindRecordsByFilter("users", "", "", 0, 0)
 	if err != nil {
 		return nil, fmt.Errorf("load users: %w", err)
+	}
+	groups, err := app.FindRecordsByFilter("groups", "", "", 0, 0)
+	if err != nil {
+		return nil, fmt.Errorf("load groups: %w", err)
+	}
+	groupCodeByID := make(map[string]string, len(groups))
+	for _, g := range groups {
+		groupCodeByID[g.Id] = g.GetString("code")
 	}
 	out := make(map[string][]byte, len(users))
 	for _, u := range users {
@@ -114,16 +126,46 @@ func expectedUserKeys(app core.App) (map[string][]byte, error) {
 			continue
 		}
 		payload := catalog.UserPayload{
-			Code:   code,
-			Name:   u.GetString("name"),
-			Email:  u.GetString("email"),
-			Role:   u.GetString("role"),
-			Group:  u.GetString("group"),
-			Active: u.GetBool("active"),
+			Code:      code,
+			Name:      u.GetString("name"),
+			Email:     u.GetString("email"),
+			Role:      u.GetString("role"),
+			GroupCode: groupCodeByID[u.GetString("group")],
+			Active:    u.GetBool("active"),
 		}
 		data, err := catalog.MarshalUser(payload)
 		if err != nil {
 			return nil, fmt.Errorf("marshal user %s: %w", code, err)
+		}
+		out[code] = data
+	}
+	return out, nil
+}
+
+// expectedGroupKeys walks the groups collection and resolves each to its KV
+// key (the group's code) plus a payload. Org-wide bucket.
+func expectedGroupKeys(app core.App) (map[string][]byte, error) {
+	groups, err := app.FindRecordsByFilter("groups", "", "", 0, 0)
+	if err != nil {
+		return nil, fmt.Errorf("load groups: %w", err)
+	}
+	out := make(map[string][]byte, len(groups))
+	for _, g := range groups {
+		code := g.GetString("code")
+		if code == "" {
+			continue
+		}
+		payload := catalog.GroupPayload{
+			Code:         code,
+			Name:         g.GetString("name"),
+			ContactEmail: g.GetString("contact_email"),
+			ContactPhone: g.GetString("contact_phone"),
+			Notes:        g.GetString("notes"),
+			Active:       g.GetBool("active"),
+		}
+		data, err := catalog.MarshalGroup(payload)
+		if err != nil {
+			return nil, fmt.Errorf("marshal group %s: %w", code, err)
 		}
 		out[code] = data
 	}
@@ -203,6 +245,23 @@ func (p *CatalogPublisher) Integrity(ctx context.Context) (CatalogIntegrityRepor
 		ExtraInKV:    extraUsers,
 	}
 
+	expectedGroups, err := expectedGroupKeys(p.app)
+	if err != nil {
+		return report, err
+	}
+	actualGroups, err := actualKVKeys(ctx, p.groups)
+	if err != nil {
+		return report, fmt.Errorf("enumerate groups KV: %w", err)
+	}
+	missingGroups, extraGroups := diffKeys(expectedGroups, actualGroups)
+	report.Groups = CatalogIntegrityBucket{
+		Bucket:       p.groups.Bucket(),
+		ExpectedKeys: len(expectedGroups),
+		ActualKeys:   len(actualGroups),
+		MissingInKV:  missingGroups,
+		ExtraInKV:    extraGroups,
+	}
+
 	return report, nil
 }
 
@@ -238,11 +297,23 @@ func (p *CatalogPublisher) Reconcile(ctx context.Context, deleteOrphans bool) (C
 	}
 	report.Users = p.reconcileBucket(ctx, p.users, expectedUsers, actualUsers, deleteOrphans)
 
+	expectedGroups, err := expectedGroupKeys(p.app)
+	if err != nil {
+		return report, err
+	}
+	actualGroups, err := actualKVKeys(ctx, p.groups)
+	if err != nil {
+		return report, fmt.Errorf("enumerate groups KV: %w", err)
+	}
+	report.Groups = p.reconcileBucket(ctx, p.groups, expectedGroups, actualGroups, deleteOrphans)
+
 	slog.Info("controller.catalog.reconcile_complete",
 		"items_published", report.Items.Published,
 		"items_deleted", report.Items.Deleted,
 		"users_published", report.Users.Published,
-		"users_deleted", report.Users.Deleted)
+		"users_deleted", report.Users.Deleted,
+		"groups_published", report.Groups.Published,
+		"groups_deleted", report.Groups.Deleted)
 
 	return report, nil
 }

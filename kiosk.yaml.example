@@ -48,12 +48,13 @@ nats:
 # hides catalog edit affordances. Standalone kiosks leave this disabled.
 #
 # Requires nats.enabled=true with a connection to the same broker the
-# controller publishes to. Bucket names default to "catalog_items" and
-# "catalog_users" if blank.
+# controller publishes to. Bucket names default to "catalog_items",
+# "catalog_users", and "catalog_groups" if blank.
 controller:
   enabled: false
   catalog_items_bucket: "catalog_items"
   catalog_users_bucket: "catalog_users"
+  catalog_groups_bucket: "catalog_groups"
 
 # Optional. Customize the kiosk's visual identity. All keys are optional;
 # omitted values fall back to built-in defaults. The example logo + tagline

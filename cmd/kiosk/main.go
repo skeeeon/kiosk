@@ -69,6 +69,7 @@ func main() {
 			catalogWatcher = catalog.NewWatcher(app, js,
 				cfg.Controller.CatalogItemsBucket,
 				cfg.Controller.CatalogUsersBucket,
+				cfg.Controller.CatalogGroupsBucket,
 				cfg.Kiosk.Code)
 			app.OnServe().BindFunc(func(e *core.ServeEvent) error {
 				if err := catalogWatcher.Start(watcherCtx); err != nil {

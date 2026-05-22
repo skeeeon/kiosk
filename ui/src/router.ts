@@ -7,6 +7,7 @@ import AdminLoginView from './views/AdminLoginView.vue'
 import AdminLayout from './views/AdminLayout.vue'
 import AdminItemsView from './views/AdminItemsView.vue'
 import AdminUsersView from './views/AdminUsersView.vue'
+import AdminGroupsView from './views/AdminGroupsView.vue'
 import AdminImportView from './views/AdminImportView.vue'
 import AdminReportsView from './views/AdminReportsView.vue'
 import AdminKiosksView from './views/AdminKiosksView.vue'
@@ -26,6 +27,7 @@ export const router = createRouter({
         { path: '', redirect: { name: 'admin-items' } },
         { path: 'items', name: 'admin-items', component: AdminItemsView },
         { path: 'users', name: 'admin-users', component: AdminUsersView },
+        { path: 'groups', name: 'admin-groups', component: AdminGroupsView },
         { path: 'import', name: 'admin-import', component: AdminImportView },
         { path: 'reports', name: 'admin-reports', component: AdminReportsView },
         // Controller-only views. Nav links only render when role=controller,

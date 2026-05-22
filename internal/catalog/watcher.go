@@ -15,9 +15,9 @@ import (
 )
 
 // Watcher subscribes to the catalog KV buckets and projects each update
-// into the kiosk's local PB items/users collections. Lifecycle:
+// into the kiosk's local PB items/users/groups collections. Lifecycle:
 //
-//	w := catalog.NewWatcher(app, js, "catalog_items", "catalog_users", "KIOSK01")
+//	w := catalog.NewWatcher(app, js, "catalog_items", "catalog_users", "catalog_groups", "KIOSK01")
 //	w.Start(ctx)        // returns once watchers are running
 //	...
 //	w.Stop()            // call from OnTerminate
@@ -25,35 +25,42 @@ import (
 // `kioskCode` scopes the items watch to this kiosk's slice of the shared
 // catalog_items bucket — keys are namespaced `<kiosk_code>.<item_code>` so
 // the watcher uses `Watch("<my_code>.>")` to filter on the wire instead of
-// receiving everything and discarding. Users are not scoped (workers are
-// org-wide).
+// receiving everything and discarding. Users and groups are not scoped
+// (workers and the groups they belong to are org-wide).
 type Watcher struct {
-	app          core.App
-	js           jetstream.JetStream
-	itemsBucket  string
-	usersBucket  string
-	kioskCode    string
-	itemsWatcher jetstream.KeyWatcher
-	usersWatcher jetstream.KeyWatcher
-	cancel       context.CancelFunc
+	app           core.App
+	js            jetstream.JetStream
+	itemsBucket   string
+	usersBucket   string
+	groupsBucket  string
+	kioskCode     string
+	itemsWatcher  jetstream.KeyWatcher
+	usersWatcher  jetstream.KeyWatcher
+	groupsWatcher jetstream.KeyWatcher
+	cancel        context.CancelFunc
 }
 
 // NewWatcher wires a watcher but doesn't connect — call Start to begin
-// watching. Bucket names default to catalog.ItemsBucket / UsersBucket if
-// empty, so operators with the standard layout can leave the yaml blank.
-func NewWatcher(app core.App, js jetstream.JetStream, itemsBucket, usersBucket, kioskCode string) *Watcher {
+// watching. Bucket names default to catalog.ItemsBucket / UsersBucket /
+// GroupsBucket if empty, so operators with the standard layout can leave
+// the yaml blank.
+func NewWatcher(app core.App, js jetstream.JetStream, itemsBucket, usersBucket, groupsBucket, kioskCode string) *Watcher {
 	if itemsBucket == "" {
 		itemsBucket = ItemsBucket
 	}
 	if usersBucket == "" {
 		usersBucket = UsersBucket
 	}
+	if groupsBucket == "" {
+		groupsBucket = GroupsBucket
+	}
 	return &Watcher{
-		app:         app,
-		js:          js,
-		itemsBucket: itemsBucket,
-		usersBucket: usersBucket,
-		kioskCode:   kioskCode,
+		app:          app,
+		js:           js,
+		itemsBucket:  itemsBucket,
+		usersBucket:  usersBucket,
+		groupsBucket: groupsBucket,
+		kioskCode:    kioskCode,
 	}
 }
 
@@ -75,6 +82,11 @@ func (w *Watcher) Start(parent context.Context) error {
 		cancel()
 		return fmt.Errorf("open users KV %q: %w", w.usersBucket, err)
 	}
+	groups, err := w.js.KeyValue(ctx, w.groupsBucket)
+	if err != nil {
+		cancel()
+		return fmt.Errorf("open groups KV %q: %w", w.groupsBucket, err)
+	}
 
 	// Watch on the kiosk's prefix: snapshot of this kiosk's slice, then
 	// ongoing deltas. IncludeHistory is off — we want latest values only.
@@ -89,20 +101,35 @@ func (w *Watcher) Start(parent context.Context) error {
 		cancel()
 		return fmt.Errorf("watch items: %w", err)
 	}
+	// Groups before users: a user payload may carry a GroupCode whose row
+	// hasn't projected yet. Starting groups first reduces the rate of
+	// out-of-order arrivals; both runtimes still tolerate it (upsertUser
+	// will retry FK resolution on the next user-update).
+	gw, err := groups.WatchAll(ctx)
+	if err != nil {
+		iw.Stop()
+		cancel()
+		return fmt.Errorf("watch groups: %w", err)
+	}
 	uw, err := users.WatchAll(ctx)
 	if err != nil {
 		iw.Stop()
+		gw.Stop()
 		cancel()
 		return fmt.Errorf("watch users: %w", err)
 	}
 	w.itemsWatcher = iw
 	w.usersWatcher = uw
+	w.groupsWatcher = gw
 
 	go w.runItems(ctx, iw)
+	go w.runGroups(ctx, gw)
 	go w.runUsers(ctx, uw)
 
 	slog.Info("kiosk.catalog.watcher.started",
-		"items_bucket", w.itemsBucket, "users_bucket", w.usersBucket)
+		"items_bucket", w.itemsBucket,
+		"users_bucket", w.usersBucket,
+		"groups_bucket", w.groupsBucket)
 	return nil
 }
 
@@ -115,6 +142,10 @@ func (w *Watcher) Stop() {
 	if w.usersWatcher != nil {
 		w.usersWatcher.Stop()
 		w.usersWatcher = nil
+	}
+	if w.groupsWatcher != nil {
+		w.groupsWatcher.Stop()
+		w.groupsWatcher = nil
 	}
 	if w.cancel != nil {
 		w.cancel()
@@ -156,6 +187,24 @@ func (w *Watcher) runUsers(ctx context.Context, kw jetstream.KeyWatcher) {
 				continue
 			}
 			w.applyUser(entry)
+		}
+	}
+}
+
+func (w *Watcher) runGroups(ctx context.Context, kw jetstream.KeyWatcher) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case entry, ok := <-kw.Updates():
+			if !ok {
+				return
+			}
+			if entry == nil {
+				slog.Info("kiosk.catalog.groups.snapshot_done")
+				continue
+			}
+			w.applyGroup(entry)
 		}
 	}
 }
@@ -213,6 +262,26 @@ func (w *Watcher) applyUser(entry jetstream.KeyValueEntry) {
 		}
 		if err := w.upsertUser(payload); err != nil {
 			slog.Warn("kiosk.catalog.users.upsert_failed", "code", code, "error", err)
+		}
+	}
+}
+
+func (w *Watcher) applyGroup(entry jetstream.KeyValueEntry) {
+	code := entry.Key()
+	switch entry.Operation() {
+	case jetstream.KeyValueDelete, jetstream.KeyValuePurge:
+		if err := w.softDelete("groups", code); err != nil {
+			slog.Warn("kiosk.catalog.groups.delete_failed", "code", code, "error", err)
+		}
+		return
+	case jetstream.KeyValuePut:
+		payload, err := UnmarshalGroup(entry.Value())
+		if err != nil {
+			slog.Warn("kiosk.catalog.groups.bad_payload", "code", code, "error", err)
+			return
+		}
+		if err := w.upsertGroup(payload); err != nil {
+			slog.Warn("kiosk.catalog.groups.upsert_failed", "code", code, "error", err)
 		}
 	}
 }
@@ -279,7 +348,46 @@ func (w *Watcher) upsertUser(p UserPayload) error {
 	rec.Set("name", p.Name)
 	rec.Set("email", p.Email)
 	rec.Set("role", p.Role)
-	rec.Set("group", p.Group)
+	// Resolve group code → local FK. If the group payload hasn't projected
+	// yet (out-of-order arrival), set blank — the next user update after the
+	// group lands will fill it in. Group is optional anyway, so blank is a
+	// valid state, not an error.
+	groupID := ""
+	if p.GroupCode != "" {
+		if g, err := w.app.FindFirstRecordByFilter("groups", "code = {:c}", dbx.Params{"c": p.GroupCode}); err == nil {
+			groupID = g.Id
+		} else if !isNotFound(err) {
+			return fmt.Errorf("resolve group %q: %w", p.GroupCode, err)
+		}
+	}
+	rec.Set("group", groupID)
+	rec.Set("active", p.Active)
+	return w.app.Save(rec)
+}
+
+func (w *Watcher) upsertGroup(p GroupPayload) error {
+	existing, err := w.app.FindFirstRecordByFilter("groups",
+		"code = {:c}", dbx.Params{"c": p.Code})
+	if err != nil && !isNotFound(err) {
+		return err
+	}
+
+	var rec *core.Record
+	if existing != nil {
+		rec = existing
+	} else {
+		col, err := w.app.FindCollectionByNameOrId("groups")
+		if err != nil {
+			return fmt.Errorf("find groups collection: %w", err)
+		}
+		rec = core.NewRecord(col)
+	}
+
+	rec.Set("code", p.Code)
+	rec.Set("name", p.Name)
+	rec.Set("contact_email", p.ContactEmail)
+	rec.Set("contact_phone", p.ContactPhone)
+	rec.Set("notes", p.Notes)
 	rec.Set("active", p.Active)
 	return w.app.Save(rec)
 }

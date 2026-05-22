@@ -36,7 +36,7 @@ func newTestWatcher(app core.App) *Watcher {
 	// watcher's Start path is what would touch JetStream, and that's
 	// integration-tested out of process. kioskCode is arbitrary; it only
 	// matters when Start runs the prefix-filtered Watch.
-	return NewWatcher(app, nil, ItemsBucket, UsersBucket, "KTEST")
+	return NewWatcher(app, nil, ItemsBucket, UsersBucket, GroupsBucket, "KTEST")
 }
 
 func TestWatcher_UpsertItem_InsertsAndUpdates(t *testing.T) {
@@ -182,6 +182,112 @@ func TestStripPrefix(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("stripPrefix(%q, %q) = %q, want %q", tt.key, tt.prefix, got, tt.want)
 		}
+	}
+}
+
+func TestWatcher_UpsertGroup_InsertsAndUpdates(t *testing.T) {
+	app := setupApp(t)
+	w := newTestWatcher(app)
+
+	insert := GroupPayload{
+		Code: "ACME", Name: "Acme Subcontracting",
+		ContactEmail: "foreman@acme.example",
+		Active:       true,
+	}
+	if err := w.upsertGroup(insert); err != nil {
+		t.Fatalf("first upsert: %v", err)
+	}
+	rec, err := app.FindFirstRecordByFilter("groups",
+		"code = {:c}", dbx.Params{"c": "ACME"})
+	if err != nil {
+		t.Fatalf("find: %v", err)
+	}
+	if got := rec.GetString("name"); got != "Acme Subcontracting" {
+		t.Errorf("name: got %q", got)
+	}
+	if got := rec.GetString("contact_email"); got != "foreman@acme.example" {
+		t.Errorf("contact_email: got %q", got)
+	}
+
+	update := GroupPayload{
+		Code: "ACME", Name: "Acme Subcontracting LLC",
+		ContactEmail: "pm@acme.example",
+		Active:       true,
+	}
+	if err := w.upsertGroup(update); err != nil {
+		t.Fatalf("second upsert: %v", err)
+	}
+	rec, _ = app.FindFirstRecordByFilter("groups",
+		"code = {:c}", dbx.Params{"c": "ACME"})
+	if got := rec.GetString("name"); got != "Acme Subcontracting LLC" {
+		t.Errorf("name not updated: got %q", got)
+	}
+}
+
+func TestWatcher_UpsertUser_ResolvesGroupCodeToFK(t *testing.T) {
+	app := setupApp(t)
+	w := newTestWatcher(app)
+
+	// Group lands first (the typical order).
+	if err := w.upsertGroup(GroupPayload{
+		Code: "ACME", Name: "Acme", Active: true,
+	}); err != nil {
+		t.Fatalf("upsertGroup: %v", err)
+	}
+	groupRec, _ := app.FindFirstRecordByFilter("groups",
+		"code = {:c}", dbx.Params{"c": "ACME"})
+
+	if err := w.upsertUser(UserPayload{
+		Code: "BADGE-3", Name: "Carol",
+		Email: "carol@example.com",
+		Role:  "worker", GroupCode: "ACME", Active: true,
+	}); err != nil {
+		t.Fatalf("upsertUser: %v", err)
+	}
+	userRec, _ := app.FindFirstRecordByFilter("users",
+		"code = {:c}", dbx.Params{"c": "BADGE-3"})
+	if got := userRec.GetString("group"); got != groupRec.Id {
+		t.Errorf("user.group FK: want %q, got %q", groupRec.Id, got)
+	}
+}
+
+func TestWatcher_UpsertUser_HandlesGroupBeforeGroupArrives(t *testing.T) {
+	app := setupApp(t)
+	w := newTestWatcher(app)
+
+	// User arrives before its group (the out-of-order case). The user's
+	// group FK is left blank for now; a subsequent user-update will resolve
+	// it once the group lands.
+	if err := w.upsertUser(UserPayload{
+		Code: "BADGE-4", Name: "Dave",
+		Email: "dave@example.com",
+		Role:  "worker", GroupCode: "BETA", Active: true,
+	}); err != nil {
+		t.Fatalf("upsertUser early: %v", err)
+	}
+	userRec, _ := app.FindFirstRecordByFilter("users",
+		"code = {:c}", dbx.Params{"c": "BADGE-4"})
+	if got := userRec.GetString("group"); got != "" {
+		t.Errorf("user.group FK with missing group: want empty, got %q", got)
+	}
+
+	// Group lands. Next user-update resolves the FK.
+	if err := w.upsertGroup(GroupPayload{Code: "BETA", Name: "Beta", Active: true}); err != nil {
+		t.Fatalf("upsertGroup: %v", err)
+	}
+	if err := w.upsertUser(UserPayload{
+		Code: "BADGE-4", Name: "Dave",
+		Email: "dave@example.com",
+		Role:  "worker", GroupCode: "BETA", Active: true,
+	}); err != nil {
+		t.Fatalf("upsertUser after group: %v", err)
+	}
+	userRec, _ = app.FindFirstRecordByFilter("users",
+		"code = {:c}", dbx.Params{"c": "BADGE-4"})
+	groupRec, _ := app.FindFirstRecordByFilter("groups",
+		"code = {:c}", dbx.Params{"c": "BETA"})
+	if got := userRec.GetString("group"); got != groupRec.Id {
+		t.Errorf("user.group FK after retry: want %q, got %q", groupRec.Id, got)
 	}
 }
 

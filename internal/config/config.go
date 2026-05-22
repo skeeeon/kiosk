@@ -125,9 +125,10 @@ type NATSConfig struct {
 // Disabled by default — a kiosk with controller.enabled=false continues to
 // behave as a standalone v1 kiosk regardless of whether NATS is on.
 type ControllerConfig struct {
-	Enabled            bool   `yaml:"enabled"`
-	CatalogItemsBucket string `yaml:"catalog_items_bucket"`
-	CatalogUsersBucket string `yaml:"catalog_users_bucket"`
+	Enabled             bool   `yaml:"enabled"`
+	CatalogItemsBucket  string `yaml:"catalog_items_bucket"`
+	CatalogUsersBucket  string `yaml:"catalog_users_bucket"`
+	CatalogGroupsBucket string `yaml:"catalog_groups_bucket"`
 }
 
 // BrandingConfig customizes the kiosk's visual identity. All fields are
@@ -289,6 +290,9 @@ func applyEnvOverrides(c *Config) {
 	}
 	if v := os.Getenv("KIOSK_CONTROLLER_CATALOG_USERS_BUCKET"); v != "" {
 		c.Controller.CatalogUsersBucket = v
+	}
+	if v := os.Getenv("KIOSK_CONTROLLER_CATALOG_GROUPS_BUCKET"); v != "" {
+		c.Controller.CatalogGroupsBucket = v
 	}
 }
 

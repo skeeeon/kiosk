@@ -74,11 +74,12 @@ func TestItemPayload_RejectsEmptyCode(t *testing.T) {
 
 func TestUserPayload_RoundTrip(t *testing.T) {
 	in := UserPayload{
-		Code:   "BADGE-007",
-		Name:   "Jane Doe",
-		Email:  "jane@example.com",
-		Role:   "worker",
-		Active: true,
+		Code:      "BADGE-007",
+		Name:      "Jane Doe",
+		Email:     "jane@example.com",
+		Role:      "worker",
+		GroupCode: "electrical",
+		Active:    true,
 	}
 	data, err := MarshalUser(in)
 	if err != nil {
@@ -115,6 +116,54 @@ func TestUserPayload_RejectsEmptyCode(t *testing.T) {
 		t.Fatal("expected error when code is empty")
 	}
 	if _, err := UnmarshalUser([]byte(`{"name":"no code"}`)); err == nil {
+		t.Fatal("expected error when decoded payload has no code")
+	}
+}
+
+func TestGroupPayload_RoundTrip(t *testing.T) {
+	in := GroupPayload{
+		Code:         "ACME",
+		Name:         "Acme Subcontracting",
+		ContactEmail: "foreman@acme.example",
+		ContactPhone: "+1-555-0100",
+		Notes:        "NET-30",
+		Active:       true,
+	}
+	data, err := MarshalGroup(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	out, err := UnmarshalGroup(data)
+	if err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out != in {
+		t.Errorf("round-trip mismatch:\n in=%+v\nout=%+v", in, out)
+	}
+}
+
+func TestGroupPayload_ExcludesSystemFields(t *testing.T) {
+	in := GroupPayload{Code: "X", Name: "x", Active: true}
+	data, err := MarshalGroup(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var generic map[string]any
+	if err := json.Unmarshal(data, &generic); err != nil {
+		t.Fatalf("decode generic: %v", err)
+	}
+	for _, banned := range []string{"id", "created", "updated", "collectionId", "collectionName"} {
+		if _, ok := generic[banned]; ok {
+			t.Errorf("serialized group payload contains banned field %q (full payload: %s)", banned, data)
+		}
+	}
+}
+
+func TestGroupPayload_RejectsEmptyCode(t *testing.T) {
+	if _, err := MarshalGroup(GroupPayload{Name: "no code"}); err == nil {
+		t.Fatal("expected error when code is empty")
+	}
+	if _, err := UnmarshalGroup([]byte(`{"name":"no code"}`)); err == nil {
 		t.Fatal("expected error when decoded payload has no code")
 	}
 }

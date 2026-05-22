@@ -471,8 +471,9 @@ and audit-log collections, and the controller-only `kiosks` registry and
 
 | Collection | Purpose |
 |---|---|
-| `users` | Workers (badge-holders). PB default auth collection, real emails kept for future notifications. Workers don't log in in v1. |
+| `users` | Workers (badge-holders). PB default auth collection, real emails kept for future notifications. Workers don't log in in v1. `group` is an optional FK to `groups`. |
 | `admins` | Foremen / admins. Separate PB auth collection. Login via email + password. |
+| `groups` | Sub-contractors / trades. `code` is the stable join key (CSV import, cross-fleet sync); metadata fields (`name`, `contact_email`, `contact_phone`, `notes`) are admin-managed and downstream features like email receipts use them. Optional on workers; deletion sets affected `users.group` to null. |
 | `items` | Tools and consumables (the SKU). `tracking_mode` is `quantity` or `serialized`. Carries `quantity_on_hand` (fleet count for tools / current stock for consumables) and `reorder_threshold` (low-stock alert level; 0 disables the alert). |
 | `item_instances` | One physical unit of a serialized SKU. Holds the scannable `code`, the printed `serial`, an optional `rfid_epc`, and `active`. FK to the parent `items` row. |
 | `transactions` | Append-only ledger. `kiosk_code`, `location_code`, `user`, `started_at`, `completed_at`, `status`. |
@@ -787,6 +788,7 @@ stream and KV buckets once, out of band:
 nats stream add KIOSK_EVENTS --subjects 'kiosk.>' --retention limits --max-age 168h
 nats kv add catalog_items --history 1
 nats kv add catalog_users --history 1
+nats kv add catalog_groups --history 1
 ```
 
 (The controller will auto-create these on first start as well; the manual
@@ -876,9 +878,14 @@ WORKER-1,Alice,alice@example.com,worker,electrical,true
 FOREMAN-1,Bob,bob@example.com,foreman,electrical,true
 ```
 
-The `group` column is optional (blank = ungrouped). On shared sites with
-multiple trades, set each worker's group so a foreman can return tools
-across users **only within their own group**; an ungrouped foreman can't
+The `group` column carries the group's **code** (see the `groups` collection in
+the schema table). Blank means ungrouped. Unknown group codes are
+**auto-created** during import — a row with `code = name = csvValue,
+active = true` is inserted, which admins then enrich with `contact_email`,
+phone, and notes via the Groups admin view. This keeps existing CSV
+formats working unchanged. On shared sites with multiple trades, set
+each worker's group so a foreman can return tools across users **only
+within their own group**; an ungrouped foreman can't
 act for anyone. See "Groups and roles" below for the full rules.
 
 `--no-publish` skips the KV fan-out (useful for first-time seeding before

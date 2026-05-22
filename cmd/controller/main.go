@@ -93,7 +93,8 @@ func main() {
 
 		cp, err := controller.NewCatalogPublisher(aggCtx, app, js,
 			cfg.Controller.CatalogItemsBucket,
-			cfg.Controller.CatalogUsersBucket)
+			cfg.Controller.CatalogUsersBucket,
+			cfg.Controller.CatalogGroupsBucket)
 		if err != nil {
 			aggCancel()
 			return fmt.Errorf("catalog publisher: %w", err)

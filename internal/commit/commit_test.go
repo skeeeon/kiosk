@@ -59,6 +59,7 @@ func seedFixtures(t *testing.T, app core.App) seed {
 	if err != nil {
 		t.Fatalf("find users: %v", err)
 	}
+	electricalID := ensureGroup(t, app, "electrical")
 	// Alice is a foreman in the "electrical" group. The positive-path return
 	// tests below rely on this: only a foreman in the same group as the
 	// original checkout user can perform cross-user or uncorrelated returns.
@@ -67,7 +68,7 @@ func seedFixtures(t *testing.T, app core.App) seed {
 	alice.Set("name", "Alice")
 	alice.Set("code", "EMP-1")
 	alice.Set("role", "foreman")
-	alice.Set("group", "electrical")
+	alice.Set("group", electricalID)
 	alice.Set("active", true)
 	alice.SetPassword("alice-password-123")
 	if err := app.Save(alice); err != nil {
@@ -79,7 +80,7 @@ func seedFixtures(t *testing.T, app core.App) seed {
 	bob.Set("name", "Bob")
 	bob.Set("code", "EMP-2")
 	bob.Set("role", "worker")
-	bob.Set("group", "electrical")
+	bob.Set("group", electricalID)
 	bob.Set("active", true)
 	bob.SetPassword("bob-password-123")
 	if err := app.Save(bob); err != nil {
@@ -648,17 +649,45 @@ func TestUncorrelatedReturn_RejectedWhenPolicyDenies(t *testing.T) {
 
 // setUserRoleAndGroup is a test helper that flips a seeded user's role/group
 // for the role+group rules below. Direct DAO update; bypasses collection rules.
-func setUserRoleAndGroup(t *testing.T, app core.App, userID, role, group string) {
+// groupCode is the human-readable code; an empty string clears the FK (used
+// to test the "ungrouped foreman" case).
+func setUserRoleAndGroup(t *testing.T, app core.App, userID, role, groupCode string) {
 	t.Helper()
 	rec, err := app.FindRecordById("users", userID)
 	if err != nil {
 		t.Fatalf("find user %s: %v", userID, err)
 	}
 	rec.Set("role", role)
-	rec.Set("group", group)
+	if groupCode == "" {
+		rec.Set("group", "")
+	} else {
+		rec.Set("group", ensureGroup(t, app, groupCode))
+	}
 	if err := app.Save(rec); err != nil {
 		t.Fatalf("save user %s: %v", userID, err)
 	}
+}
+
+// ensureGroup returns the id of a groups row with the given code, creating
+// the row if needed. Lets tests use human-readable code strings while the
+// underlying field is a relation FK.
+func ensureGroup(t *testing.T, app core.App, code string) string {
+	t.Helper()
+	if existing, err := app.FindFirstRecordByFilter("groups", "code = {:code}", dbx.Params{"code": code}); err == nil {
+		return existing.Id
+	}
+	col, err := app.FindCollectionByNameOrId("groups")
+	if err != nil {
+		t.Fatalf("find groups collection: %v", err)
+	}
+	rec := core.NewRecord(col)
+	rec.Set("code", code)
+	rec.Set("name", code)
+	rec.Set("active", true)
+	if err := app.Save(rec); err != nil {
+		t.Fatalf("save group %q: %v", code, err)
+	}
+	return rec.Id
 }
 
 func TestCrossUserReturn_RejectedWhenCartUserIsNotForeman(t *testing.T) {
