@@ -118,10 +118,8 @@ func main() {
 	log.Printf("starting kiosk %s at %s on %s:%d",
 		cfg.Kiosk.Code, cfg.Kiosk.LocationCode, cfg.Server.Bind, cfg.Server.Port)
 
-	if len(os.Args) == 1 {
-		os.Args = append(os.Args, "serve",
-			fmt.Sprintf("--http=%s:%d", cfg.Server.Bind, cfg.Server.Port))
-	}
+	os.Args = config.EnsureServeBind(os.Args,
+		fmt.Sprintf("%s:%d", cfg.Server.Bind, cfg.Server.Port))
 
 	if err := app.Start(); err != nil {
 		log.Fatal(err)

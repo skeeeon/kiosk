@@ -10,6 +10,13 @@ server:
   port: 8091
   bind: "127.0.0.1"
 
+# JetStream KV bucket names the controller publishes catalog to. Managed
+# kiosks must point at the same names on their side (controller.* block in
+# kiosk.yaml). Defaults to "catalog_items" / "catalog_users" when blank.
+controller:
+  catalog_items_bucket: "catalog_items"
+  catalog_users_bucket: "catalog_users"
+
 # Optional. Customize the controller admin UI's visual identity. All keys
 # are optional; omitted values fall back to built-in SPA defaults.
 branding:

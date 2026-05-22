@@ -22,24 +22,35 @@ type CatalogPublisher struct {
 }
 
 // NewCatalogPublisher provisions the two KV buckets (idempotent) and binds
-// the PB record hooks on the supplied app. Returns the publisher so main()
-// can keep it alive for its lifetime, but no further interaction is needed.
-func NewCatalogPublisher(ctx context.Context, app core.App, js jetstream.JetStream) (*CatalogPublisher, error) {
+// the PB record hooks on the supplied app. Bucket names fall back to the
+// package defaults (catalog.ItemsBucket / catalog.UsersBucket) when empty,
+// so config can leave them blank for the standard layout. Both sides of the
+// sync — this publisher and the kiosk's watcher — read from the same
+// controller.catalog_*_bucket config keys, so as long as the names match
+// in both yamls, things work.
+func NewCatalogPublisher(ctx context.Context, app core.App, js jetstream.JetStream, itemsBucket, usersBucket string) (*CatalogPublisher, error) {
+	if itemsBucket == "" {
+		itemsBucket = catalog.ItemsBucket
+	}
+	if usersBucket == "" {
+		usersBucket = catalog.UsersBucket
+	}
+
 	items, err := js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
-		Bucket:      catalog.ItemsBucket,
+		Bucket:      itemsBucket,
 		Description: "Catalog: items, keyed by code. Source of truth for managed kiosks.",
 		History:     1,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("create items KV: %w", err)
+		return nil, fmt.Errorf("create items KV %q: %w", itemsBucket, err)
 	}
 	users, err := js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
-		Bucket:      catalog.UsersBucket,
+		Bucket:      usersBucket,
 		Description: "Catalog: users, keyed by code. Source of truth for managed kiosks.",
 		History:     1,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("create users KV: %w", err)
+		return nil, fmt.Errorf("create users KV %q: %w", usersBucket, err)
 	}
 
 	cp := &CatalogPublisher{items: items, users: users}

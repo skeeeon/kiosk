@@ -93,7 +93,9 @@ func main() {
 
 		aggCtx, aggCancel := context.WithCancel(context.Background())
 
-		if _, err := controller.NewCatalogPublisher(aggCtx, app, js); err != nil {
+		if _, err := controller.NewCatalogPublisher(aggCtx, app, js,
+			cfg.Controller.CatalogItemsBucket,
+			cfg.Controller.CatalogUsersBucket); err != nil {
 			aggCancel()
 			return fmt.Errorf("catalog publisher: %w", err)
 		}
@@ -119,10 +121,8 @@ func main() {
 	log.Printf("starting kiosk-controller on %s:%d (nats=%s)",
 		cfg.Server.Bind, cfg.Server.Port, cfg.NATS.URL)
 
-	if len(os.Args) == 1 {
-		os.Args = append(os.Args, "serve",
-			fmt.Sprintf("--http=%s:%d", cfg.Server.Bind, cfg.Server.Port))
-	}
+	os.Args = config.EnsureServeBind(os.Args,
+		fmt.Sprintf("%s:%d", cfg.Server.Bind, cfg.Server.Port))
 
 	if err := app.Start(); err != nil {
 		log.Fatal(err)
