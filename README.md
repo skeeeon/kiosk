@@ -11,9 +11,10 @@ external dependencies at runtime. `scp kiosk-app pi@kiosk:/opt/kiosk/` is the
 entire deploy story.
 
 For multi-kiosk deployments there's an optional **kiosk-controller** sibling
-binary that distributes catalog (items + users) down to managed kiosks over
-NATS JetStream KV and aggregates their transaction events into a central
-ledger. Standalone kiosks ignore it; managed kiosks point at it via config.
+binary that distributes catalog down to managed kiosks over NATS JetStream
+KV (items are per-kiosk via a `kiosk_items` membership table; users are
+org-wide) and aggregates their transaction events into a central ledger.
+Standalone kiosks ignore it; managed kiosks point at it via config.
 See [Central controller (kiosk-controller)](#central-controller-kiosk-controller).
 
 ## Overview
@@ -43,9 +44,13 @@ See [Central controller (kiosk-controller)](#central-controller-kiosk-controller
 - **Optional central controller.** An opt-in `kiosk-controller` binary
   (separate `cmd/controller`) aggregates per-kiosk transaction events into
   its own ledger via a JetStream durable consumer, and pushes catalog
-  updates (items + users) down to managed kiosks via JetStream KV. Managed
-  kiosks become read-only on catalog from the admin UI; stock adjustments
-  and other kiosk-local actions remain available.
+  updates down to managed kiosks via JetStream KV. Item delivery is
+  **membership-driven**: a `kiosk_items` join collection on the controller
+  decides which SKUs each kiosk stocks, and item keys are namespaced
+  `<kiosk_code>.<item_code>` so each kiosk only ever receives its own
+  slice. Users remain org-wide. Managed kiosks become read-only on catalog
+  from the admin UI; stock adjustments and other kiosk-local actions
+  remain available.
 
 ## Architecture
 
@@ -68,7 +73,9 @@ See [Central controller (kiosk-controller)](#central-controller-kiosk-controller
 The barcode scanner is a USB HID keyboard. The browser captures keystrokes via
 a window-level listener that buffers characters and dispatches on Enter. Same
 mechanism reads user QR codes and item barcodes; the dispatcher disambiguates
-by configurable prefix or by trying items first, then users.
+by configurable prefix or by trying instance code → item code → instance RFID
+→ user code. RFID is instance-only — EPCs are per-tag and live on
+`item_instances`, never on the SKU.
 
 ## Tech stack
 
@@ -99,7 +106,7 @@ kiosk/
 │   ├── catalog/                 Cross-fleet payload shape; kiosk-side KV watcher + projector + tests
 │   ├── commit/                  Cart-to-transaction orchestrator + tests
 │   ├── config/                  YAML loader + env overrides (shared between binaries)
-│   ├── controller/              Controller-side aggregator, catalog publisher, seed-catalog subcommand + tests
+│   ├── controller/              Controller-side aggregator, catalog publisher, membership helpers, seed-catalog subcommand + tests
 │   ├── events/                  Publish() + NATS publisher + JetStream accessor + tests
 │   ├── handlers/                HTTP handlers for /api/kiosk/* + tests
 │   ├── kioskctx/                Process-global kiosk identity
@@ -110,7 +117,10 @@ kiosk/
 │   ├── 1779400000_*.go               items.quantity_on_hand / reorder_threshold
 │   ├── 1779500000_*.go               item_instances + FK backfill
 │   ├── 1779600000_*.go               stock_adjustments collection
-│   └── 2000000000_controller_*.go    Controller-only: kiosks registry + source_* fields
+│   ├── 1779700000_*.go               transactions.lines_count denormalization
+│   ├── 1779800000_*.go               Drop vestigial items.rfid_epc / items.serial
+│   ├── 2000000000_controller_*.go    Controller-only: kiosks registry + source_* fields
+│   └── 2000100000_add_kiosk_items.go Controller-only: kiosk_items membership + open kiosks.CreateRule
 ├── ui/                          Vue 3 SPA source (Vite project)
 │   └── src/
 │       ├── components/          Dialog primitives + cart UI
@@ -355,7 +365,9 @@ Tested modules:
 - `internal/controller` — idempotent transaction + line projection under
   redelivery; "parent not yet here" produces a retry; unknown user/item
   skipped with ack; `TouchKiosk` auto-registers on first sight and
-  advances `last_seen` on subsequent events.
+  advances `last_seen` on subsequent events. `KiosksForItem` /
+  `ItemsForKiosk` membership helpers plus cascade-delete verification on
+  `kiosk_items`.
 
 ## API reference
 
@@ -427,9 +439,10 @@ nats sub "kiosk.>"
 
 ## Schema
 
-Eight collections, defined as code across `migrations/*.go`. The initial
+Nine collections, defined as code across `migrations/*.go`. The initial
 migration creates the first six; subsequent migrations add the per-instance
-and audit-log collections (and a couple of fields on `items`).
+and audit-log collections, and the controller-only `kiosks` registry and
+`kiosk_items` membership table (and a few fields on `items`).
 
 | Collection | Purpose |
 |---|---|
@@ -441,15 +454,19 @@ and audit-log collections (and a couple of fields on `items`).
 | `transaction_lines` | One per item action within a transaction. `action` is `checkout`, `return`, or `consume`. Carries optional `item_instance` FK for serialized lines. |
 | `open_checkouts` | Materialized view of "what's out right now." One row per unit out. Carries `item_instance` FK for serialized units. Maintained by the commit hook. |
 | `stock_adjustments` | Append-only audit log of changes to `items.quantity_on_hand` made via `/api/kiosk/items/{id}/adjust`. Stores `delta`, `new_quantity` (snapshot), `reason`, and the responsible `admin`. |
-| `kiosks` | **Controller-only.** Registry of every kiosk seen by the controller. Auto-populated with `status=unknown` on first event from a new `kiosk_code`; `last_seen` advances on every event. Used for fleet visibility and as the join target when expanding aggregated transactions to "which kiosk did this come from?" |
+| `kiosks` | **Controller-only.** Registry of every kiosk in the fleet. A row appears either when an admin pre-registers the kiosk via the "New kiosk" button on AdminKiosksView, or auto-populated with `status=unknown` the first time the aggregator sees an event from a new `kiosk_code`. `last_seen` advances on every event. Used for fleet visibility and as the join target when expanding aggregated transactions to "which kiosk did this come from?" |
+| `kiosk_items` | **Controller-only.** Membership rows tying items to kiosks. One row = one (kiosk, item) pair = "this kiosk stocks that SKU." Cascade-deletes from either side. Drives per-kiosk catalog publishing; absent rows mean the kiosk never receives that item over JetStream KV. |
 
 The controller's `transactions` and `transaction_lines` collections carry
 two extra fields not present on standalone kiosks:
 `source_kiosk_code` + `source_transaction_id` on transactions (unique pair
 index, idempotency key for redelivery) and `source_line_id` on
-transaction_lines (unique-when-non-empty index). These are added by the
-controller-only `2000000000_controller_collections.go` migration; the
-plain kiosk binary never registers it.
+transaction_lines (unique-when-non-empty index). These — along with the
+`kiosks` and `kiosk_items` collections — are added by two controller-only
+migrations (`2000000000_controller_collections.go` and
+`2000100000_add_kiosk_items.go`), both registered via a single
+`sync.Once` body in `RegisterControllerMigrations`. The plain kiosk binary
+never invokes it, so its DB never gets these.
 
 Cardinality rules for `open_checkouts`:
 
@@ -639,13 +656,17 @@ catalog plus a unified transaction ledger.
 ### What it does
 
 - **Catalog down → kiosks.** The controller is the source of truth for
-  `items` and `users`. PB record hooks on those collections publish each
-  create/update/delete to two JetStream KV buckets (`catalog_items`,
-  `catalog_users`). Managed kiosks watch those buckets and project changes
-  into their local PB by `code` — names get renamed, workers go inactive,
-  etc., all without operators touching individual kiosks. Kiosk-local state
-  (`quantity_on_hand`, `reorder_threshold`) is intentionally not synced
-  and survives catalog updates untouched.
+  `items` and `users`. Items are **not broadcast** — each kiosk's stock is
+  governed by explicit `kiosk_items` membership rows on the controller. A
+  row exists → that kiosk sees that item; no row → it doesn't. New SKUs
+  do not auto-flow anywhere; admins add them via the kiosk's "Stocked
+  items" panel or the bulk-add-by-category action. The shared
+  `catalog_items` KV bucket uses namespaced keys `<kiosk_code>.<item_code>`,
+  and each kiosk's watcher subscribes only to its own prefix
+  (`Watch("KIOSK01.>")`), so the wire never carries items the kiosk
+  shouldn't see. Users remain org-wide on `catalog_users`. Kiosk-local
+  state (`quantity_on_hand`, `reorder_threshold`, `item_instances`) is
+  intentionally not synced and survives catalog updates untouched.
 - **Transactions up → controller.** Every kiosk already publishes
   `kiosk.{code}.transaction.complete` and `kiosk.{code}.item.{action}`
   when NATS is enabled. The controller runs a JetStream durable consumer
@@ -653,10 +674,14 @@ catalog plus a unified transaction ledger.
   every incoming event into its own `transactions` / `transaction_lines`
   rows. Idempotency keys (`source_kiosk_code + source_transaction_id` on
   transactions, `source_line_id` on lines) make redelivery safe.
-- **Kiosks registry.** First time the controller sees an event from a
-  kiosk_code it doesn't know, a row is auto-created in the `kiosks`
-  collection with `status=unknown`. `last_seen` advances on every message
-  so the controller's admin UI shows fleet liveness at a glance.
+- **Kiosks registry.** Two ways a kiosk gets a row in the controller's
+  `kiosks` collection: (1) **pre-registered** by an admin via the "New
+  kiosk" button on AdminKiosksView — required if you want to assign items
+  before the kiosk has phoned home; (2) **self-registered** the first time
+  the aggregator sees an event from a `kiosk_code` it doesn't know — a row
+  is auto-created with `status=unknown`. Either way, `last_seen` advances
+  on every message so the controller's admin UI shows fleet liveness at a
+  glance.
 
 What it **doesn't** do in v1 (deliberately out of scope):
 
@@ -700,16 +725,43 @@ cp controller.yaml.example controller.yaml      # set nats.url + auth
 ```
 
 The controller binary uses the **same** `migrations/` package as the kiosk
-plus one controller-only migration (`2000000000_controller_collections.go`)
-that's registered explicitly by `cmd/controller/main.go` — the kiosk binary
-never registers it. The controller's data dir is `pb_data_controller/` so
-a kiosk and controller can co-exist in one working directory during
-development without colliding.
+plus two controller-only migrations (`2000000000_controller_collections.go`
+and `2000100000_add_kiosk_items.go`) that are registered explicitly via
+`migrations.RegisterControllerMigrations()` from `cmd/controller/main.go`
+— the kiosk binary never calls it. The controller's data dir is
+`pb_data_controller/` so a kiosk and controller can co-exist in one
+working directory during development without colliding.
 
 The controller's PocketBase admin UI lives at the same paths as a kiosk's:
 `/_/` for the PB superuser, `/admin/login` for the kiosk admin. Use it to
-add/edit items and users; each change fans out to the KV buckets via the
-record hooks, and managed kiosks project it within seconds.
+add/edit items and users; user edits fan out to every managed kiosk. Item
+edits fan out only to the kiosks that stock them — open a kiosk in the
+Kiosks view and use the "Stocked items" panel (or "Bulk add by category")
+to assign SKUs first. The Items view also shows a "Stocked at" chip list
+inside each item's edit dialog so you can see the inverse projection at a
+glance.
+
+### Assigning items to kiosks
+
+Once you have items and kiosks on the controller, decide which SKUs each
+kiosk stocks. There are two paths in the admin UI:
+
+1. **New kiosk button** on AdminKiosksView pre-registers a kiosk record by
+   `kiosk_code` + `location_code` before the kiosk itself has phoned home.
+   This unblocks the next step on day-one deployments.
+2. **Stocked items panel** inside each kiosk's edit dialog. From there:
+   - **Add item** — search the global catalog and click an item to add it.
+   - **Bulk add by category** — pick a category, preview the matching SKUs,
+     confirm. The result is just rows in `kiosk_items` — there is no stored
+     "category rule," so items added to the catalog later will not auto-flow
+     to this kiosk. Click the button again when you want to top up.
+   - **Remove** — drops the membership row. The kiosk receives a KV delete
+     on its key and soft-deactivates the item locally; its `item_instances`
+     and any transaction history stay intact.
+
+Inversely, the **Stocked at** chip list on each item's edit dialog
+(controller mode only) shows which kiosks currently carry that SKU.
+Read-only — the source of truth is per-kiosk membership.
 
 ### CSV seed format
 
@@ -744,13 +796,23 @@ controller:
 
 Restart the kiosk. It will:
 
-1. Connect to NATS, watch both catalog KV buckets, project the snapshot
-   into local `items` and `users` (matching by `code`).
+1. Connect to NATS, subscribe to its slice of the items bucket
+   (`Watch("<my_kiosk_code>.>")`) and the shared `catalog_users` bucket,
+   then project the snapshot into local `items` and `users` (matching by
+   `code`). Items absent from membership simply never arrive.
 2. Publish its own transaction events to NATS as before — the controller's
    consumer picks them up automatically and the kiosk shows up in the
-   controller's `kiosks` registry.
+   controller's `kiosks` registry (if it wasn't pre-registered already).
 3. Hide catalog edit affordances in the admin SPA; the banner
    "Catalog managed by controller" appears on every admin page.
+
+**Upgrade note.** Earlier builds used flat keys (`<item_code>`) in
+`catalog_items` and broadcast every SKU to every kiosk. Membership-driven
+publishing changes the key shape and meaning, so on upgrade: wipe each
+kiosk's `pb_data/` and the controller's `catalog_items` KV bucket
+(`nats kv rm catalog_items`, then let the controller re-create it), then
+assign items to kiosks via the new "Stocked items" panel. The app isn't
+in production yet so no compat shim is provided.
 
 If `controller.enabled=true` but NATS is unreachable, the kiosk still
 boots and serves checkouts against whatever catalog state it has — the
@@ -780,6 +842,13 @@ These started as deferred roadmap items and are now live in the binary:
   to managed kiosks via JetStream KV. Kiosks opt in via the `controller:`
   config block; the admin SPA gates catalog mutation affordances in
   managed mode. See [Central controller (kiosk-controller)](#central-controller-kiosk-controller).
+- **Per-kiosk catalog membership.** Controller-side `kiosk_items` join
+  collection plus namespaced KV keys (`<kiosk_code>.<item_code>`) and a
+  prefix-filtered kiosk-side watch. Admin UI on the controller has a
+  "Stocked items" panel per kiosk with add/remove and a "Bulk add by
+  category" snapshot action, plus a "Stocked at" reverse view on each
+  item. Kiosks can also be pre-registered by an admin before they phone
+  home so memberships can be assigned ahead of time.
 
 ## Roadmap
 
@@ -803,9 +872,6 @@ in place to make them additive rather than rewrites.
 - **RFID reader integration.** Impinj reader publishes scans to
   `kiosk.{kiosk_code}.scan.rfid`. The scan dispatcher already resolves
   `rfid_epc` against `item_instances` — no new dispatch logic needed.
-- **Per-kiosk / location-aware availability.** All kiosks currently share
-  the same catalog; narrow visibility to what the kiosk's location
-  actually stocks.
 
 Each of these can be evaluated on demand. None should be built until there is
 a concrete user asking for it.

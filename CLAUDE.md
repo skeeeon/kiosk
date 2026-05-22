@@ -14,9 +14,12 @@ scans.
 Optionally, a second binary (`cmd/controller`) acts as a central
 "kiosk-controller" — same PB stack, no kiosk handlers. It runs a JetStream
 durable consumer that aggregates per-kiosk transaction events into its own
-ledger, and PB record hooks that publish catalog (items + users) changes
-down to managed kiosks via JetStream KV. See the "Central controller" section
-in README.md for the operator-facing view.
+ledger, and PB record hooks that publish catalog changes to managed kiosks
+via JetStream KV. Item delivery is **membership-driven**: a join collection
+`kiosk_items` says which SKUs each kiosk stocks, and item KV keys are
+namespaced `<kiosk_code>.<item_code>` so each kiosk subscribes only to its
+own slice. Users remain org-wide. See the "Central controller" section in
+README.md for the operator-facing view.
 
 README.md has a thorough product/architecture overview; consult it for the
 business logic (action defaulting, returns policy, central controller, etc.).
@@ -139,8 +142,9 @@ enforced server-side at commit time — keep this in mind if touching that area.
 
 **Scan resolution lives in its own package** (`internal/scan`) with the
 data-access functions injected as `Lookups`. The resolver order encodes
-disambiguation: explicit prefix wins; otherwise items first (scanned far more
-often than badges), then RFID, then user code. Adding a new scan type means
+disambiguation: explicit prefix wins; otherwise instance code → item code →
+instance RFID → user code. RFID is **instance-only** — EPCs are per-tag and
+live on `item_instances`, never on the SKU. Adding a new scan type means
 adding to the dispatch chain in `Resolver.Resolve`, not sprinkling lookups
 through handlers.
 
@@ -158,20 +162,54 @@ load before tests can set env vars and the kiosk binary transitively imports
 the same package. `cmd/controller/main.go` calls the register function; the
 kiosk binary doesn't. Tests call it from `setupApp` in the controller package.
 
+The second controller-only migration (`migrations/2000100000_add_kiosk_items.go`)
+adds the `kiosk_items` join collection and opens `kiosks.CreateRule` to
+admins. It registers via `RegisterKioskItemsMigration()`, which is called
+from inside the same `sync.Once` body that registers the first controller
+migration — so adding a controller migration means appending to that body,
+not adding a new `init()`.
+
+**Per-kiosk catalog membership.** Controller-side `kiosk_items` is the
+source of truth for "which SKUs does kiosk X stock." A row exists →
+that kiosk gets that item; no row → it doesn't. New items don't auto-flow
+anywhere; admins assign via the `KioskItemsPanel` in the kiosk's edit
+dialog (plus a "bulk add by category" action). Categories are **not** a
+stored rule — bulk-add creates rows at that moment; new items added later
+won't auto-fill. The kiosk-side watcher uses
+`Watch(<kiosk_code>.>)` on the shared `catalog_items` bucket, so per-kiosk
+filtering is enforced server-side and the kiosk never receives keys for
+other kiosks. Kiosks can be **pre-registered** by an admin (new "New kiosk"
+button on AdminKiosksView) before they phone home, or self-register via
+the aggregator's `touchKiosk` on first event — both paths converge on the
+same row.
+
 **Controller seam.** When extending the central service:
 
 - **Aggregation:** `internal/controller/consumer.go`. The `ProjectTransaction`
   and `ProjectLine` methods are pure-DB functions; `handle` wraps them with
   JetStream ack/nak. Add new event subjects by extending the consumer's
   `FilterSubjects` and the dispatch switch in `handle`.
-- **Catalog publishing:** `internal/controller/catalog_publisher.go`. PB
-  record-hooks call `kv.Put` / `kv.Delete`. To sync a new collection, add a
-  bucket name to `internal/catalog/payload.go` and bind another set of hooks.
-- **Kiosk-side projection:** `internal/catalog/watcher.go`. The watcher
-  upserts records via the PB DAO (`app.FindFirstRecordByFilter` +
-  `app.Save`), which bypasses collection rules cleanly. Kiosk-local fields
-  (`quantity_on_hand`, `reorder_threshold`) are intentionally not touched
-  on update.
+- **Catalog publishing:** `internal/controller/catalog_publisher.go`.
+  Items are **not broadcast** — `publishItemToMembers` loops over
+  `KiosksForItem` (in `internal/controller/membership.go`) and writes one
+  `<kiosk>.<item>` KV entry per member. The `kiosk_items` create/update
+  hooks write a single key for that pair; the delete hook uses the
+  capture-in-`OnRecordDelete` / emit-in-`OnRecordAfterDeleteSuccess`
+  pattern because cascade deletes can void the FK records between the
+  two phases. Item deletes have no direct hook — `CascadeDelete` on
+  `kiosk_items.item` triggers the per-pair delete hooks automatically.
+  Users still broadcast on a single key. To sync a new collection that
+  is also kiosk-scoped, mirror the items pattern: add a membership
+  table, add hooks that resolve `<kiosk_code>.<...>` keys.
+- **Kiosk-side projection:** `internal/catalog/watcher.go`. `NewWatcher`
+  takes the kiosk's own `kiosk_code`; items use
+  `Watch(ctx, kioskCode + ".>")` so the wire never carries other kiosks'
+  keys. `applyItem` strips the prefix before upserting locally. The
+  watcher upserts records via the PB DAO (`app.FindFirstRecordByFilter`
+  + `app.Save`), which bypasses collection rules cleanly. Kiosk-local
+  fields (`quantity_on_hand`, `reorder_threshold`, `item_instances`)
+  are intentionally not touched on update — they survive catalog
+  resyncs.
 - **Cross-fleet payload shape:** `internal/catalog/payload.go`. Single
   source of truth — both controller publisher and kiosk projector import
   from here. Adding a field is a one-line change that flows through both

@@ -33,6 +33,10 @@ import (
 func RegisterControllerMigrations() {
 	controllerOnce.Do(func() {
 		m.Register(upController, downController)
+		// kiosk_items membership + open kiosks.CreateRule. Lives in its own
+		// file but registers in the same sync.Once so a process never
+		// double-registers either migration.
+		RegisterKioskItemsMigration()
 	})
 }
 

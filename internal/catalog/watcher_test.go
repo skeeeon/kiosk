@@ -34,8 +34,9 @@ func setupApp(t *testing.T) *pocketbase.PocketBase {
 func newTestWatcher(app core.App) *Watcher {
 	// js is unused by the projection methods we exercise here — the
 	// watcher's Start path is what would touch JetStream, and that's
-	// integration-tested out of process.
-	return NewWatcher(app, nil, ItemsBucket, UsersBucket)
+	// integration-tested out of process. kioskCode is arbitrary; it only
+	// matters when Start runs the prefix-filtered Watch.
+	return NewWatcher(app, nil, ItemsBucket, UsersBucket, "KTEST")
 }
 
 func TestWatcher_UpsertItem_InsertsAndUpdates(t *testing.T) {
@@ -163,6 +164,24 @@ func TestWatcher_UpsertUser_InsertsAndUpdates(t *testing.T) {
 	}
 	if rows[0].GetString("role") != "foreman" {
 		t.Errorf("role not updated: got %q", rows[0].GetString("role"))
+	}
+}
+
+func TestStripPrefix(t *testing.T) {
+	tests := []struct {
+		key, prefix, want string
+	}{
+		{"KIOSK01.DR-IMPACT-042", "KIOSK01.", "DR-IMPACT-042"},
+		{"KIOSK01.SCREW-3", "KIOSK02.", ""},      // wrong prefix
+		{"KIOSK01.", "KIOSK01.", ""},             // prefix-only key
+		{"", "KIOSK01.", ""},                     // empty key
+		{"KIOSK01.A.B", "KIOSK01.", "A.B"},       // remainder may include dots
+	}
+	for _, tt := range tests {
+		got := stripPrefix(tt.key, tt.prefix)
+		if got != tt.want {
+			t.Errorf("stripPrefix(%q, %q) = %q, want %q", tt.key, tt.prefix, got, tt.want)
+		}
 	}
 }
 

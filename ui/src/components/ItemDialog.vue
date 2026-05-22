@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
+import { pb } from '../lib/pb'
 import AppDialog from './AppDialog.vue'
 import ItemInstancesPanel from './ItemInstancesPanel.vue'
 import StockAdjustDialog from './StockAdjustDialog.vue'
 import StockAdjustmentHistoryDialog from './StockAdjustmentHistoryDialog.vue'
-import type { ItemRecord, StockAdjustmentResult } from '../types'
+import type { ItemRecord, KioskRecord, StockAdjustmentResult } from '../types'
 
 const props = withDefaults(
   defineProps<{
@@ -96,6 +97,45 @@ const isConsumable = computed(() => kind.value === 'consumable')
 
 const adjustOpen = ref(false)
 const historyOpen = ref(false)
+
+// "Stocked at" — controller-only read-out of the kiosks that carry this SKU.
+// Source of truth is the per-kiosk kiosk_items panel; this view is just the
+// inverse projection so admins can answer "where does this item live?"
+// without flipping back to the kiosks tab.
+const stockedAt = ref<KioskRecord[]>([])
+const stockedAtLoading = ref(false)
+
+async function loadStockedAt(itemId: string) {
+  stockedAtLoading.value = true
+  try {
+    const rows = await pb.collection('kiosk_items').getFullList<{
+      expand?: { kiosk?: KioskRecord }
+    }>({
+      filter: `item = "${itemId}"`,
+      expand: 'kiosk',
+      sort: '+created',
+    })
+    stockedAt.value = rows
+      .map((r) => r.expand?.kiosk)
+      .filter((k): k is KioskRecord => !!k)
+  } catch {
+    stockedAt.value = []
+  } finally {
+    stockedAtLoading.value = false
+  }
+}
+
+watch(
+  () => [props.open, props.isController, props.item?.id],
+  ([open, isCtrl, id]) => {
+    if (open && isCtrl && typeof id === 'string' && id) {
+      void loadStockedAt(id)
+    } else {
+      stockedAt.value = []
+    }
+  },
+  { immediate: true },
+)
 
 function onSubmit() {
   emit('save', { ...form })
@@ -248,6 +288,33 @@ function onAdjusted(result: StockAdjustmentResult) {
         v-if="!isController && isSerialized && isEdit && form.id"
         :item-id="form.id"
       />
+
+      <section
+        v-if="isController && isEdit && form.id"
+        class="rounded-xl bg-slate-950/40 border border-slate-800 p-4"
+      >
+        <header class="mb-2">
+          <h3 class="text-sm font-medium text-slate-200">Stocked at</h3>
+          <p class="text-xs text-slate-500">
+            Kiosks carrying this SKU. Edit a kiosk's "Stocked items" panel to
+            add or remove.
+          </p>
+        </header>
+        <p v-if="stockedAtLoading" class="text-xs text-slate-500">Loading…</p>
+        <p v-else-if="stockedAt.length === 0" class="text-xs text-slate-500">
+          Not assigned to any kiosk yet.
+        </p>
+        <ul v-else class="flex flex-wrap gap-1.5">
+          <li
+            v-for="k in stockedAt"
+            :key="k.id"
+            class="font-mono text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-200"
+            :title="k.location_code ? `${k.kiosk_code} — ${k.location_code}` : k.kiosk_code"
+          >
+            {{ k.kiosk_code }}
+          </li>
+        </ul>
+      </section>
 
       <label class="flex flex-col gap-1">
         <span class="text-sm text-slate-400">Notes</span>

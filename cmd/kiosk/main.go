@@ -64,7 +64,8 @@ func main() {
 		} else {
 			catalogWatcher = catalog.NewWatcher(app, js,
 				cfg.Controller.CatalogItemsBucket,
-				cfg.Controller.CatalogUsersBucket)
+				cfg.Controller.CatalogUsersBucket,
+				cfg.Kiosk.Code)
 			app.OnServe().BindFunc(func(e *core.ServeEvent) error {
 				if err := catalogWatcher.Start(watcherCtx); err != nil {
 					log.Printf("catalog watcher: %v — kiosk will continue without sync", err)

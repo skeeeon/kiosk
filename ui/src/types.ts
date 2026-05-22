@@ -142,6 +142,17 @@ export interface KioskRecord {
   updated?: string
 }
 
+// kiosk_items: controller-side membership row tying one item to one kiosk.
+// A row exists iff that kiosk stocks that item; cascade-deletes from either
+// side. Per-kiosk catalog projection is driven by these rows.
+export interface KioskItemRecord {
+  id: string
+  kiosk: string
+  item: string
+  created?: string
+  updated?: string
+}
+
 export interface StockAdjustmentRecord {
   id: string
   item: string

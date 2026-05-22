@@ -3,9 +3,12 @@ import { computed, onMounted, ref } from 'vue'
 import { pb } from '../lib/pb'
 import KioskDialog from '../components/KioskDialog.vue'
 import { useAdminToast } from '../composables/useAdminToast'
+import { useKioskIdentity } from '../composables/useKioskIdentity'
 import type { KioskRecord } from '../types'
 
 const toast = useAdminToast()
+const { identity } = useKioskIdentity()
+const isController = computed(() => identity.value?.role === 'controller')
 
 const kiosks = ref<KioskRecord[]>([])
 const loading = ref(false)
@@ -48,6 +51,10 @@ function openEdit(kiosk: KioskRecord) {
   editing.value = { ...kiosk }
 }
 
+function openNew() {
+  editing.value = {}
+}
+
 function lastSeenDisplay(v?: string): string {
   if (!v) return 'never'
   const d = new Date(v)
@@ -74,13 +81,20 @@ function statusBadgeClass(status: string): string {
 }
 
 async function onSave(data: Partial<KioskRecord>) {
-  if (!data.id) return
   error.value = null
+  const isCreate = !data.id
   try {
-    await pb.collection('kiosks').update<KioskRecord>(data.id, data)
-    editing.value = null
-    await load()
-    toast.success('Kiosk updated')
+    if (isCreate) {
+      const created = await pb.collection('kiosks').create<KioskRecord>(data)
+      editing.value = { ...created } // reopen on the new row so the stocked-items panel can attach
+      await load()
+      toast.success(`Created ${created.kiosk_code}`)
+    } else {
+      await pb.collection('kiosks').update<KioskRecord>(data.id!, data)
+      editing.value = null
+      await load()
+      toast.success('Kiosk updated')
+    }
   } catch (e) {
     const msg = (e as Error).message
     error.value = msg
@@ -96,6 +110,14 @@ async function onSave(data: Partial<KioskRecord>) {
         <h1 class="text-2xl font-semibold">Kiosks</h1>
         <p class="text-sm text-slate-400">{{ kiosks.length }} registered</p>
       </div>
+      <button
+        v-if="isController"
+        type="button"
+        class="px-4 py-2 rounded-lg bg-brand-primary hover:bg-brand-primary-hover text-white font-medium"
+        @click="openNew"
+      >
+        New kiosk
+      </button>
     </header>
 
     <input
@@ -157,6 +179,7 @@ async function onSave(data: Partial<KioskRecord>) {
     <KioskDialog
       :open="editing !== null"
       :kiosk="editing"
+      :is-controller="isController"
       @update:open="(v) => { if (!v) editing = null }"
       @save="onSave"
     />

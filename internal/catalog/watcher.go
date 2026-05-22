@@ -17,15 +17,22 @@ import (
 // Watcher subscribes to the catalog KV buckets and projects each update
 // into the kiosk's local PB items/users collections. Lifecycle:
 //
-//	w := catalog.NewWatcher(app, js, "catalog_items", "catalog_users")
+//	w := catalog.NewWatcher(app, js, "catalog_items", "catalog_users", "KIOSK01")
 //	w.Start(ctx)        // returns once watchers are running
 //	...
 //	w.Stop()            // call from OnTerminate
+//
+// `kioskCode` scopes the items watch to this kiosk's slice of the shared
+// catalog_items bucket — keys are namespaced `<kiosk_code>.<item_code>` so
+// the watcher uses `Watch("<my_code>.>")` to filter on the wire instead of
+// receiving everything and discarding. Users are not scoped (workers are
+// org-wide).
 type Watcher struct {
 	app          core.App
 	js           jetstream.JetStream
 	itemsBucket  string
 	usersBucket  string
+	kioskCode    string
 	itemsWatcher jetstream.KeyWatcher
 	usersWatcher jetstream.KeyWatcher
 	cancel       context.CancelFunc
@@ -34,7 +41,7 @@ type Watcher struct {
 // NewWatcher wires a watcher but doesn't connect — call Start to begin
 // watching. Bucket names default to catalog.ItemsBucket / UsersBucket if
 // empty, so operators with the standard layout can leave the yaml blank.
-func NewWatcher(app core.App, js jetstream.JetStream, itemsBucket, usersBucket string) *Watcher {
+func NewWatcher(app core.App, js jetstream.JetStream, itemsBucket, usersBucket, kioskCode string) *Watcher {
 	if itemsBucket == "" {
 		itemsBucket = ItemsBucket
 	}
@@ -46,6 +53,7 @@ func NewWatcher(app core.App, js jetstream.JetStream, itemsBucket, usersBucket s
 		js:          js,
 		itemsBucket: itemsBucket,
 		usersBucket: usersBucket,
+		kioskCode:   kioskCode,
 	}
 }
 
@@ -68,10 +76,15 @@ func (w *Watcher) Start(parent context.Context) error {
 		return fmt.Errorf("open users KV %q: %w", w.usersBucket, err)
 	}
 
-	// WatchAll subscribes from the start of the bucket: kiosk receives the
-	// current snapshot, then ongoing deltas. IncludeHistory is false by
-	// default — we want latest values only, not the full history.
-	iw, err := items.WatchAll(ctx)
+	// Watch on the kiosk's prefix: snapshot of this kiosk's slice, then
+	// ongoing deltas. IncludeHistory is off — we want latest values only.
+	// The prefix-filter is enforced server-side by JetStream's consumer
+	// filter; the kiosk never sees other kiosks' keys on the wire.
+	if w.kioskCode == "" {
+		cancel()
+		return fmt.Errorf("kiosk code is empty; refusing to watch the whole catalog")
+	}
+	iw, err := items.Watch(ctx, w.kioskCode+".>")
 	if err != nil {
 		cancel()
 		return fmt.Errorf("watch items: %w", err)
@@ -148,7 +161,15 @@ func (w *Watcher) runUsers(ctx context.Context, kw jetstream.KeyWatcher) {
 }
 
 func (w *Watcher) applyItem(entry jetstream.KeyValueEntry) {
-	code := entry.Key()
+	// Strip the "<kiosk_code>." prefix before treating the key as an item
+	// code. With the prefix filter applied at the server, every key here is
+	// guaranteed to belong to this kiosk; but we still defensively skip
+	// anything that doesn't match the expected shape.
+	code := stripPrefix(entry.Key(), w.kioskCode+".")
+	if code == "" {
+		slog.Warn("kiosk.catalog.items.unexpected_key", "key", entry.Key())
+		return
+	}
 	switch entry.Operation() {
 	case jetstream.KeyValueDelete, jetstream.KeyValuePurge:
 		if err := w.softDelete("items", code); err != nil {
@@ -165,6 +186,15 @@ func (w *Watcher) applyItem(entry jetstream.KeyValueEntry) {
 			slog.Warn("kiosk.catalog.items.upsert_failed", "code", code, "error", err)
 		}
 	}
+}
+
+// stripPrefix returns the part of key after the leading prefix, or "" if the
+// key doesn't start with prefix or is the prefix alone.
+func stripPrefix(key, prefix string) string {
+	if len(key) <= len(prefix) || key[:len(prefix)] != prefix {
+		return ""
+	}
+	return key[len(prefix):]
 }
 
 func (w *Watcher) applyUser(entry jetstream.KeyValueEntry) {
