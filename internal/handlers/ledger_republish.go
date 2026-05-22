@@ -1,0 +1,169 @@
+package handlers
+
+import (
+	"net/http"
+	"time"
+
+	"github.com/pocketbase/dbx"
+	"github.com/pocketbase/pocketbase/core"
+
+	"github.com/skeeeon/kiosk/internal/events"
+)
+
+// LedgerRepublishResult summarizes a republish run. Counts are at-rest:
+// publish failures land in slog (events.Publish swallows them) but don't
+// decrement the totals here — the operator's view is "we walked N rows."
+type LedgerRepublishResult struct {
+	From                  string `json:"from,omitempty"`
+	To                    string `json:"to,omitempty"`
+	TransactionsPublished int    `json:"transactions_published"`
+	LinesPublished        int    `json:"lines_published"`
+	Skipped               int    `json:"skipped"`
+}
+
+// RepublishLedger walks completed transactions (optionally clipped to a
+// completed_at window) and re-emits transaction.complete +
+// item.{action} events for each. The controller's aggregator is
+// idempotent on (source_kiosk_code, source_transaction_id) and
+// source_line_id, so re-publishing is safe.
+//
+// Use when the controller's projected ledger has drifted from this
+// kiosk's — e.g., the broker was unreachable mid-publish and the
+// buffered event was lost on kiosk restart. Full-history republish is
+// the brute-force recovery; pass from/to (ISO8601) to scope to the
+// suspect window.
+//
+// kiosk_code / location_code on each event are read from the
+// transaction record, not the current kioskctx — so a republish after
+// a kiosk.code config change still emits under the original code that
+// the aggregator dedupe key was built from.
+//
+// IMPORTANT: payload shape MUST stay in sync with commit.Commit's
+// inline payloads in internal/commit/commit.go. If a field is added
+// there, mirror it here.
+func (h *Handlers) RepublishLedger(re *core.RequestEvent) error {
+	if err := h.requireAdmin(re); err != nil {
+		return err
+	}
+	var body struct {
+		From string `json:"from"`
+		To   string `json:"to"`
+	}
+	_ = re.BindBody(&body)
+
+	filter := "status = 'completed'"
+	params := dbx.Params{}
+	if body.From != "" {
+		t, err := time.Parse(time.RFC3339, body.From)
+		if err != nil {
+			return re.BadRequestError("from must be RFC3339 (e.g. 2026-05-01T00:00:00Z)", err)
+		}
+		filter += " && completed_at >= {:from}"
+		params["from"] = t.UTC()
+	}
+	if body.To != "" {
+		t, err := time.Parse(time.RFC3339, body.To)
+		if err != nil {
+			return re.BadRequestError("to must be RFC3339", err)
+		}
+		filter += " && completed_at <= {:to}"
+		params["to"] = t.UTC()
+	}
+
+	result, err := republishLedger(h.App, filter, params, events.Publish)
+	if err != nil {
+		return re.InternalServerError("load transactions", err)
+	}
+	result.From = body.From
+	result.To = body.To
+	return re.JSON(http.StatusOK, result)
+}
+
+// republishLedger is the pure-DB core of the republish handler — separated
+// so it can be unit-tested without an HTTP RequestEvent. Callers pass an
+// already-built filter + params and a publish function (events.Publish in
+// production, a capture closure in tests).
+func republishLedger(app core.App, filter string, params dbx.Params, publish func(string, any)) (LedgerRepublishResult, error) {
+	var out LedgerRepublishResult
+
+	txs, err := app.FindRecordsByFilter("transactions",
+		filter, "completed_at", 0, 0, params)
+	if err != nil {
+		return out, err
+	}
+
+	for _, tx := range txs {
+		userRec, err := app.FindRecordById("users", tx.GetString("user"))
+		if err != nil {
+			out.Skipped++
+			continue
+		}
+		lines, err := app.FindRecordsByFilter("transaction_lines",
+			"transaction = {:tx}", "id", 0, 0,
+			dbx.Params{"tx": tx.Id})
+		if err != nil {
+			out.Skipped++
+			continue
+		}
+
+		var checkedOut, returned, consumed int
+		for _, l := range lines {
+			switch l.GetString("action") {
+			case "checkout":
+				checkedOut++
+			case "return":
+				returned++
+			case "consume":
+				consumed++
+			}
+		}
+
+		kioskCode := tx.GetString("kiosk_code")
+		locationCode := tx.GetString("location_code")
+		completedAt := tx.GetDateTime("completed_at").Time()
+
+		publish(events.TransactionCompleteSubject(kioskCode), map[string]any{
+			"transaction_id": tx.Id,
+			"kiosk_code":     kioskCode,
+			"location_code":  locationCode,
+			"user_id":        userRec.Id,
+			"user_code":      userRec.GetString("code"),
+			"user_name":      userRec.GetString("name"),
+			"user_group":     tx.GetString("user_group"),
+			"started_at":     tx.GetDateTime("started_at").Time(),
+			"completed_at":   completedAt,
+			"lines_count":    len(lines),
+			"checked_out":    checkedOut,
+			"returned":       returned,
+			"consumed":       consumed,
+		})
+		out.TransactionsPublished++
+
+		for _, l := range lines {
+			itemRec, err := app.FindRecordById("items", l.GetString("item"))
+			if err != nil {
+				continue
+			}
+			publish(events.ItemActionSubject(kioskCode, l.GetString("action")), map[string]any{
+				"transaction_id": tx.Id,
+				"line_id":        l.Id,
+				"kiosk_code":     kioskCode,
+				"location_code":  locationCode,
+				"user_id":        userRec.Id,
+				"user_code":      userRec.GetString("code"),
+				"user_group":     tx.GetString("user_group"),
+				"item_id":        itemRec.Id,
+				"item_code":      itemRec.GetString("code"),
+				"item_name":      itemRec.GetString("name"),
+				"action":         l.GetString("action"),
+				"qty":            l.GetInt("qty"),
+				"serial":         l.GetString("serial"),
+				"uncorrelated":   l.GetBool("uncorrelated"),
+				"completed_at":   completedAt,
+			})
+			out.LinesPublished++
+		}
+	}
+
+	return out, nil
+}

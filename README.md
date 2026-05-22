@@ -404,9 +404,13 @@ All custom endpoints serve the kiosk checkout flow or admin operations. PB's
 | `POST` | `/api/kiosk/cart/commit` | none | Promote cart to transaction + side effects + events |
 | `GET` | `/api/kiosk/integrity` | admin | Diff expected vs actual `open_checkouts` |
 | `POST` | `/api/kiosk/integrity/rebuild` | admin | Wipe `open_checkouts` and rebuild it from the ledger |
+| `POST` | `/api/kiosk/ledger/republish` | admin | Re-emit transaction.complete + item.{action} events for completed transactions in an optional `{from, to}` ISO8601 window. Aggregator is idempotent so safe to re-run. |
 | `POST` | `/api/kiosk/items/import` | admin | Multipart CSV upload, upsert by `code` |
 | `POST` | `/api/kiosk/items/{id}/adjust` | admin | Change `quantity_on_hand` + write a `stock_adjustments` audit row in one transaction |
 | `GET` | `/api/kiosk/transactions.csv` | admin | Export completed transactions as CSV (optional `from=` / `to=` ISO8601 query params) |
+| `GET` | `/api/kiosk/catalog/integrity` | admin | **Controller only.** Diff catalog DB vs JetStream KV; returns `missing_in_kv` + `extra_in_kv` per bucket |
+| `POST` | `/api/kiosk/catalog/reconcile` | admin | **Controller only.** Push DB → KV (always); delete orphaned KV keys when body `{delete_orphans: true}` |
+| `GET` | `/health` | none | Returns `{status: "ok"}` — for liveness probes |
 
 Admin endpoints require a token from the `admins` auth collection in the
 `Authorization` header (the PB SDK handles this automatically after login).
@@ -588,6 +592,39 @@ admin token. The response reports `{ deleted, inserted }` counts. Each
 rebuilt row carries the source checkout line's `completed_at` as
 `checked_out_at` and a FK back to the originating `transaction_line`, so
 aging and audit reports stay meaningful after a rebuild.
+
+### Resyncing the kiosk ledger to the controller
+
+When the controller's projected ledger has drifted from a kiosk's local
+one — typically because NATS was briefly unreachable and an event was lost
+on kiosk restart — the kiosk can re-emit its history:
+
+```bash
+# Republish every completed transaction in the kiosk's ledger:
+curl -X POST \
+  -H "Authorization: Bearer <admin-token>" \
+  -H "Content-Type: application/json" \
+  -d '{}' \
+  http://localhost:8090/api/kiosk/ledger/republish
+
+# Or scope to a date window (suspected drift in the last 24h):
+curl -X POST \
+  -H "Authorization: Bearer <admin-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"from": "2026-05-21T00:00:00Z"}' \
+  http://localhost:8090/api/kiosk/ledger/republish
+```
+
+The endpoint walks completed transactions in `completed_at` order and
+re-emits one `transaction.complete` event plus one `item.{action}` event
+per line, with payloads rebuilt from the persisted records and the
+kiosk_code/location_code that were stamped at original commit time.
+
+Safe to re-run: the controller's aggregator dedupes on
+`(source_kiosk_code, source_transaction_id)` for transactions and on
+`source_line_id` for lines. Re-publishing the entire history is the
+brute-force recovery; the `{from, to}` scope is friendlier for routine
+ops. Response is `{ transactions_published, lines_published, skipped }`.
 
 ### NATS failure modes
 
@@ -888,6 +925,72 @@ If `controller.enabled=true` but NATS is unreachable, the kiosk still
 boots and serves checkouts against whatever catalog state it has — the
 watcher logs a warning and proceeds without sync until the broker comes
 back. The local ledger is always authoritative.
+
+### Reconciling catalog drift
+
+The controller's PB record hooks `Put` to the catalog KV buckets after
+each save. If the broker was briefly unreachable during a save, the DB
+row lands but the KV `Put` fails silently (logged at warn level). Over
+time this can leave KV slightly out of sync with the controller's DB.
+Symmetric scenarios produce the same problem: a controller restored
+from an older backup is "out of sync" against newer KV state; a fresh
+controller pointed at a pre-existing bucket inherits whatever was there.
+
+Two endpoints help:
+
+- **`GET /api/kiosk/catalog/integrity`** (admin) returns a read-only diff:
+
+  ```json
+  {
+    "items": {
+      "bucket": "catalog_items",
+      "expected_keys": 24,
+      "actual_keys": 25,
+      "missing_in_kv": [],
+      "extra_in_kv": ["KIOSK-OLD.OBSOLETE-SKU"]
+    },
+    "users": { ... }
+  }
+  ```
+
+  `missing_in_kv` are DB rows whose KV entries never landed (push needed);
+  `extra_in_kv` are KV keys with no backing DB record (rollback orphans,
+  pre-existing bucket residue).
+
+- **`POST /api/kiosk/catalog/reconcile`** (admin) pushes the DB state to
+  KV. Body `{"delete_orphans": false}` (the default) re-Puts every
+  expected key — safe to run any time, KV history is 1 so this is just
+  an idempotent overwrite. Body `{"delete_orphans": true}` additionally
+  removes the `extra_in_kv` set. Use the latter after a confirmed
+  rollback or when adopting a pre-existing bucket.
+
+  ```bash
+  # Inspect first (read-only):
+  curl -H "Authorization: Bearer <admin-token>" \
+    http://controller:8091/api/kiosk/catalog/integrity
+
+  # Push DB → KV without touching orphans (safe default):
+  curl -X POST -H "Authorization: Bearer <admin-token>" \
+    -H "Content-Type: application/json" -d '{}' \
+    http://controller:8091/api/kiosk/catalog/reconcile
+
+  # Push DB → KV and delete orphans (destructive, explicit):
+  curl -X POST -H "Authorization: Bearer <admin-token>" \
+    -H "Content-Type: application/json" \
+    -d '{"delete_orphans": true}' \
+    http://controller:8091/api/kiosk/catalog/reconcile
+  ```
+
+The controller's DB is always the source of truth; reconcile is one
+direction only (DB → KV). There is no "KV teaches the DB" mode — that
+would let an operator's `nats kv put` override the controller's
+authoritative state, which we don't want.
+
+Reconcile is **not** run automatically at boot. Operators who use
+`nats kv put` for debug or override should not be surprised by the
+controller blowing away their edit on next restart. After a rollback or
+bucket-adoption, the runbook entry is: hit `reconcile` with
+`delete_orphans: true`.
 
 ## Shipped since v1
 

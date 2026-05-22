@@ -72,20 +72,10 @@ func main() {
 	// broker and fail when none is reachable. The seed subcommand brings up
 	// its own NATS + publisher hooks before running.
 	app.OnServe().BindFunc(func(e *core.ServeEvent) error {
-		e.Router.GET("/health", func(re *core.RequestEvent) error {
-			return re.JSON(200, map[string]string{"status": "ok"})
-		})
-		// Custom HTTP routes for the SPA's identity, branding, and CSV
-		// exports. PB's REST API at /api/collections/* still handles CRUD.
-		e.Router.GET("/api/kiosk/identity", h.Identity)
-		e.Router.GET("/branding/logo", h.Logo)
-		e.Router.GET("/api/kiosk/items.csv", h.ItemsExportCSV)
-		e.Router.GET("/api/kiosk/transactions.csv", h.TransactionsExportCSV)
-
-		// Serve the same Vue SPA the kiosk uses. The SPA detects role at
-		// boot via /api/kiosk/identity and gates its UI accordingly.
-		e.Router.GET("/{path...}", apis.Static(os.DirFS("./pb_public"), true))
-
+		// NATS + catalog publisher + aggregator are brought up first so the
+		// catalog integrity/reconcile handlers below can close over the
+		// publisher. The catch-all SPA route is registered last so that
+		// specific /api/kiosk/* routes win matching.
 		if !cfg.NATS.Enabled {
 			return fmt.Errorf("nats.enabled must be true for the controller — set nats.url and enable")
 		}
@@ -101,9 +91,10 @@ func main() {
 
 		aggCtx, aggCancel := context.WithCancel(context.Background())
 
-		if _, err := controller.NewCatalogPublisher(aggCtx, app, js,
+		cp, err := controller.NewCatalogPublisher(aggCtx, app, js,
 			cfg.Controller.CatalogItemsBucket,
-			cfg.Controller.CatalogUsersBucket); err != nil {
+			cfg.Controller.CatalogUsersBucket)
+		if err != nil {
 			aggCancel()
 			return fmt.Errorf("catalog publisher: %w", err)
 		}
@@ -122,6 +113,23 @@ func main() {
 			}
 			return te.Next()
 		})
+
+		// Custom HTTP routes for the SPA's identity, branding, exports, and
+		// catalog reconciliation. PB's REST API at /api/collections/* still
+		// handles CRUD.
+		e.Router.GET("/health", func(re *core.RequestEvent) error {
+			return re.JSON(200, map[string]string{"status": "ok"})
+		})
+		e.Router.GET("/api/kiosk/identity", h.Identity)
+		e.Router.GET("/branding/logo", h.Logo)
+		e.Router.GET("/api/kiosk/items.csv", h.ItemsExportCSV)
+		e.Router.GET("/api/kiosk/transactions.csv", h.TransactionsExportCSV)
+		e.Router.GET("/api/kiosk/catalog/integrity", h.CatalogIntegrity(cp))
+		e.Router.POST("/api/kiosk/catalog/reconcile", h.CatalogReconcile(cp))
+
+		// Serve the same Vue SPA the kiosk uses. The SPA detects role at
+		// boot via /api/kiosk/identity and gates its UI accordingly.
+		e.Router.GET("/{path...}", apis.Static(os.DirFS("./pb_public"), true))
 
 		return e.Next()
 	})

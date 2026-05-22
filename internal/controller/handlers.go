@@ -123,6 +123,46 @@ func (h *Handlers) ItemsExportCSV(re *core.RequestEvent) error {
 	return exports.WriteItemsCSV(h.App, w)
 }
 
+// CatalogIntegrity returns a request handler that runs a read-only diff
+// of the controller's catalog DB against the live JetStream KV buckets.
+// The closure captures the CatalogPublisher (which owns the bucket
+// handles) so the route can be registered from main without exposing the
+// publisher on the Handlers struct.
+func (h *Handlers) CatalogIntegrity(cp *CatalogPublisher) func(*core.RequestEvent) error {
+	return func(re *core.RequestEvent) error {
+		if err := h.requireAdmin(re); err != nil {
+			return err
+		}
+		report, err := cp.Integrity(re.Request.Context())
+		if err != nil {
+			return re.InternalServerError("catalog integrity failed", err)
+		}
+		return re.JSON(http.StatusOK, report)
+	}
+}
+
+// CatalogReconcile returns a request handler that pushes the controller's
+// DB state to KV and (when delete_orphans=true in the body) removes
+// KV-only keys. Idempotent — safe to re-run.
+func (h *Handlers) CatalogReconcile(cp *CatalogPublisher) func(*core.RequestEvent) error {
+	return func(re *core.RequestEvent) error {
+		if err := h.requireAdmin(re); err != nil {
+			return err
+		}
+		var body struct {
+			DeleteOrphans bool `json:"delete_orphans"`
+		}
+		// Empty body is allowed: defaults to push-only (the safe direction).
+		_ = re.BindBody(&body)
+
+		report, err := cp.Reconcile(re.Request.Context(), body.DeleteOrphans)
+		if err != nil {
+			return re.InternalServerError("catalog reconcile failed", err)
+		}
+		return re.JSON(http.StatusOK, report)
+	}
+}
+
 // TransactionsExportCSV streams the controller's aggregated transactions
 // ledger. Optional ?from= and ?to= ISO8601 query params clip to a window.
 // Includes the source_kiosk_code column so downstream consumers can
