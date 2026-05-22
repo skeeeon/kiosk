@@ -20,6 +20,10 @@ type notificationTemplateDTO struct {
 	Subject   string `json:"subject"`
 	Body      string `json:"body"`
 	Updated   string `json:"updated"`
+	// UpdatedBy is the admin id of the last editor (or empty for rows that
+	// haven't been saved since phase 2 added the column). The SPA resolves
+	// it to an email via a side fetch — same shape as stock_adjustments.
+	UpdatedBy string `json:"updated_by"`
 }
 
 func toNotificationTemplateDTO(r *core.Record) notificationTemplateDTO {
@@ -31,6 +35,7 @@ func toNotificationTemplateDTO(r *core.Record) notificationTemplateDTO {
 		Subject:   r.GetString("subject"),
 		Body:      r.GetString("body"),
 		Updated:   r.GetDateTime("updated").String(),
+		UpdatedBy: r.GetString("updated_by"),
 	}
 }
 
@@ -111,6 +116,7 @@ func (h *Handlers) UpdateNotificationTemplate(re *core.RequestEvent) error {
 	if body.Enabled != nil {
 		rec.Set("enabled", *body.Enabled)
 	}
+	rec.Set("updated_by", re.Auth.Id)
 
 	if err := h.App.Save(rec); err != nil {
 		return re.InternalServerError("save failed", err)

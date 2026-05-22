@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { api, ApiError } from '../lib/api'
+import { pb } from '../lib/pb'
 import { useAdminToast } from '../composables/useAdminToast'
 import { useKioskIdentity } from '../composables/useKioskIdentity'
 import AppDialog from '../components/AppDialog.vue'
@@ -13,6 +14,7 @@ interface NotificationTemplate {
   subject: string
   body: string
   updated: string
+  updated_by: string
 }
 
 interface TemplatesResponse {
@@ -75,6 +77,11 @@ const drafts = ref<Record<string, NotificationTemplate>>({})
 const loading = ref(false)
 const saving = ref<Record<string, boolean>>({})
 const errors = ref<Record<string, string>>({})
+// Per-template "last edited by" email, resolved once per admin id and cached
+// here so the footer doesn't N+1 against pb.collection('admins').getOne
+// every render. Empty string for rows that haven't been saved since phase 2
+// added the column.
+const editorEmails = ref<Record<string, string>>({})
 
 async function load() {
   // The controller binary doesn't register the notifications routes —
@@ -93,11 +100,42 @@ async function load() {
     templates.value = list
     drafts.value = Object.fromEntries(list.map((t) => [t.event_type, { ...t }]))
     errors.value = {}
+    await resolveEditorEmails(list)
   } catch (e) {
     toast.error(`Load failed: ${(e as Error).message}`)
   } finally {
     loading.value = false
   }
+}
+
+async function resolveEditorEmails(list: NotificationTemplate[]) {
+  const need = new Set<string>()
+  for (const t of list) {
+    if (t.updated_by && editorEmails.value[t.updated_by] === undefined) {
+      need.add(t.updated_by)
+    }
+  }
+  if (need.size === 0) return
+  // One getOne per distinct id. The admin pool is small (a handful of rows
+  // in practice); no need for a batched-fetch endpoint yet.
+  const next = { ...editorEmails.value }
+  await Promise.all(
+    Array.from(need).map(async (id) => {
+      try {
+        const rec = await pb.collection('admins').getOne<{ email: string }>(id)
+        next[id] = rec.email
+      } catch {
+        next[id] = '' // failed lookup; show nothing rather than retry-loop
+      }
+    }),
+  )
+  editorEmails.value = next
+}
+
+function editorLabel(t: NotificationTemplate): string {
+  if (!t.updated_by) return ''
+  const email = editorEmails.value[t.updated_by]
+  return email ? `by ${email}` : ''
 }
 
 function dirty(eventType: string): boolean {
@@ -123,6 +161,7 @@ async function save(eventType: string) {
     )
     templates.value = templates.value.map((t) => (t.event_type === eventType ? updated : t))
     drafts.value = { ...drafts.value, [eventType]: { ...updated } }
+    await resolveEditorEmails([updated])
     toast.success(`Saved ${updated.name}`)
   } catch (e) {
     const msg = e instanceof ApiError ? e.message : (e as Error).message
@@ -267,7 +306,7 @@ onMounted(load)
           Reset to defaults
         </button>
         <span class="text-xs text-slate-500">
-          Last updated {{ t.updated }}
+          Last updated {{ t.updated }}<span v-if="editorLabel(t)"> {{ editorLabel(t) }}</span>
         </span>
       </footer>
     </section>

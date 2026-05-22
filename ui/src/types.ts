@@ -136,6 +136,15 @@ export interface WorkerRecord {
   }
 }
 
+export interface AdminRecord {
+  id: string
+  email: string
+  name: string
+  active: boolean
+  created?: string
+  updated?: string
+}
+
 export interface GroupRecord {
   id: string
   code: string
