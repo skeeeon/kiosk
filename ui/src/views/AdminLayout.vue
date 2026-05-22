@@ -98,6 +98,7 @@ function onLogout() {
         Reports
       </RouterLink>
       <RouterLink
+        v-if="!isController"
         :to="{ name: 'admin-notifications' }"
         class="px-3 py-2 rounded-lg text-slate-300 hover:bg-slate-800"
         active-class="bg-slate-800 text-slate-100"
