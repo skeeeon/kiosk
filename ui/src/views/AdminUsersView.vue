@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { pb } from '../lib/pb'
 import UserDialog from '../components/UserDialog.vue'
 import GroupDialog from '../components/GroupDialog.vue'
+import WorkerHistoryDialog from '../components/WorkerHistoryDialog.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import { useAdminToast } from '../composables/useAdminToast'
 import { useKioskIdentity } from '../composables/useKioskIdentity'
@@ -21,6 +22,7 @@ const search = ref('')
 const editing = ref<Partial<WorkerRecord> | null>(null)
 const deleting = ref<WorkerRecord | null>(null)
 const creatingGroup = ref<Partial<GroupRecord> | null>(null)
+const viewingHistory = ref<WorkerRecord | null>(null)
 
 async function load() {
   loading.value = true
@@ -216,11 +218,18 @@ async function onCreateGroupFromUser(data: Partial<GroupRecord>) {
               <span v-if="user.active" class="text-emerald-400">●</span>
               <span v-else class="text-slate-600">●</span>
             </td>
-            <td class="px-4 py-3 text-right">
+            <td class="px-4 py-3 text-right whitespace-nowrap">
+              <button
+                type="button"
+                class="text-slate-400 hover:text-slate-200 px-2 py-1"
+                @click.stop="viewingHistory = user"
+              >
+                History
+              </button>
               <button
                 v-if="!managed"
                 type="button"
-                class="text-red-400 hover:text-red-300 px-2 py-1"
+                class="text-red-400 hover:text-red-300 px-2 py-1 ml-2"
                 @click.stop="deleting = user"
               >
                 Delete
@@ -247,6 +256,12 @@ async function onCreateGroupFromUser(data: Partial<GroupRecord>) {
       :managed="managed"
       @update:open="(v) => { if (!v) creatingGroup = null }"
       @save="onCreateGroupFromUser"
+    />
+
+    <WorkerHistoryDialog
+      :open="viewingHistory !== null"
+      :worker="viewingHistory"
+      @update:open="(v) => { if (!v) viewingHistory = null }"
     />
 
     <ConfirmDialog

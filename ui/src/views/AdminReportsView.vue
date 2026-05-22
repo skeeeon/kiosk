@@ -13,7 +13,7 @@ import type { ItemRecord, LedgerRepublishResult } from '../types'
 const { identity } = useKioskIdentity()
 const isManaged = computed(() => identity.value?.managed === true)
 
-type Tab = 'currently-out' | 'low-stock' | 'recent'
+type Tab = 'currently-out' | 'aging' | 'low-stock' | 'group-activity' | 'recent'
 const tab = ref<Tab>('currently-out')
 const toast = useAdminToast()
 
@@ -45,12 +45,38 @@ interface LowStockRow {
   deficit: number // threshold - available; positive means low
 }
 
+// AgingGroup buckets all of one worker's overdue rows together so the table
+// can show "Alice has 4 tools out >7 days, oldest is 23 days ago" rather than
+// a flat list that hides repeat offenders.
+interface AgingGroup {
+  userId: string
+  userCode: string
+  userName: string
+  rows: OpenRow[]
+  oldestDays: number
+}
+
+interface GroupActivityRow {
+  code: string                // group code (empty string = ungrouped)
+  name: string                // group display name; equals code when ungrouped or unknown
+  contactEmail: string
+  transactions: number
+  checkedOut: number
+  returned: number
+  consumed: number
+}
+
 const openRows = ref<OpenRow[]>([])
 const openSearch = ref('')
 const txRows = ref<TxRow[]>([])
 const txPage = ref(1)
 const txTotalPages = ref(1)
 const lowStockRows = ref<LowStockRow[]>([])
+const agingThresholdDays = ref(7)
+const agingGroups = ref<AgingGroup[]>([])
+const groupActivityFrom = ref<string>(defaultFromDate())
+const groupActivityTo = ref<string>(defaultToDate())
+const groupActivityRows = ref<GroupActivityRow[]>([])
 const loading = ref(false)
 const error = ref<string | null>(null)
 
@@ -95,6 +121,129 @@ async function loadTransactions(page = 1) {
   } finally {
     loading.value = false
   }
+}
+
+async function loadAging() {
+  loading.value = true
+  error.value = null
+  try {
+    // Fetch ALL open rows; bucket by user; sort buckets by oldest first. The
+    // threshold input is a display hint only — we keep every open row so the
+    // user can see who's accumulating regardless of the cutoff.
+    const rows = await pb.collection('open_checkouts').getFullList<OpenRow>({
+      expand: 'item,user',
+      sort: '+checked_out_at',
+    })
+    const byUser = new Map<string, AgingGroup>()
+    const now = Date.now()
+    for (const r of rows) {
+      const u = r.expand?.user
+      if (!u) continue
+      const days = Math.floor((now - new Date(r.checked_out_at).getTime()) / (1000 * 60 * 60 * 24))
+      let g = byUser.get(u.id)
+      if (!g) {
+        g = { userId: u.id, userCode: u.code, userName: u.name, rows: [], oldestDays: days }
+        byUser.set(u.id, g)
+      }
+      g.rows.push(r)
+      if (days > g.oldestDays) g.oldestDays = days
+    }
+    agingGroups.value = Array.from(byUser.values()).sort((a, b) => b.oldestDays - a.oldestDays)
+  } catch (e) {
+    error.value = (e as Error).message
+  } finally {
+    loading.value = false
+  }
+}
+
+async function loadGroupActivity() {
+  loading.value = true
+  error.value = null
+  try {
+    const filter = buildGroupActivityFilter()
+    // Lines are scoped via their parent transaction's date range; PB
+    // supports indirect filters like `transaction.completed_at >= ...` so
+    // we avoid enumerating transaction IDs in a giant OR.
+    const linesFilter = buildGroupActivityLinesFilter()
+    const [txs, lines, groupsList] = await Promise.all([
+      pb.collection('transactions').getFullList<TxRow & { user_group?: string }>({
+        filter,
+        sort: '-completed_at',
+      }),
+      pb.collection('transaction_lines').getFullList<{
+        transaction: string
+        action: 'checkout' | 'return' | 'consume'
+      }>({ filter: linesFilter }),
+      pb.collection('groups').getFullList<{ code: string; name: string; contact_email: string }>(),
+    ])
+    if (txs.length === 0) {
+      groupActivityRows.value = []
+      return
+    }
+    const txByID = new Map(txs.map((t) => [t.id, t.user_group ?? '']))
+    const groupByCode = new Map(groupsList.map((g) => [g.code, g]))
+
+    const rolledUp = new Map<string, GroupActivityRow>()
+    for (const t of txs) {
+      const code = t.user_group ?? ''
+      let row = rolledUp.get(code)
+      if (!row) {
+        const meta = code ? groupByCode.get(code) : undefined
+        row = {
+          code,
+          name: meta?.name ?? (code || '(ungrouped)'),
+          contactEmail: meta?.contact_email ?? '',
+          transactions: 0,
+          checkedOut: 0,
+          returned: 0,
+          consumed: 0,
+        }
+        rolledUp.set(code, row)
+      }
+      row.transactions++
+    }
+    for (const l of lines) {
+      const code = txByID.get(l.transaction) ?? ''
+      const row = rolledUp.get(code)
+      if (!row) continue
+      if (l.action === 'checkout') row.checkedOut++
+      else if (l.action === 'return') row.returned++
+      else if (l.action === 'consume') row.consumed++
+    }
+    groupActivityRows.value = Array.from(rolledUp.values()).sort(
+      (a, b) => b.transactions - a.transactions,
+    )
+  } catch (e) {
+    error.value = (e as Error).message
+  } finally {
+    loading.value = false
+  }
+}
+
+function defaultFromDate(): string {
+  const d = new Date()
+  d.setDate(1) // start of current month
+  return d.toISOString().slice(0, 10)
+}
+
+function defaultToDate(): string {
+  return new Date().toISOString().slice(0, 10)
+}
+
+function buildGroupActivityFilter(): string {
+  const parts = ['status = "completed"']
+  if (groupActivityFrom.value) parts.push(`completed_at >= "${groupActivityFrom.value} 00:00:00.000Z"`)
+  if (groupActivityTo.value) parts.push(`completed_at <= "${groupActivityTo.value} 23:59:59.999Z"`)
+  return parts.join(' && ')
+}
+
+function buildGroupActivityLinesFilter(): string {
+  const parts = ['transaction.status = "completed"']
+  if (groupActivityFrom.value)
+    parts.push(`transaction.completed_at >= "${groupActivityFrom.value} 00:00:00.000Z"`)
+  if (groupActivityTo.value)
+    parts.push(`transaction.completed_at <= "${groupActivityTo.value} 23:59:59.999Z"`)
+  return parts.join(' && ')
 }
 
 async function loadLowStock() {
@@ -185,7 +334,9 @@ watch(
   tab,
   (t) => {
     if (t === 'currently-out') loadCurrentlyOut()
+    else if (t === 'aging') loadAging()
     else if (t === 'low-stock') loadLowStock()
+    else if (t === 'group-activity') loadGroupActivity()
     else if (t === 'recent') loadTransactions(1)
   },
   { immediate: true },
@@ -258,10 +409,26 @@ function openTxDetail(t: TxRow) {
       <button
         type="button"
         class="px-4 py-2 border-b-2 transition-colors"
+        :class="tabClasses('aging')"
+        @click="tab = 'aging'"
+      >
+        Aging
+      </button>
+      <button
+        type="button"
+        class="px-4 py-2 border-b-2 transition-colors"
         :class="tabClasses('low-stock')"
         @click="tab = 'low-stock'"
       >
         Low stock
+      </button>
+      <button
+        type="button"
+        class="px-4 py-2 border-b-2 transition-colors"
+        :class="tabClasses('group-activity')"
+        @click="tab = 'group-activity'"
+      >
+        Group activity
       </button>
       <button
         type="button"
@@ -347,6 +514,82 @@ function openTxDetail(t: TxRow) {
       </div>
     </div>
 
+    <!-- Aging -->
+    <div v-else-if="tab === 'aging'" class="flex flex-col gap-3">
+      <div class="flex items-center gap-3 text-sm">
+        <label class="flex items-center gap-2 text-slate-300">
+          Highlight rows older than
+          <input
+            v-model.number="agingThresholdDays"
+            type="number"
+            min="0"
+            max="365"
+            class="w-20 rounded-lg bg-slate-900 border border-slate-700 px-2 py-1 text-slate-100 tabular-nums"
+          />
+          days
+        </label>
+        <span class="text-slate-500">
+          {{ agingGroups.reduce((n, g) => n + g.rows.filter((r) => Math.floor((Date.now() - new Date(r.checked_out_at).getTime()) / (1000 * 60 * 60 * 24)) >= agingThresholdDays).length, 0) }}
+          row(s) over threshold,
+          {{ agingGroups.length }} worker(s) with anything out
+        </span>
+      </div>
+
+      <div class="rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden">
+        <table class="w-full text-left text-sm">
+          <thead class="bg-slate-950/70 text-slate-400">
+            <tr>
+              <th class="px-4 py-3 font-medium">Worker</th>
+              <th class="px-4 py-3 font-medium">Item</th>
+              <th class="px-4 py-3 font-medium">Serial</th>
+              <th class="px-4 py-3 font-medium text-right">Days out</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-800">
+            <tr v-if="loading">
+              <td colspan="4" class="text-center text-slate-500 py-8">Loading…</td>
+            </tr>
+            <tr v-else-if="agingGroups.length === 0">
+              <td colspan="4" class="text-center text-slate-500 py-8">Nothing is currently out.</td>
+            </tr>
+            <template v-for="g in agingGroups" :key="g.userId">
+              <tr class="bg-slate-950/60">
+                <td colspan="4" class="px-4 py-2">
+                  <span class="font-semibold text-slate-200">{{ g.userName }}</span>
+                  <span class="ml-2 text-xs text-slate-500 font-mono">{{ g.userCode }}</span>
+                  <span class="ml-3 text-xs text-slate-400">
+                    {{ g.rows.length }} out · oldest
+                    <span :class="g.oldestDays >= agingThresholdDays ? 'text-amber-300' : 'text-slate-400'">
+                      {{ g.oldestDays }} day{{ g.oldestDays === 1 ? '' : 's' }} ago
+                    </span>
+                  </span>
+                </td>
+              </tr>
+              <tr v-for="r in g.rows" :key="r.id" class="hover:bg-slate-800/40">
+                <td class="px-4 py-2"></td>
+                <td class="px-4 py-2">
+                  <div>{{ r.expand?.item?.name }}</div>
+                  <div class="text-xs text-slate-500 font-mono">{{ r.expand?.item?.code }}</div>
+                </td>
+                <td class="px-4 py-2 font-mono text-slate-400">{{ r.serial || '—' }}</td>
+                <td
+                  class="px-4 py-2 text-right tabular-nums"
+                  :title="formatDateTime(r.checked_out_at)"
+                  :class="
+                    Math.floor((Date.now() - new Date(r.checked_out_at).getTime()) / (1000 * 60 * 60 * 24)) >= agingThresholdDays
+                      ? 'text-amber-300 font-semibold'
+                      : 'text-slate-300'
+                  "
+                >
+                  {{ Math.floor((Date.now() - new Date(r.checked_out_at).getTime()) / (1000 * 60 * 60 * 24)) }}
+                </td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
     <!-- Low stock -->
     <div v-else-if="tab === 'low-stock'" class="rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden">
       <table class="w-full text-left text-sm">
@@ -389,6 +632,76 @@ function openTxDetail(t: TxRow) {
           </tr>
         </tbody>
       </table>
+    </div>
+
+    <!-- Group activity -->
+    <div v-else-if="tab === 'group-activity'" class="flex flex-col gap-3">
+      <div class="flex items-end gap-3 text-sm">
+        <label class="flex flex-col gap-1">
+          <span class="text-slate-400 text-xs">From</span>
+          <input
+            v-model="groupActivityFrom"
+            type="date"
+            class="rounded-lg bg-slate-900 border border-slate-700 px-2 py-1 text-slate-100"
+          />
+        </label>
+        <label class="flex flex-col gap-1">
+          <span class="text-slate-400 text-xs">To</span>
+          <input
+            v-model="groupActivityTo"
+            type="date"
+            class="rounded-lg bg-slate-900 border border-slate-700 px-2 py-1 text-slate-100"
+          />
+        </label>
+        <button
+          type="button"
+          class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200"
+          :disabled="loading"
+          @click="loadGroupActivity"
+        >
+          Apply
+        </button>
+        <span class="text-slate-500 text-xs ml-auto">
+          Rolls up by the group code snapshotted on each transaction at commit time;
+          renames after the fact don't change history.
+        </span>
+      </div>
+
+      <div class="rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden">
+        <table class="w-full text-left text-sm">
+          <thead class="bg-slate-950/70 text-slate-400">
+            <tr>
+              <th class="px-4 py-3 font-medium">Group</th>
+              <th class="px-4 py-3 font-medium">Contact</th>
+              <th class="px-4 py-3 font-medium text-right">Transactions</th>
+              <th class="px-4 py-3 font-medium text-right">Checked out</th>
+              <th class="px-4 py-3 font-medium text-right">Returned</th>
+              <th class="px-4 py-3 font-medium text-right">Consumed</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-800">
+            <tr v-if="loading">
+              <td colspan="6" class="text-center text-slate-500 py-8">Loading…</td>
+            </tr>
+            <tr v-else-if="groupActivityRows.length === 0">
+              <td colspan="6" class="text-center text-slate-500 py-8">
+                No completed transactions in the selected range.
+              </td>
+            </tr>
+            <tr v-for="r in groupActivityRows" :key="r.code || '__ungrouped__'" class="hover:bg-slate-800/40">
+              <td class="px-4 py-3">
+                <div class="font-medium">{{ r.name }}</div>
+                <div class="text-xs text-slate-500 font-mono">{{ r.code || '—' }}</div>
+              </td>
+              <td class="px-4 py-3 text-slate-400">{{ r.contactEmail || '—' }}</td>
+              <td class="px-4 py-3 text-right tabular-nums text-slate-200">{{ r.transactions }}</td>
+              <td class="px-4 py-3 text-right tabular-nums text-slate-300">{{ r.checkedOut }}</td>
+              <td class="px-4 py-3 text-right tabular-nums text-slate-300">{{ r.returned }}</td>
+              <td class="px-4 py-3 text-right tabular-nums text-slate-300">{{ r.consumed }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </div>
 
     <!-- Recent transactions -->
