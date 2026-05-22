@@ -10,6 +10,7 @@ import (
 	"github.com/skeeeon/kiosk/internal/cart"
 	"github.com/skeeeon/kiosk/internal/commit"
 	"github.com/skeeeon/kiosk/internal/kioskctx"
+	"github.com/skeeeon/kiosk/internal/ledger"
 
 	_ "github.com/skeeeon/kiosk/migrations"
 )
@@ -228,7 +229,7 @@ func TestReplayOpenRows_PreservesTimestamps(t *testing.T) {
 	}
 	after := time.Now().UTC().Add(time.Second)
 
-	rows, err := replayOpenRows(app)
+	rows, err := ledger.ReplayOpenRows(app, "")
 	if err != nil {
 		t.Fatalf("replay: %v", err)
 	}
@@ -330,7 +331,7 @@ func TestReplayOpenRows_SerializedInstanceReturn(t *testing.T) {
 		t.Fatalf("return: %v", err)
 	}
 
-	rows, err := replayOpenRows(app)
+	rows, err := ledger.ReplayOpenRows(app, "")
 	if err != nil {
 		t.Fatalf("replay: %v", err)
 	}

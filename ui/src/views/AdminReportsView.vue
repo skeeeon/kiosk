@@ -8,10 +8,11 @@ import ConfirmDialog from '../components/ConfirmDialog.vue'
 import TransactionDetailDialog, {
   type TxSummary,
 } from '../components/TransactionDetailDialog.vue'
-import type { ItemRecord, LedgerRepublishResult } from '../types'
+import type { ItemRecord, KioskRecord, LedgerRepublishResult } from '../types'
 
 const { identity } = useKioskIdentity()
 const isManaged = computed(() => identity.value?.managed === true)
+const isController = computed(() => identity.value?.role === 'controller')
 
 type Tab = 'currently-out' | 'aging' | 'low-stock' | 'group-activity' | 'recent'
 const tab = ref<Tab>('currently-out')
@@ -21,6 +22,7 @@ interface OpenRow {
   id: string
   serial: string
   checked_out_at: string
+  kiosk_code?: string
   expand?: {
     item?: { id: string; code: string; name: string; type: string }
     user?: { id: string; code: string; name: string }
@@ -80,6 +82,21 @@ const groupActivityRows = ref<GroupActivityRow[]>([])
 const loading = ref(false)
 const error = ref<string | null>(null)
 
+// Kiosk filter — only meaningful on the controller, where projected
+// transactions span the fleet. On the kiosk binary this stays empty
+// (local data is single-kiosk by definition).
+const kioskFilter = ref<string>('')
+const kiosks = ref<KioskRecord[]>([])
+
+async function loadKiosks() {
+  if (!isController.value) return
+  try {
+    kiosks.value = await pb.collection('kiosks').getFullList<KioskRecord>({ sort: '+kiosk_code' })
+  } catch {
+    // Non-fatal — dropdown stays empty, reports still work fleet-wide.
+  }
+}
+
 const rebuildOpen = ref(false)
 const rebuilding = ref(false)
 const resyncOpen = ref(false)
@@ -92,11 +109,15 @@ async function loadCurrentlyOut() {
   loading.value = true
   error.value = null
   try {
-    const res = await pb.collection('open_checkouts').getList<OpenRow>(1, 500, {
-      expand: 'item,user',
-      sort: '+checked_out_at',
-    })
-    openRows.value = res.items
+    // Computed by ledger replay on the server — same shape for both
+    // binaries. On the controller we pass kiosk_code to slice the fleet.
+    const qs = kioskFilter.value
+      ? `?kiosk_code=${encodeURIComponent(kioskFilter.value)}`
+      : ''
+    openRows.value = await api.get<OpenRow[]>(`/api/kiosk/reports/open-checkouts${qs}`)
+    openRows.value.sort((a, b) =>
+      a.checked_out_at.localeCompare(b.checked_out_at),
+    )
   } catch (e) {
     error.value = (e as Error).message
   } finally {
@@ -108,8 +129,12 @@ async function loadTransactions(page = 1) {
   loading.value = true
   error.value = null
   try {
+    const filterParts = ['status = "completed"']
+    if (kioskFilter.value) {
+      filterParts.push(`kiosk_code = "${kioskFilter.value.replace(/"/g, '\\"')}"`)
+    }
     const res = await pb.collection('transactions').getList<TxRow>(page, 50, {
-      filter: 'status = "completed"',
+      filter: filterParts.join(' && '),
       sort: '-completed_at',
       expand: 'user',
     })
@@ -127,13 +152,13 @@ async function loadAging() {
   loading.value = true
   error.value = null
   try {
-    // Fetch ALL open rows; bucket by user; sort buckets by oldest first. The
-    // threshold input is a display hint only — we keep every open row so the
-    // user can see who's accumulating regardless of the cutoff.
-    const rows = await pb.collection('open_checkouts').getFullList<OpenRow>({
-      expand: 'item,user',
-      sort: '+checked_out_at',
-    })
+    // Same data source as Currently out — bucket by user and sort by
+    // oldest-out. Threshold is a display-only hint; we keep every row so
+    // the operator sees who's accumulating regardless of the cutoff.
+    const qs = kioskFilter.value
+      ? `?kiosk_code=${encodeURIComponent(kioskFilter.value)}`
+      : ''
+    const rows = await api.get<OpenRow[]>(`/api/kiosk/reports/open-checkouts${qs}`)
     const byUser = new Map<string, AgingGroup>()
     const now = Date.now()
     for (const r of rows) {
@@ -234,6 +259,7 @@ function buildGroupActivityFilter(): string {
   const parts = ['status = "completed"']
   if (groupActivityFrom.value) parts.push(`completed_at >= "${groupActivityFrom.value} 00:00:00.000Z"`)
   if (groupActivityTo.value) parts.push(`completed_at <= "${groupActivityTo.value} 23:59:59.999Z"`)
+  if (kioskFilter.value) parts.push(`kiosk_code = "${kioskFilter.value.replace(/"/g, '\\"')}"`)
   return parts.join(' && ')
 }
 
@@ -243,6 +269,8 @@ function buildGroupActivityLinesFilter(): string {
     parts.push(`transaction.completed_at >= "${groupActivityFrom.value} 00:00:00.000Z"`)
   if (groupActivityTo.value)
     parts.push(`transaction.completed_at <= "${groupActivityTo.value} 23:59:59.999Z"`)
+  if (kioskFilter.value)
+    parts.push(`transaction.kiosk_code = "${kioskFilter.value.replace(/"/g, '\\"')}"`)
   return parts.join(' && ')
 }
 
@@ -330,17 +358,18 @@ async function exportCsv() {
   }
 }
 
-watch(
-  tab,
-  (t) => {
-    if (t === 'currently-out') loadCurrentlyOut()
-    else if (t === 'aging') loadAging()
-    else if (t === 'low-stock') loadLowStock()
-    else if (t === 'group-activity') loadGroupActivity()
-    else if (t === 'recent') loadTransactions(1)
-  },
-  { immediate: true },
-)
+function loadCurrentTab() {
+  if (tab.value === 'currently-out') loadCurrentlyOut()
+  else if (tab.value === 'aging') loadAging()
+  else if (tab.value === 'low-stock') loadLowStock()
+  else if (tab.value === 'group-activity') loadGroupActivity()
+  else if (tab.value === 'recent') loadTransactions(1)
+}
+
+loadKiosks()
+
+watch(tab, loadCurrentTab, { immediate: true })
+watch(kioskFilter, loadCurrentTab)
 
 function formatRelative(iso: string): string {
   const ms = Date.now() - new Date(iso).getTime()
@@ -393,8 +422,20 @@ function openTxDetail(t: TxRow) {
 
 <template>
   <main class="p-6 max-w-7xl mx-auto w-full">
-    <header class="mb-4">
+    <header class="mb-4 flex items-baseline justify-between gap-4">
       <h1 class="text-2xl font-semibold">Reports</h1>
+      <label v-if="isController" class="flex items-center gap-2 text-sm">
+        <span class="text-slate-400">Kiosk</span>
+        <select
+          v-model="kioskFilter"
+          class="rounded-lg bg-slate-900 border border-slate-700 px-3 py-1.5 text-slate-100"
+        >
+          <option value="">All kiosks</option>
+          <option v-for="k in kiosks" :key="k.id" :value="k.kiosk_code">
+            {{ k.kiosk_code }}{{ k.location_code ? ` — ${k.location_code}` : '' }}
+          </option>
+        </select>
+      </label>
     </header>
 
     <nav class="flex gap-1 mb-4 border-b border-slate-800">
@@ -493,7 +534,7 @@ function openTxDetail(t: TxRow) {
         </table>
       </div>
 
-      <div class="flex justify-end gap-4 mt-2">
+      <div v-if="!isController" class="flex justify-end gap-4 mt-2">
         <button
           v-if="isManaged"
           type="button"
@@ -588,6 +629,17 @@ function openTxDetail(t: TxRow) {
           </tbody>
         </table>
       </div>
+    </div>
+
+    <!-- Low stock (kiosk-local data, not projected to controller in v1) -->
+    <div
+      v-else-if="tab === 'low-stock' && isController"
+      class="rounded-2xl bg-amber-950/30 border border-amber-800/60 p-6 text-amber-200 text-sm"
+    >
+      Low-stock reporting reads each kiosk's local <code class="font-mono text-xs">quantity_on_hand</code>
+      and <code class="font-mono text-xs">reorder_threshold</code>, which the controller doesn't project
+      in v1. Check the Reports view on the kiosk itself for now — controller-side fleet rollup is on
+      the roadmap.
     </div>
 
     <!-- Low stock -->

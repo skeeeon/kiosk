@@ -127,6 +127,7 @@ func main() {
 		e.Router.GET("/api/kiosk/transactions.csv", h.TransactionsExportCSV)
 		e.Router.GET("/api/kiosk/catalog/integrity", h.CatalogIntegrity(cp))
 		e.Router.POST("/api/kiosk/catalog/reconcile", h.CatalogReconcile(cp))
+		e.Router.GET("/api/kiosk/reports/open-checkouts", h.ReportOpenCheckouts)
 
 		// Serve the same Vue SPA the kiosk uses. The SPA detects role at
 		// boot via /api/kiosk/identity and gates its UI accordingly.

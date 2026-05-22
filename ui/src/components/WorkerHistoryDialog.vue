@@ -20,10 +20,17 @@ interface TxRow {
   user_group: string
 }
 
-const props = defineProps<{
-  open: boolean
-  worker: WorkerRecord | null
-}>()
+const props = withDefaults(
+  defineProps<{
+    open: boolean
+    worker: WorkerRecord | null
+    // Optional kiosk_code scope. Empty = all kiosks (kiosk binary by
+    // definition only has local data; on the controller this scopes the
+    // fleet-wide ledger to one kiosk).
+    kioskCode?: string
+  }>(),
+  { kioskCode: '' },
+)
 const emit = defineEmits<{ 'update:open': [value: boolean] }>()
 
 const rows = ref<TxRow[]>([])
@@ -40,8 +47,12 @@ async function load(p = 1) {
   loading.value = true
   error.value = null
   try {
+    const parts = [`user = "${props.worker.id}"`, 'status = "completed"']
+    if (props.kioskCode) {
+      parts.push(`kiosk_code = "${props.kioskCode.replace(/"/g, '\\"')}"`)
+    }
     const res = await pb.collection('transactions').getList<TxRow>(p, 50, {
-      filter: `user = "${props.worker.id}" && status = "completed"`,
+      filter: parts.join(' && '),
       sort: '-completed_at',
     })
     rows.value = res.items
@@ -55,7 +66,7 @@ async function load(p = 1) {
 }
 
 watch(
-  () => [props.open, props.worker?.id] as const,
+  () => [props.open, props.worker?.id, props.kioskCode] as const,
   ([open]) => {
     if (open) load(1)
     else rows.value = []
