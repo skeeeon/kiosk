@@ -1,16 +1,27 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
+import { useKioskIdentity } from '../composables/useKioskIdentity'
 
 const auth = useAuthStore()
 const router = useRouter()
 const route = useRoute()
+const { identity } = useKioskIdentity()
 
 const email = ref('')
 const password = ref('')
 const error = ref<string | null>(null)
 const submitting = ref(false)
+
+const isController = computed(() => identity.value?.role === 'controller')
+const logoBroken = ref(false)
+const logoUrl = computed(() =>
+  !logoBroken.value && identity.value?.branding?.logo_url
+    ? identity.value.branding.logo_url
+    : null,
+)
+const tagline = computed(() => identity.value?.branding?.tagline ?? '')
 
 // Autofocus on mount so the admin can start typing immediately. The window
 // scan-keydown handler in useScan skips events fired from <input>, so this
@@ -36,6 +47,17 @@ async function onSubmit() {
 
 <template>
   <main class="flex flex-col items-center justify-center px-8 py-16">
+    <div class="flex flex-col items-center gap-3 mb-8">
+      <img
+        v-if="logoUrl"
+        :src="logoUrl"
+        alt="Logo"
+        class="h-16 w-auto"
+        @error="logoBroken = true"
+      />
+      <p v-if="tagline" class="text-slate-300 text-lg">{{ tagline }}</p>
+    </div>
+
     <form
       class="w-full max-w-md flex flex-col gap-4 bg-slate-900 border border-slate-800 rounded-2xl p-8"
       @submit.prevent="onSubmit"
@@ -76,6 +98,7 @@ async function onSubmit() {
       </button>
 
       <RouterLink
+        v-if="!isController"
         to="/"
         class="text-sm text-slate-500 hover:text-slate-300 text-center"
       >

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { useKioskIdentity } from '../composables/useKioskIdentity'
@@ -10,6 +10,13 @@ const router = useRouter()
 const { identity } = useKioskIdentity()
 
 const isController = computed(() => identity.value?.role === 'controller')
+const logoBroken = ref(false)
+const logoUrl = computed(() =>
+  !logoBroken.value && identity.value?.branding?.logo_url
+    ? identity.value.branding.logo_url
+    : null,
+)
+const tagline = computed(() => identity.value?.branding?.tagline ?? '')
 
 function onLogout() {
   auth.logout()
@@ -20,6 +27,16 @@ function onLogout() {
 <template>
   <div class="flex flex-col flex-1 min-h-0">
     <nav class="flex items-center gap-1 px-6 py-3 border-b border-slate-800 bg-slate-900/50">
+      <div v-if="logoUrl || tagline" class="flex items-center gap-3 mr-4 pr-4 border-r border-slate-800">
+        <img
+          v-if="logoUrl"
+          :src="logoUrl"
+          alt="Logo"
+          class="h-8 w-auto"
+          @error="logoBroken = true"
+        />
+        <span v-if="tagline" class="text-sm text-slate-400 hidden md:inline">{{ tagline }}</span>
+      </div>
       <RouterLink
         :to="{ name: 'admin-items' }"
         class="px-3 py-2 rounded-lg text-slate-300 hover:bg-slate-800"
