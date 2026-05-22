@@ -98,6 +98,36 @@ func (c ReceiptContext) PayloadSummary() string {
 	return "tx " + c.Transaction.ID + " · " + strconv.Itoa(c.Transaction.LinesCount) + " lines"
 }
 
+// OpenChecksDigestRow is one row in an open-checkouts digest. Field names
+// match the existing ledger.OpenCheckoutDTO shape so the conversion in the
+// scheduler is a simple field copy.
+type OpenChecksDigestRow struct {
+	ItemCode     string
+	ItemName     string
+	Serial       string
+	UserCode     string
+	UserName     string
+	CheckedOutAt time.Time
+}
+
+// OpenChecksDigestContext drives the digest.open_checkouts template. The
+// scheduler builds one of these per scheduled-run by replaying the ledger.
+// Does not implement WorkerEmailProvider — digests target admins.
+type OpenChecksDigestContext struct {
+	Kiosk       KioskInfo
+	GeneratedAt time.Time
+	Rows        []OpenChecksDigestRow
+	// RowsCount is duplicated from len(Rows) so templates can render counts
+	// without needing the {{len .Rows}} action and to feed the pluralize
+	// helper without an extra step.
+	RowsCount int
+}
+
+// PayloadSummary surfaces a compact "kiosk · N rows" line in the send log.
+func (c OpenChecksDigestContext) PayloadSummary() string {
+	return c.Kiosk.Code + " · " + strconv.Itoa(c.RowsCount) + " open rows"
+}
+
 // BuildReceiptContext assembles the template payload from the values the
 // commit handler has in hand after a successful Commit. The user record is
 // fetched here because the cart only carries id+code+name and templates

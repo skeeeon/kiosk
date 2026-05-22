@@ -76,6 +76,19 @@ func (n *Notifier) Send(eventType string, data any) {
 	}()
 }
 
+// SendTo dispatches a send with an explicit Recipients spec, ignoring
+// whatever the template row's recipients column says. Synchronous so
+// callers can observe the outcome — the scheduler uses this and stamps
+// last_status/last_error on the schedule row from the returned error.
+// Returns nil when the template is disabled or recipients resolve to no
+// addresses (treated as skipped, with a log row written).
+func (n *Notifier) SendTo(eventType string, data any, recipients Recipients) error {
+	if n == nil {
+		return nil
+	}
+	return n.deliverWith(eventType, data, &recipients)
+}
+
 // SendIfFirst is Send gated by a dedupe insert keyed on (eventType, refKey,
 // today). It is the path low-stock alerts use so an item that crosses its
 // threshold ten times in a day produces one email, not ten.
@@ -139,8 +152,14 @@ func todayUTC() string {
 var timeNowUTC = func() time.Time { return time.Now().UTC() }
 
 // deliver is the synchronous body of Send. It loads the template, resolves
-// recipients, renders, sends, and logs.
+// recipients from the template's recipients column, renders, sends, and
+// logs. deliverWith is the shared path used by Send and SendTo — pass
+// override=nil to use the template's recipients.
 func (n *Notifier) deliver(eventType string, data any) error {
+	return n.deliverWith(eventType, data, nil)
+}
+
+func (n *Notifier) deliverWith(eventType string, data any, override *Recipients) error {
 	rec, err := n.app.FindFirstRecordByFilter(CollectionName, "event_type = {:t}", dbx.Params{"t": eventType})
 	if err != nil {
 		return fmt.Errorf("find template %q: %w", eventType, err)
@@ -149,7 +168,12 @@ func (n *Notifier) deliver(eventType string, data any) error {
 		return nil
 	}
 
-	recipients := n.resolveRecipients(eventType, rec, data)
+	var recipients []mail.Address
+	if override != nil {
+		recipients = n.resolveSpec(*override, data)
+	} else {
+		recipients = n.resolveRecipients(eventType, rec, data)
+	}
 	if len(recipients) == 0 {
 		n.writeLog(eventType, rec.Id, "", SendStatusSkipped, "", summaryOf(data))
 		return nil
@@ -201,7 +225,13 @@ func (n *Notifier) resolveRecipients(eventType string, rec *core.Record, data an
 		def := DefaultRecipients(eventType)
 		spec = &def
 	}
+	return n.resolveSpec(*spec, data)
+}
 
+// resolveSpec is the inner workhorse — pure (recipients spec + payload) →
+// concrete dedup'd addresses. Shared by recipientsFromTemplate and the
+// scheduler's per-schedule override path.
+func (n *Notifier) resolveSpec(spec Recipients, data any) []mail.Address {
 	// Dedupe by lowercased address so worker == admin == extra doesn't
 	// produce three log rows for the same person.
 	seen := map[string]bool{}

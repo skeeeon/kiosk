@@ -104,6 +104,15 @@ func main() {
 	notifier := notifications.New(app)
 	h := handlers.New(app, cfg, carts, notifier)
 
+	// Scheduled reports register their cron jobs at boot and react to
+	// record-hook changes thereafter — adding/editing/deleting a row in
+	// the SPA reflects in app.Cron() without a restart.
+	bindScheduledReportsHooks(app, notifier)
+	app.OnServe().BindFunc(func(e *core.ServeEvent) error {
+		registerScheduledReports(app, notifier)
+		return e.Next()
+	})
+
 	// Daily retention pass on the notifications send log + dedupe table.
 	// Runs at 03:15 local time — well outside the kiosk's busy windows. PB's
 	// Cron is a process-local scheduler; if the kiosk is down at fire time,

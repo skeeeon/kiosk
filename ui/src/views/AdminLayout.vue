@@ -112,6 +112,14 @@ function onLogout() {
       >
         Notifications
       </RouterLink>
+      <RouterLink
+        v-if="!isController"
+        :to="{ name: 'admin-scheduled-reports' }"
+        class="px-3 py-2 rounded-lg text-slate-300 hover:bg-slate-800"
+        active-class="bg-slate-800 text-slate-100"
+      >
+        Scheduled reports
+      </RouterLink>
       <span class="ml-auto flex items-center gap-3 text-sm">
         <span class="text-slate-400">{{ auth.admin?.email }}</span>
         <button

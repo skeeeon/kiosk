@@ -1,0 +1,229 @@
+<script setup lang="ts">
+import { computed, onMounted, ref } from 'vue'
+import { pb } from '../lib/pb'
+import ScheduledReportDialog from '../components/ScheduledReportDialog.vue'
+import ConfirmDialog from '../components/ConfirmDialog.vue'
+import { useAdminToast } from '../composables/useAdminToast'
+import { useKioskIdentity } from '../composables/useKioskIdentity'
+import type { ScheduledReportRecord } from '../types'
+
+const toast = useAdminToast()
+const { identity } = useKioskIdentity()
+const isController = computed(() => identity.value?.role === 'controller')
+
+const rows = ref<ScheduledReportRecord[]>([])
+const loading = ref(false)
+const editing = ref<Partial<ScheduledReportRecord> | null>(null)
+const deleting = ref<ScheduledReportRecord | null>(null)
+
+async function load() {
+  if (isController.value) {
+    // Scheduler runs on the kiosk; the controller view stays empty so
+    // operators don't conflate the two surfaces.
+    rows.value = []
+    return
+  }
+  loading.value = true
+  try {
+    rows.value = await pb.collection('scheduled_reports').getFullList<ScheduledReportRecord>({
+      sort: '+report_key',
+    })
+  } catch (e) {
+    toast.error(`Load failed: ${(e as Error).message}`)
+  } finally {
+    loading.value = false
+  }
+}
+
+onMounted(load)
+
+const weekdayLabels = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+
+function hourLabel(h: number): string {
+  if (h === 0) return '12 AM'
+  if (h < 12) return `${h} AM`
+  if (h === 12) return '12 PM'
+  return `${h - 12} PM`
+}
+
+function ordinal(n: number): string {
+  const s = ['th', 'st', 'nd', 'rd']
+  const v = n % 100
+  return n + (s[(v - 20) % 10] || s[v] || s[0])
+}
+
+function cadenceLabel(r: ScheduledReportRecord): string {
+  if (r.cadence === 'daily') return `Daily at ${hourLabel(r.hour)}`
+  if (r.cadence === 'weekly') return `Weekly on ${weekdayLabels[r.weekday] ?? '?'} at ${hourLabel(r.hour)}`
+  return `Monthly on the ${ordinal(r.day_of_month)} at ${hourLabel(r.hour)}`
+}
+
+function reportLabel(key: string): string {
+  switch (key) {
+    case 'open_checkouts':
+      return 'Currently checked out'
+  }
+  return key
+}
+
+function recipientsLabel(r: ScheduledReportRecord): string {
+  const parts: string[] = []
+  if (r.recipients.all_admins) parts.push('all admins')
+  if (r.recipients.extras && r.recipients.extras.length > 0) {
+    parts.push(`${r.recipients.extras.length} extra${r.recipients.extras.length === 1 ? '' : 's'}`)
+  }
+  return parts.length === 0 ? '—' : parts.join(' + ')
+}
+
+function statusClass(status?: string): string {
+  switch (status) {
+    case 'sent':
+      return 'text-emerald-300 bg-emerald-900/40'
+    case 'failed':
+      return 'text-red-300 bg-red-900/40'
+    case 'skipped':
+      return 'text-slate-300 bg-slate-800/70'
+    default:
+      return 'text-slate-500 bg-slate-900/40'
+  }
+}
+
+function openNew() {
+  editing.value = {}
+}
+function openEdit(r: ScheduledReportRecord) {
+  editing.value = { ...r }
+}
+
+async function onSave(data: Partial<ScheduledReportRecord>) {
+  try {
+    if (data.id) {
+      await pb.collection('scheduled_reports').update<ScheduledReportRecord>(data.id, data)
+      toast.success('Schedule updated')
+    } else {
+      await pb.collection('scheduled_reports').create<ScheduledReportRecord>(data as Record<string, unknown>)
+      toast.success('Schedule created')
+    }
+    editing.value = null
+    await load()
+  } catch (e) {
+    toast.error((e as Error).message)
+  }
+}
+
+async function onDelete() {
+  if (!deleting.value) return
+  try {
+    await pb.collection('scheduled_reports').delete(deleting.value.id)
+    deleting.value = null
+    await load()
+    toast.success('Schedule deleted')
+  } catch (e) {
+    toast.error((e as Error).message)
+  }
+}
+</script>
+
+<template>
+  <main class="p-6 max-w-6xl mx-auto w-full">
+    <header class="mb-4 flex items-start justify-between gap-4">
+      <div>
+        <h1 class="text-2xl font-semibold">Scheduled reports</h1>
+        <p class="text-sm text-slate-400 mt-1">
+          Email a report on a recurring schedule. The kiosk's scheduler re-reads this list whenever
+          you save, so changes apply without a restart.
+        </p>
+      </div>
+      <button
+        v-if="!isController"
+        type="button"
+        class="shrink-0 px-4 py-2 rounded-lg bg-brand-primary hover:bg-brand-primary-hover text-white font-medium"
+        @click="openNew"
+      >
+        New schedule
+      </button>
+    </header>
+
+    <div
+      v-if="isController"
+      class="rounded-lg bg-slate-900 border border-slate-800 text-slate-300 px-4 py-3 mb-4 text-sm"
+    >
+      Scheduled reports run on each kiosk, not on the controller. Configure them from the kiosk&rsquo;s admin SPA.
+    </div>
+
+    <div class="rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden">
+      <table class="w-full text-left text-sm">
+        <thead class="bg-slate-950/70 text-slate-400">
+          <tr>
+            <th class="px-4 py-3 font-medium">Report</th>
+            <th class="px-4 py-3 font-medium">Schedule</th>
+            <th class="px-4 py-3 font-medium">Recipients</th>
+            <th class="px-4 py-3 font-medium">Last run</th>
+            <th class="px-4 py-3 font-medium">Enabled</th>
+            <th class="px-4 py-3"></th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-800">
+          <tr v-if="loading">
+            <td colspan="6" class="text-center text-slate-500 py-8">Loading…</td>
+          </tr>
+          <tr v-else-if="rows.length === 0">
+            <td colspan="6" class="text-center text-slate-500 py-8">
+              {{ isController ? '' : 'No scheduled reports yet. Click "New schedule" to create one.' }}
+            </td>
+          </tr>
+          <tr
+            v-for="r in rows"
+            :key="r.id"
+            class="hover:bg-slate-800/50 cursor-pointer"
+            @click="openEdit(r)"
+          >
+            <td class="px-4 py-3 text-slate-200">{{ reportLabel(r.report_key) }}</td>
+            <td class="px-4 py-3 text-slate-300">{{ cadenceLabel(r) }}</td>
+            <td class="px-4 py-3 text-slate-400">{{ recipientsLabel(r) }}</td>
+            <td class="px-4 py-3 text-xs text-slate-400">
+              <div v-if="r.last_run_at" class="flex flex-col gap-1">
+                <span class="font-mono">{{ r.last_run_at }}</span>
+                <span :class="['inline-block px-2 py-0.5 rounded text-[10px] w-fit', statusClass(r.last_status)]">
+                  {{ r.last_status || 'unknown' }}
+                </span>
+                <span v-if="r.last_error" class="text-red-300 break-words">{{ r.last_error }}</span>
+              </div>
+              <span v-else class="text-slate-500">Never</span>
+            </td>
+            <td class="px-4 py-3">
+              <span v-if="r.enabled" class="text-emerald-400">●</span>
+              <span v-else class="text-slate-600">●</span>
+            </td>
+            <td class="px-4 py-3 text-right whitespace-nowrap">
+              <button
+                type="button"
+                class="text-red-400 hover:text-red-300 px-2 py-1"
+                @click.stop="deleting = r"
+              >
+                Delete
+              </button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <ScheduledReportDialog
+      :open="editing !== null"
+      :report="editing"
+      @update:open="(v) => { if (!v) editing = null }"
+      @save="onSave"
+    />
+
+    <ConfirmDialog
+      :open="deleting !== null"
+      title="Delete schedule"
+      :message="deleting ? `Delete the ${deleting.cadence} ${reportLabel(deleting.report_key)} schedule? Send history stays intact.` : ''"
+      confirm-label="Delete"
+      destructive
+      @update:open="(v) => { if (!v) deleting = null }"
+      @confirm="onDelete"
+    />
+  </main>
+</template>

@@ -136,6 +136,29 @@ export interface WorkerRecord {
   }
 }
 
+export interface RecipientsSpec {
+  worker_email: boolean
+  all_admins: boolean
+  extras: string[]
+}
+
+export interface ScheduledReportRecord {
+  id: string
+  report_key: 'open_checkouts'
+  cadence: 'daily' | 'weekly' | 'monthly'
+  hour: number
+  weekday: number
+  day_of_month: number
+  enabled: boolean
+  recipients: RecipientsSpec
+  subject_override: string
+  last_run_at?: string
+  last_status?: 'sent' | 'failed' | 'skipped' | ''
+  last_error?: string
+  created?: string
+  updated?: string
+}
+
 export interface AdminRecord {
   id: string
   email: string

@@ -16,6 +16,7 @@ package notifications
 const (
 	EventTypeReceiptTransaction = "receipt.transaction"
 	EventTypeLowStock           = "alert.lowstock"
+	EventTypeOpenChecksDigest   = "digest.open_checkouts"
 )
 
 // DefaultReceiptSubject and DefaultReceiptBody are the v1 receipt template.
@@ -31,6 +32,19 @@ Here is your receipt from kiosk {{.Kiosk.Code}} ({{.Kiosk.LocationCode}}) on {{f
 Transaction id: {{.Transaction.ID}}
 
 Thanks.
+`
+
+// DefaultOpenChecksSubject and DefaultOpenChecksBody render against
+// OpenChecksDigestContext. Scheduled reports populate this template; the
+// recipients on the schedule row override the template's recipients spec.
+const DefaultOpenChecksSubject = `Open checkouts digest from {{.Kiosk.Code}} — {{.RowsCount}} {{pluralize .RowsCount "item"}}`
+
+const DefaultOpenChecksBody = `Open checkouts at kiosk {{.Kiosk.Code}} as of {{formatTime .GeneratedAt}}:
+
+{{if eq .RowsCount 0}}No items are currently checked out.
+{{else}}{{range .Rows}}- {{.ItemName}} ({{.ItemCode}}) — held by {{.UserName}} since {{formatTime .CheckedOutAt}}{{if .Serial}} [serial: {{.Serial}}]{{end}}
+{{end}}{{end}}
+This is an automated digest. Adjust its schedule or recipients in the kiosk admin SPA.
 `
 
 // DefaultLowStockSubject and DefaultLowStockBody render against
@@ -57,6 +71,8 @@ func Defaults(eventType string) (subject, body string, ok bool) {
 		return DefaultReceiptSubject, DefaultReceiptBody, true
 	case EventTypeLowStock:
 		return DefaultLowStockSubject, DefaultLowStockBody, true
+	case EventTypeOpenChecksDigest:
+		return DefaultOpenChecksSubject, DefaultOpenChecksBody, true
 	}
 	return "", "", false
 }
@@ -68,6 +84,8 @@ func DefaultName(eventType string) string {
 		return "Transaction receipt"
 	case EventTypeLowStock:
 		return "Low stock alert"
+	case EventTypeOpenChecksDigest:
+		return "Open checkouts digest"
 	}
 	return eventType
 }
@@ -76,7 +94,7 @@ func DefaultName(eventType string) string {
 // first run. Adding a new built-in template means appending here and to
 // Defaults / DefaultName.
 func SeededEventTypes() []string {
-	return []string{EventTypeReceiptTransaction, EventTypeLowStock}
+	return []string{EventTypeReceiptTransaction, EventTypeLowStock, EventTypeOpenChecksDigest}
 }
 
 // Recipients is the editable per-template audience descriptor stored in the
@@ -109,6 +127,10 @@ func DefaultRecipients(eventType string) Recipients {
 		// Alerts target ops, not the worker who happened to push the item
 		// across the threshold. all_admins captures every active admin;
 		// operators can add a shared mailbox via the extras textarea.
+		return Recipients{AllAdmins: true, Extras: []string{}}
+	case EventTypeOpenChecksDigest:
+		// Digests address admins by default. Each scheduled_reports row
+		// overrides this with its own recipients spec at send time.
 		return Recipients{AllAdmins: true, Extras: []string{}}
 	}
 	// Conservative default for unrecognized event types: address nobody.
