@@ -147,6 +147,21 @@ structural rules (serialized item must have qty=1, etc.). Returns-policy flags
 from config (`returns.allow_cross_user`, `allow_uncorrelated`) are not currently
 enforced server-side at commit time — keep this in mind if touching that area.
 
+**Trust invariant: `OriginalCheckoutUserID` is server-resolved, never
+client-supplied.** It is populated only by `defaultActionFor` (when the
+scanned item is held by someone other than the cart's user) and is the marker
+that triggers the foreman+group cross-user gate in `commit.Commit`. Today
+this holds because the sole cart-write API path (`/api/kiosk/cart/add`)
+rebuilds the `*cart.Line` from server-side lookups and does not read the field
+from the request body. The PATCH path only updates `qty` and `action`. If you
+ever add a second cart-write path (rescan-to-update, batch import, bulk
+edit), it MUST also re-resolve through `defaultActionFor` — accepting an
+`OriginalCheckoutUserID` from the client would let a worker close another
+worker's open checkout without the foreman gate firing. Serialized returns
+are the sensitive case: `closeCheckoutsForLine` for serialized items targets
+the `item_instance` row globally, so a missing/forged `OriginalCheckoutUserID`
+on a serialized return would silently bypass the cross-user check.
+
 **Scan resolution lives in its own package** (`internal/scan`) with the
 data-access functions injected as `Lookups`. The resolver order encodes
 disambiguation: explicit prefix wins; otherwise instance code → item code →

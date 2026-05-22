@@ -15,8 +15,8 @@ import (
 // AdjustItemStock is the admin endpoint that changes an item's
 // quantity_on_hand while writing an audit row in the same transaction.
 //
-//   POST /api/kiosk/items/{id}/adjust
-//   body: { mode: "delta" | "absolute", value: int, reason: string }
+//	POST /api/kiosk/items/{id}/adjust
+//	body: { mode: "delta" | "absolute", value: int, reason: string }
 //
 // Both fields of the item update and the audit insert succeed or fail
 // together. Direct PB edits to items.quantity_on_hand are still allowed —

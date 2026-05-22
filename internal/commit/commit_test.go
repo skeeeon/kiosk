@@ -44,12 +44,12 @@ func setupApp(t *testing.T) *pocketbase.PocketBase {
 }
 
 type seed struct {
-	UserID, OtherUserID    string
-	ToolQtyID              string
-	ToolSerialID           string
-	ToolSerialInstanceID   string
-	ToolSerialInstance2ID  string // a second instance of the same serialized SKU
-	ConsumableID           string
+	UserID, OtherUserID   string
+	ToolQtyID             string
+	ToolSerialID          string
+	ToolSerialInstanceID  string
+	ToolSerialInstance2ID string // a second instance of the same serialized SKU
+	ConsumableID          string
 }
 
 func seedFixtures(t *testing.T, app core.App) seed {
@@ -245,7 +245,7 @@ func TestCheckout_Serialized_QtyTwo_Rejected(t *testing.T) {
 		ItemID: s.ToolSerialID, ItemCode: "DR-042-A", ItemName: "Impact Driver",
 		ItemType: "tool", TrackingMode: "serialized", Serial: "SN-A",
 		ItemInstanceID: s.ToolSerialInstanceID,
-		Action: "checkout", Qty: 2,
+		Action:         "checkout", Qty: 2,
 	})
 	if _, err := commit.Commit(app, c, testIdentity, commit.DefaultPolicy(), (&captured{}).publish); err == nil {
 		t.Fatal("expected error for serialized qty>1, got nil")

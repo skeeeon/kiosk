@@ -95,6 +95,9 @@ func main() {
 	h := handlers.New(app, cfg, carts)
 
 	app.OnServe().BindFunc(func(e *core.ServeEvent) error {
+		e.Router.GET("/health", func(re *core.RequestEvent) error {
+			return re.JSON(200, map[string]string{"status": "ok"})
+		})
 		e.Router.GET("/api/kiosk/identity", h.Identity)
 		e.Router.POST("/api/kiosk/scan", h.Scan)
 		e.Router.GET("/api/kiosk/items", h.ItemsList)

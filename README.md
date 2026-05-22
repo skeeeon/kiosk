@@ -584,7 +584,32 @@ To rebuild: in the admin SPA, go to **Reports → Currently out** and click
 **Rebuild from ledger** at the bottom of the list. A confirm modal warns
 that this wipes and repopulates `open_checkouts` inside a single
 transaction. Or call `POST /api/kiosk/integrity/rebuild` directly with an
-admin token. The response reports `{ deleted, inserted }` counts.
+admin token. The response reports `{ deleted, inserted }` counts. Each
+rebuilt row carries the source checkout line's `completed_at` as
+`checked_out_at` and a FK back to the originating `transaction_line`, so
+aging and audit reports stay meaningful after a rebuild.
+
+### NATS failure modes
+
+NATS is best-effort on the kiosk and hard-required on the controller. This
+section enumerates what survives each failure and what gets lost, so you
+can decide what to monitor.
+
+| Scenario | Kiosk behavior | Controller behavior |
+|---|---|---|
+| Broker unreachable at kiosk startup | Boots normally; `events.Connect` returns a buffering connection that dials in the background. The local ledger is authoritative; checkouts work without NATS. Catalog sync (if enabled) logs a warning and proceeds without sync until the broker is reachable. | N/A |
+| Broker unreachable at controller startup | N/A | Controller fails to start (NATS is required). Operator must bring the broker up first. |
+| Broker dies mid-publish (kiosk → controller) | The event is queued in the NATS client's in-memory buffer. If the buffer overflows or the kiosk process restarts before reconnect, the event is **lost** from the controller's view — but the kiosk's local ledger still has the underlying transaction. A future "resync this kiosk" admin button will close this gap; for now, the integrity check on the controller is your signal. | Misses the event; its projected ledger silently drifts from the kiosk's. Surface via cross-checking aggregate counts kiosk-side vs. controller-side. |
+| Broker dies mid-publish (controller → kiosk catalog KV) | If the kiosk is offline at the time, the kiosk re-syncs from the bucket's current value on next connect (`Watch` replays the latest value per key). No loss. | The `Put` call fails; the controller logs a warning. The DB record is already saved, so the controller's state is correct — only the KV propagation failed. Re-save the record (any edit) to retry, or restart the controller to re-publish. |
+| Broker recovers after outage | Buffered events flush automatically. Durable consumer (controller side) resumes from last-acked sequence — no replay storm. KV watchers reattach and project any keys that changed during the outage. | Same. |
+| Controller process restart | N/A | Durable consumer `controller-aggregator` resumes from last-acked sequence. KV `CreateOrUpdateKeyValue` is idempotent. Hooks re-bind on the next save. No event loss across restarts; events that arrived *during* the outage are still in the JetStream stream (retention default: 7 days). |
+| Kiosk process restart | In-memory cart is lost (documented). NATS publisher reconnects. Watcher (if managed) re-projects the current KV snapshot. Local ledger is intact on disk. | N/A |
+| JetStream stream retention expires | N/A | Events older than `MaxAge` (default 7 days) drop off the stream. Re-running the consumer won't replay them. For long-term ledger archival, rely on the kiosk's local ledger or controller's projected ledger — both are persistent SQLite. |
+
+The two big takeaways:
+
+1. **Local ledgers are authoritative.** The kiosk's `pb_data/data.db` and the controller's `pb_data_controller/data.db` are the source of truth for their respective views. NATS is a transport, not a database.
+2. **The controller's projected ledger can drift if events are lost in flight.** Today this is detected manually by spot-checking aggregate counts. A drift-detection job (compare per-kiosk `transactions.count` between controller and kiosk) is on the roadmap.
 
 ### Adjusting stock
 
@@ -736,6 +761,17 @@ Names above are the defaults. On a shared NATS cluster where `kiosk.>` or
 buckets). The kiosk and controller must agree on the subject prefix; the
 stream name is consumed only by the controller. Substitute your overrides
 into the provisioning commands above.
+
+**Run exactly one controller per stream.** The durable JetStream consumer is
+named `controller-aggregator` (a constant in `internal/controller/consumer.go`),
+so two `kiosk-controller` processes pointed at the same `nats.stream_name`
+will fight for the same consumer cursor and projection writes will be
+unpredictable. JetStream's durable-consumer model is single-owner by design;
+this isn't a place we want HA via duplication. If you need redundancy, run
+the controller under a supervisor that restarts on crash — durable means
+restarts resume from the last-acked sequence with no event loss. To scale
+horizontally across separate fleets, give each its own `nats.stream_name`
+(and matching `nats.subject_prefix`) so the controllers don't overlap.
 
 ### Controller setup
 

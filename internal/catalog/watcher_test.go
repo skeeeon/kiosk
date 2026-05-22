@@ -172,10 +172,10 @@ func TestStripPrefix(t *testing.T) {
 		key, prefix, want string
 	}{
 		{"KIOSK01.DR-IMPACT-042", "KIOSK01.", "DR-IMPACT-042"},
-		{"KIOSK01.SCREW-3", "KIOSK02.", ""},      // wrong prefix
-		{"KIOSK01.", "KIOSK01.", ""},             // prefix-only key
-		{"", "KIOSK01.", ""},                     // empty key
-		{"KIOSK01.A.B", "KIOSK01.", "A.B"},       // remainder may include dots
+		{"KIOSK01.SCREW-3", "KIOSK02.", ""}, // wrong prefix
+		{"KIOSK01.", "KIOSK01.", ""},        // prefix-only key
+		{"", "KIOSK01.", ""},                // empty key
+		{"KIOSK01.A.B", "KIOSK01.", "A.B"},  // remainder may include dots
 	}
 	for _, tt := range tests {
 		got := stripPrefix(tt.key, tt.prefix)

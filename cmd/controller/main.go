@@ -72,6 +72,9 @@ func main() {
 	// broker and fail when none is reachable. The seed subcommand brings up
 	// its own NATS + publisher hooks before running.
 	app.OnServe().BindFunc(func(e *core.ServeEvent) error {
+		e.Router.GET("/health", func(re *core.RequestEvent) error {
+			return re.JSON(200, map[string]string{"status": "ok"})
+		})
 		// Custom HTTP routes for the SPA's identity, branding, and CSV
 		// exports. PB's REST API at /api/collections/* still handles CRUD.
 		e.Router.GET("/api/kiosk/identity", h.Identity)

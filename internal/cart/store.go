@@ -18,21 +18,21 @@ import (
 // Line is one item action in a cart. Item fields are denormalized so the
 // SPA can render without follow-up lookups.
 type Line struct {
-	ID                       string   `json:"id"`
-	ItemID                   string   `json:"item_id"`
-	ItemCode                 string   `json:"item_code"`
-	ItemName                 string   `json:"item_name"`
-	ItemType                 string   `json:"item_type"` // "tool" | "consumable"
-	TrackingMode             string   `json:"tracking_mode"`
-	Action                   string   `json:"action"` // "checkout" | "return" | "consume"
-	Qty                      int      `json:"qty"`
-	Serial                   string   `json:"serial,omitempty"`
+	ID           string `json:"id"`
+	ItemID       string `json:"item_id"`
+	ItemCode     string `json:"item_code"`
+	ItemName     string `json:"item_name"`
+	ItemType     string `json:"item_type"` // "tool" | "consumable"
+	TrackingMode string `json:"tracking_mode"`
+	Action       string `json:"action"` // "checkout" | "return" | "consume"
+	Qty          int    `json:"qty"`
+	Serial       string `json:"serial,omitempty"`
 	// ItemInstanceID is set when a serialized tool was scanned by its
 	// instance code / RFID. Serial and ItemCode are populated from the
 	// instance (not the SKU item) so the cart and receipt show the
 	// physical unit's identity.
-	ItemInstanceID   string `json:"item_instance_id,omitempty"`
-	ItemInstanceCode string `json:"item_instance_code,omitempty"`
+	ItemInstanceID           string   `json:"item_instance_id,omitempty"`
+	ItemInstanceCode         string   `json:"item_instance_code,omitempty"`
 	OriginalCheckoutUserID   string   `json:"original_checkout_user_id,omitempty"`
 	OriginalCheckoutUserName string   `json:"original_checkout_user_name,omitempty"`
 	Warnings                 []string `json:"warnings,omitempty"`
@@ -55,10 +55,10 @@ type Cart struct {
 const MaxQty = 99
 
 var (
-	ErrNotFound        = errors.New("cart not found or expired")
-	ErrLineNotFound    = errors.New("cart line not found")
-	ErrQtyOutOfRange   = errors.New("qty must be between 1 and MaxQty")
-	ErrInvalidAction   = errors.New("action is not valid for this item type")
+	ErrNotFound      = errors.New("cart not found or expired")
+	ErrLineNotFound  = errors.New("cart line not found")
+	ErrQtyOutOfRange = errors.New("qty must be between 1 and MaxQty")
+	ErrInvalidAction = errors.New("action is not valid for this item type")
 )
 
 // ValidActionForType reports whether the action makes sense for the item type.

@@ -22,7 +22,7 @@ import (
 type ItemPayload struct {
 	Code         string `json:"code"`
 	Name         string `json:"name"`
-	Type         string `json:"type"`          // "tool" | "consumable"
+	Type         string `json:"type"` // "tool" | "consumable"
 	Unit         string `json:"unit,omitempty"`
 	TrackingMode string `json:"tracking_mode"` // "quantity" | "serialized"
 	Category     string `json:"category,omitempty"`

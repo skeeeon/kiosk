@@ -147,14 +147,128 @@ func (h *Handlers) Integrity(re *core.RequestEvent) error {
 	})
 }
 
-// RebuildOpenCheckouts wipes open_checkouts and repopulates it from the
-// ledger. Destructive but idempotent: running it twice yields the same state.
-// Use when Integrity reports drift you can't otherwise explain.
+// replayedRow is one open_checkouts row produced by the ledger replay.
+// Carries enough provenance that the rebuild can stamp the rebuilt row with
+// the source checkout line's completed_at and FK back to its line, rather
+// than losing both to a time.Now()-stamped synthetic row.
+type replayedRow struct {
+	Item            string
+	ItemInstance    string
+	User            string
+	Serial          string
+	CheckedOutAt    time.Time
+	TransactionLine string
+}
+
+// replayOpenRows walks the transaction_lines ledger in chronological order
+// (transactions sorted by completed_at) and reconstructs the open_checkouts
+// rows that should be present right now. Mirrors the commit hook's
+// closeCheckoutsForLine fallback policy: when a return targets a user with
+// fewer open rows than qty, the deficit is taken from any other user's
+// rows in FIFO order. This produces ground truth — running rebuild and
+// then querying open_checkouts equals running every commit again.
 //
-// Limitation: the rebuild loses per-row `checked_out_at` (we don't know which
-// of N units belongs to which checkout line, only the count). All rebuilt
-// rows are stamped with the most recent matching checkout line's completed_at,
-// which is the best signal available.
+// Note this differs from expectedOpenCheckouts (used by the Integrity
+// diff), which charges returns strictly against the target user. The two
+// can disagree in fallback scenarios; see
+// integrity_divergence_test.go for the characterization.
+func replayOpenRows(app core.App) ([]replayedRow, error) {
+	txs, err := app.FindRecordsByFilter("transactions",
+		"status = 'completed'", "completed_at", 0, 0)
+	if err != nil {
+		return nil, fmt.Errorf("load transactions: %w", err)
+	}
+	lines, err := app.FindRecordsByFilter("transaction_lines", "", "id", 0, 0)
+	if err != nil {
+		return nil, fmt.Errorf("load lines: %w", err)
+	}
+	linesByTx := make(map[string][]*core.Record, len(txs))
+	for _, l := range lines {
+		txID := l.GetString("transaction")
+		linesByTx[txID] = append(linesByTx[txID], l)
+	}
+
+	var open []replayedRow
+	for _, tx := range txs {
+		txUser := tx.GetString("user")
+		txCompletedAt := tx.GetDateTime("completed_at").Time()
+		for _, line := range linesByTx[tx.Id] {
+			action := line.GetString("action")
+			qty := line.GetInt("qty")
+			item := line.GetString("item")
+			instance := line.GetString("item_instance")
+			serial := line.GetString("serial")
+			switch action {
+			case "checkout":
+				for i := 0; i < qty; i++ {
+					open = append(open, replayedRow{
+						Item:            item,
+						ItemInstance:    instance,
+						User:            txUser,
+						Serial:          serial,
+						CheckedOutAt:    txCompletedAt,
+						TransactionLine: line.Id,
+					})
+				}
+			case "return":
+				target := line.GetString("original_checkout_user")
+				if target == "" {
+					target = txUser
+				}
+				open = removeReplayedRows(open, item, instance, target, qty)
+			}
+		}
+	}
+	return open, nil
+}
+
+// removeReplayedRows removes up to qty rows mirroring commit's policy:
+// serialized lines (instance != "") close the single matching instance row;
+// non-serialized lines prefer the target user, falling back to any other
+// user in FIFO order.
+func removeReplayedRows(rows []replayedRow, item, instance, target string, qty int) []replayedRow {
+	if qty <= 0 {
+		return rows
+	}
+	if instance != "" {
+		for i, r := range rows {
+			if r.ItemInstance == instance {
+				return append(rows[:i], rows[i+1:]...)
+			}
+		}
+		return rows
+	}
+	removed := 0
+	out := make([]replayedRow, 0, len(rows))
+	for _, r := range rows {
+		if removed < qty && r.Item == item && r.ItemInstance == "" && r.User == target {
+			removed++
+			continue
+		}
+		out = append(out, r)
+	}
+	if removed >= qty {
+		return out
+	}
+	rows = out
+	out = make([]replayedRow, 0, len(rows))
+	for _, r := range rows {
+		if removed < qty && r.Item == item && r.ItemInstance == "" && r.User != target {
+			removed++
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+// RebuildOpenCheckouts wipes open_checkouts and repopulates it from a
+// ledger replay. Destructive but idempotent: running it twice yields the
+// same state. Use when Integrity reports drift you can't otherwise explain.
+//
+// Each rebuilt row carries the source checkout line's `completed_at` as
+// `checked_out_at` and a FK back to its `transaction_line`, so aging /
+// audit reports stay meaningful after a rebuild.
 func (h *Handlers) RebuildOpenCheckouts(re *core.RequestEvent) error {
 	if err := h.requireAdmin(re); err != nil {
 		return err
@@ -173,7 +287,7 @@ func (h *Handlers) RebuildOpenCheckouts(re *core.RequestEvent) error {
 			deleted++
 		}
 
-		expected, _, err := expectedOpenCheckouts(tx)
+		rows, err := replayOpenRows(tx)
 		if err != nil {
 			return err
 		}
@@ -182,37 +296,22 @@ func (h *Handlers) RebuildOpenCheckouts(re *core.RequestEvent) error {
 		if err != nil {
 			return fmt.Errorf("find open_checkouts collection: %w", err)
 		}
-
-		now := time.Now().UTC()
-		for k, count := range expected {
-			if count <= 0 {
-				continue
+		for _, r := range rows {
+			rec := core.NewRecord(col)
+			rec.Set("item", r.Item)
+			rec.Set("user", r.User)
+			if r.ItemInstance != "" {
+				rec.Set("item_instance", r.ItemInstance)
 			}
-			if _, err := tx.FindRecordById("items", k.item); err != nil {
-				return fmt.Errorf("find item %s: %w", k.item, err)
+			if r.Serial != "" {
+				rec.Set("serial", r.Serial)
 			}
-			var serial string
-			if k.instance != "" {
-				if inst, ierr := tx.FindRecordById("item_instances", k.instance); ierr == nil {
-					serial = inst.GetString("serial")
-				}
+			rec.Set("checked_out_at", r.CheckedOutAt)
+			rec.Set("transaction_line", r.TransactionLine)
+			if err := tx.Save(rec); err != nil {
+				return fmt.Errorf("insert open_checkout: %w", err)
 			}
-			for i := 0; i < count; i++ {
-				rec := core.NewRecord(col)
-				rec.Set("item", k.item)
-				rec.Set("user", k.user)
-				if k.instance != "" {
-					rec.Set("item_instance", k.instance)
-				}
-				if serial != "" {
-					rec.Set("serial", serial)
-				}
-				rec.Set("checked_out_at", now)
-				if err := tx.Save(rec); err != nil {
-					return fmt.Errorf("insert open_checkout: %w", err)
-				}
-				inserted++
-			}
+			inserted++
 		}
 		return nil
 	})

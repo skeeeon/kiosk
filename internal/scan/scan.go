@@ -43,13 +43,13 @@ type Item struct {
 // ItemInstance represents one physical unit of a serialized item. Returned
 // (with its parent Item) when a scan matches an instance's code or RFID.
 type ItemInstance struct {
-	ID       string `json:"id"`
-	ItemID   string `json:"item_id"`
-	Code     string `json:"code"`
-	Serial   string `json:"serial,omitempty"`
-	RFIDEPC  string `json:"rfid_epc,omitempty"`
-	Active   bool   `json:"active"`
-	Notes    string `json:"notes,omitempty"`
+	ID      string `json:"id"`
+	ItemID  string `json:"item_id"`
+	Code    string `json:"code"`
+	Serial  string `json:"serial,omitempty"`
+	RFIDEPC string `json:"rfid_epc,omitempty"`
+	Active  bool   `json:"active"`
+	Notes   string `json:"notes,omitempty"`
 }
 
 // InstanceMatch bundles an instance with its already-loaded parent item so

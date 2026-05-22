@@ -10,14 +10,14 @@ import (
 // availableForItem reports how many units of an item are available to take
 // right now.
 //
-//   For tools, quantity_on_hand is the fleet count (total owned), and the
-//   open_checkouts table holds one row per unit currently out. Available is
-//   the difference, clamped at zero on the floor (negative would mean more
-//   units are out than the kiosk thinks it owns — the integrity check
-//   surfaces that; here we just don't pretend you can take a 6th of 5).
+//	For tools, quantity_on_hand is the fleet count (total owned), and the
+//	open_checkouts table holds one row per unit currently out. Available is
+//	the difference, clamped at zero on the floor (negative would mean more
+//	units are out than the kiosk thinks it owns — the integrity check
+//	surfaces that; here we just don't pretend you can take a 6th of 5).
 //
-//   For consumables, quantity_on_hand IS the available stock — the commit
-//   hook decrements it on each consume — and open_checkouts is not involved.
+//	For consumables, quantity_on_hand IS the available stock — the commit
+//	hook decrements it on each consume — and open_checkouts is not involved.
 func availableForItem(app core.App, item *core.Record) (int, error) {
 	onHand := item.GetInt("quantity_on_hand")
 	if item.GetString("type") == "consumable" {

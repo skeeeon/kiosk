@@ -68,17 +68,17 @@ func TestResolve(t *testing.T) {
 		wantCalls  []string
 	}{
 		{
-			name:       "empty value is unknown",
-			value:      "",
-			wantType:   ResultUnknown,
-			wantValue:  "",
-			wantCalls:  nil,
+			name:      "empty value is unknown",
+			value:     "",
+			wantType:  ResultUnknown,
+			wantValue: "",
+			wantCalls: nil,
 		},
 		{
-			name:       "whitespace is trimmed then unknown",
-			value:      "   ",
-			wantType:   ResultUnknown,
-			wantCalls:  nil,
+			name:      "whitespace is trimmed then unknown",
+			value:     "   ",
+			wantType:  ResultUnknown,
+			wantCalls: nil,
 		},
 		{
 			name:       "user prefix routes to user lookup only",
