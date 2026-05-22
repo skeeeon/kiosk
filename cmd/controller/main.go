@@ -46,6 +46,11 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 
+	// Install the configured NATS subject prefix before stream/consumer
+	// provisioning reads it via the builders in internal/events. Empty
+	// falls back to events.DefaultSubjectPrefix; the kiosk side must agree.
+	events.SetSubjectPrefix(cfg.NATS.SubjectPrefix)
+
 	// Use a distinct data dir so a kiosk and controller can co-exist in the
 	// same checkout during development without stomping each other's SQLite
 	// files. Operators in production typically run them from different hosts
@@ -100,7 +105,7 @@ func main() {
 			return fmt.Errorf("catalog publisher: %w", err)
 		}
 
-		agg := controller.NewAggregator(app, js)
+		agg := controller.NewAggregator(app, js, cfg.NATS.StreamName)
 		if err := agg.Start(aggCtx); err != nil {
 			aggCancel()
 			return fmt.Errorf("start aggregator: %w", err)

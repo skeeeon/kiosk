@@ -81,7 +81,7 @@ func TestAggregator_ProjectTransaction_Idempotent(t *testing.T) {
 	app := setupApp(t)
 	seedUser(t, app, "WORKER-1", "Alice")
 
-	agg := NewAggregator(app, nil)
+	agg := NewAggregator(app, nil, "")
 	payload := EventPayload{
 		TransactionID: "src-tx-1",
 		KioskCode:     "KIOSK-A",
@@ -118,7 +118,7 @@ func TestAggregator_ProjectTransaction_UnknownUserSkipped(t *testing.T) {
 	app := setupApp(t)
 	// No user seeded.
 
-	agg := NewAggregator(app, nil)
+	agg := NewAggregator(app, nil, "")
 	payload := EventPayload{
 		TransactionID: "tx-no-user",
 		KioskCode:     "KIOSK-A",
@@ -143,7 +143,7 @@ func TestAggregator_ProjectLine_RetriesWhenParentMissing(t *testing.T) {
 	app := setupApp(t)
 	seedItem(t, app, "ITEM-1", "Widget")
 
-	agg := NewAggregator(app, nil)
+	agg := NewAggregator(app, nil, "")
 	payload := EventPayload{
 		TransactionID: "tx-parent-missing",
 		KioskCode:     "KIOSK-A",
@@ -184,7 +184,7 @@ func TestAggregator_ProjectLine_LinksToParent(t *testing.T) {
 		t.Fatalf("seed tx: %v", err)
 	}
 
-	agg := NewAggregator(app, nil)
+	agg := NewAggregator(app, nil, "")
 	payload := EventPayload{
 		TransactionID: "src-tx-1",
 		KioskCode:     "KIOSK-A",
@@ -231,7 +231,7 @@ func TestAggregator_ProjectLine_LinksToParent(t *testing.T) {
 
 func TestAggregator_TouchKiosk_AutoRegistersUnknown(t *testing.T) {
 	app := setupApp(t)
-	agg := NewAggregator(app, nil)
+	agg := NewAggregator(app, nil, "")
 
 	if err := agg.TouchKiosk("KIOSK-NEW", "EAST"); err != nil {
 		t.Fatalf("first touch: %v", err)

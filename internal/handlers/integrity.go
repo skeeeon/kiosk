@@ -6,6 +6,9 @@ import (
 	"time"
 
 	"github.com/pocketbase/pocketbase/core"
+
+	"github.com/skeeeon/kiosk/internal/events"
+	"github.com/skeeeon/kiosk/internal/kioskctx"
 )
 
 // openKey groups expected open_checkouts by (item, instance, user). The
@@ -216,6 +219,16 @@ func (h *Handlers) RebuildOpenCheckouts(re *core.RequestEvent) error {
 	if err != nil {
 		return re.InternalServerError("rebuild failed", err)
 	}
+
+	id := kioskctx.Get()
+	events.Publish(events.IntegrityRebuildSubject(id.KioskCode), map[string]any{
+		"kiosk_code":    id.KioskCode,
+		"location_code": id.LocationCode,
+		"admin_id":      re.Auth.Id,
+		"deleted":       deleted,
+		"inserted":      inserted,
+		"completed_at":  time.Now().UTC(),
+	})
 
 	return re.JSON(http.StatusOK, map[string]any{
 		"deleted":  deleted,

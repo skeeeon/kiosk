@@ -114,9 +114,16 @@ Three invariants:
    fewer matched, the line is stamped `uncorrelated=true`. Consumables and
    `return` for consumables never touch `open_checkouts`.
 3. Events fire only **after** the DB transaction commits successfully, via
-   `events.Publish` (currently slog-only; v2 will add NATS here without
-   touching callers). Subject names follow NATS hierarchy: `kiosk.{kiosk_code}.transaction.complete`,
-   `kiosk.{kiosk_code}.item.{action}`.
+   `events.Publish`. Subject names follow NATS hierarchy:
+   `<prefix>.{kiosk_code}.transaction.complete` and
+   `<prefix>.{kiosk_code}.item.{action}` from the commit hook;
+   `<prefix>.{kiosk_code}.inventory.adjust` from the admin stock-adjust
+   handler; `<prefix>.{kiosk_code}.integrity.rebuild` from the
+   open_checkouts rebuild handler. The prefix is `"kiosk"` by default and
+   configurable via `nats.subject_prefix`; subjects are built through shared
+   helpers in `internal/events/subjects.go` (single source of truth for
+   both the kiosk publisher and the controller's stream/consumer filters)
+   — don't re-string-format these at callsites.
 
 **Kiosk identity is process-global, not request-scoped.** `internal/kioskctx`
 holds an `atomic.Pointer[Identity]` set once at startup from config. Every
@@ -187,8 +194,16 @@ same row.
 
 - **Aggregation:** `internal/controller/consumer.go`. The `ProjectTransaction`
   and `ProjectLine` methods are pure-DB functions; `handle` wraps them with
-  JetStream ack/nak. Add new event subjects by extending the consumer's
-  `FilterSubjects` and the dispatch switch in `handle`.
+  JetStream ack/nak. `EventPayload` is a permissive superset of every event
+  shape — new event fields go there and JSON-decode best-effort. Add new
+  event subjects by (1) adding a builder + filter helper in
+  `internal/events/subjects.go`, (2) extending the consumer's `FilterSubjects`
+  via those helpers, and (3) adding a case to the dispatch switch in
+  `handle`. Today `inventory.adjust` and `integrity.rebuild` are
+  ack-and-log only — they reach the controller for future projection
+  without committing the consumer to one. The stream name comes from
+  `cfg.NATS.StreamName` (default `events.DefaultStreamName`) and is
+  passed to `NewAggregator`.
 - **Catalog publishing:** `internal/controller/catalog_publisher.go`.
   Items are **not broadcast** — `publishItemToMembers` loops over
   `KiosksForItem` (in `internal/controller/membership.go`) and writes one

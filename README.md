@@ -442,12 +442,17 @@ logged at warn level; commit paths are never blocked or failed by them.
 
 | Trigger | Subject |
 |---|---|
-| Transaction completed | `kiosk.{kiosk_code}.transaction.complete` |
-| Checkout line | `kiosk.{kiosk_code}.item.checkout` |
-| Return line | `kiosk.{kiosk_code}.item.return` |
-| Consume line | `kiosk.{kiosk_code}.item.consume` |
+| Transaction completed | `{prefix}.{kiosk_code}.transaction.complete` |
+| Checkout line | `{prefix}.{kiosk_code}.item.checkout` |
+| Return line | `{prefix}.{kiosk_code}.item.return` |
+| Consume line | `{prefix}.{kiosk_code}.item.consume` |
+| Admin stock adjustment | `{prefix}.{kiosk_code}.inventory.adjust` |
+| Open-checkouts rebuild | `{prefix}.{kiosk_code}.integrity.rebuild` |
 
-Subscribe locally with the `nats` CLI to confirm publishing:
+`{prefix}` is `"kiosk"` by default and configurable via `nats.subject_prefix`
+(both kiosk and controller must agree). Override only to avoid collisions on
+a shared NATS cluster where another application already owns the `kiosk.>`
+subject space. Subscribe locally with the `nats` CLI to confirm publishing:
 
 ```bash
 nats sub "kiosk.>"
@@ -684,9 +689,10 @@ catalog plus a unified transaction ledger.
   state (`quantity_on_hand`, `reorder_threshold`, `item_instances`) is
   intentionally not synced and survives catalog updates untouched.
 - **Transactions up → controller.** Every kiosk already publishes
-  `kiosk.{code}.transaction.complete` and `kiosk.{code}.item.{action}`
-  when NATS is enabled. The controller runs a JetStream durable consumer
-  (`controller-aggregator`) over the `KIOSK_EVENTS` stream that projects
+  `{prefix}.{code}.transaction.complete` and `{prefix}.{code}.item.{action}`
+  when NATS is enabled (`{prefix}` defaults to `kiosk`). The controller
+  runs a JetStream durable consumer (`controller-aggregator`) over the
+  `KIOSK_EVENTS` stream (configurable via `nats.stream_name`) that projects
   every incoming event into its own `transactions` / `transaction_lines`
   rows. Idempotency keys (`source_kiosk_code + source_transaction_id` on
   transactions, `source_line_id` on lines) make redelivery safe.
@@ -723,6 +729,13 @@ nats kv add catalog_users --history 1
 
 (The controller will auto-create these on first start as well; the manual
 form is here so operators have a record of what's provisioned.)
+
+Names above are the defaults. On a shared NATS cluster where `kiosk.>` or
+`KIOSK_EVENTS` are already taken, override via `nats.subject_prefix` and
+`nats.stream_name` (and the `controller.catalog_*_bucket` keys for the KV
+buckets). The kiosk and controller must agree on the subject prefix; the
+stream name is consumed only by the controller. Substitute your overrides
+into the provisioning commands above.
 
 ### Controller setup
 
@@ -876,10 +889,12 @@ These started as deferred roadmap items and are now live in the binary:
 Items below are still intentionally deferred. Schema and event subjects are
 in place to make them additive rather than rewrites.
 
-- **Inventory adjust upstream.** Publish `stock_adjustments` rows as
-  `kiosk.{kiosk_code}.inventory.adjust` events so the controller has a
-  complete picture of qty across the fleet. Unblocks low-stock reporting
-  at the controller.
+- **Controller-side qty projection.** The kiosk already publishes
+  `{prefix}.{kiosk_code}.inventory.adjust` for every admin adjustment, and
+  the controller ack-and-logs it. What's still deferred is projecting those
+  adjustments (and `item.checkout` / `item.consume` qty deltas) into a
+  controller-side per-kiosk `quantity_on_hand` so the controller has a
+  fleet-wide low-stock view without polling each kiosk.
 - **Drift detection.** Periodic state-hash compare between controller and
   each kiosk; surface discrepancies in the controller admin UI for triage.
 - **Command channel.** Controller → kiosk subjects for one-off actions

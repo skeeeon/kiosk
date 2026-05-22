@@ -14,15 +14,15 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
-)
 
-// streamName is the JetStream stream the controller consumes from. It binds
-// `kiosk.>` so every per-kiosk subject lands here without per-kiosk wiring.
-const streamName = "KIOSK_EVENTS"
+	"github.com/skeeeon/kiosk/internal/events"
+)
 
 // consumerName is the durable consumer name. Durability means restarts
 // resume from the last-acked sequence — no events lost across controller
-// downtime, no replay storm on restart.
+// downtime, no replay storm on restart. Not configurable: durable consumers
+// are scoped per-stream, so the stream name (which IS configurable) is the
+// real collision boundary.
 const consumerName = "controller-aggregator"
 
 // EventPayload mirrors what cmd/kiosk publishes in internal/commit/commit.go.
@@ -55,23 +55,42 @@ type EventPayload struct {
 	Qty          int    `json:"qty,omitempty"`
 	Serial       string `json:"serial,omitempty"`
 	Uncorrelated bool   `json:"uncorrelated,omitempty"`
+
+	// inventory.adjust fields. AdminID is shared with integrity.rebuild.
+	AdjustmentID string `json:"adjustment_id,omitempty"`
+	AdminID      string `json:"admin_id,omitempty"`
+	Mode         string `json:"mode,omitempty"`
+	Value        int    `json:"value,omitempty"`
+	Delta        int    `json:"delta,omitempty"`
+	PrevQuantity int    `json:"prev_quantity,omitempty"`
+	NewQuantity  int    `json:"new_quantity,omitempty"`
+	Reason       string `json:"reason,omitempty"`
+
+	// integrity.rebuild fields.
+	Deleted  int `json:"deleted,omitempty"`
+	Inserted int `json:"inserted,omitempty"`
 }
 
 // Aggregator owns the JetStream consumer lifecycle. One per controller
 // process; Start launches the consume loop on a background goroutine, Stop
 // drains it cleanly.
 type Aggregator struct {
-	app core.App
-	js  jetstream.JetStream
+	app        core.App
+	js         jetstream.JetStream
+	streamName string
 
 	cancelCtx context.CancelFunc
 	consumeCC jetstream.ConsumeContext
 }
 
 // NewAggregator wires the aggregator. Doesn't connect or subscribe yet —
-// call Start for that.
-func NewAggregator(app core.App, js jetstream.JetStream) *Aggregator {
-	return &Aggregator{app: app, js: js}
+// call Start for that. Empty streamName falls back to events.DefaultStreamName
+// so operators with the standard layout can leave cfg.NATS.StreamName blank.
+func NewAggregator(app core.App, js jetstream.JetStream, streamName string) *Aggregator {
+	if streamName == "" {
+		streamName = events.DefaultStreamName
+	}
+	return &Aggregator{app: app, js: js, streamName: streamName}
 }
 
 // Start provisions the stream + consumer (idempotent) and begins consuming.
@@ -103,7 +122,7 @@ func (a *Aggregator) Start(parent context.Context) error {
 	a.consumeCC = cc
 
 	slog.Info("controller.aggregator.started",
-		"stream", streamName, "consumer", consumerName)
+		"stream", a.streamName, "consumer", consumerName)
 	return nil
 }
 
@@ -121,9 +140,9 @@ func (a *Aggregator) Stop() {
 
 func (a *Aggregator) ensureStream(ctx context.Context) (jetstream.Stream, error) {
 	cfg := jetstream.StreamConfig{
-		Name:        streamName,
+		Name:        a.streamName,
 		Description: "Per-kiosk transaction + item events. Consumed by the controller.",
-		Subjects:    []string{"kiosk.>"},
+		Subjects:    []string{events.StreamSubjectFilter()},
 		Retention:   jetstream.LimitsPolicy,
 		MaxAge:      7 * 24 * time.Hour,
 		Storage:     jetstream.FileStorage,
@@ -137,13 +156,18 @@ func (a *Aggregator) ensureStream(ctx context.Context) (jetstream.Stream, error)
 
 func (a *Aggregator) ensureConsumer(ctx context.Context, stream jetstream.Stream) (jetstream.Consumer, error) {
 	cfg := jetstream.ConsumerConfig{
-		Durable:        consumerName,
-		Description:    "kiosk-controller aggregator: projects per-kiosk events into the controller's ledger",
-		DeliverPolicy:  jetstream.DeliverAllPolicy,
-		AckPolicy:      jetstream.AckExplicitPolicy,
-		AckWait:        30 * time.Second,
-		MaxAckPending:  256,
-		FilterSubjects: []string{"kiosk.*.transaction.complete", "kiosk.*.item.*"},
+		Durable:       consumerName,
+		Description:   "kiosk-controller aggregator: projects per-kiosk events into the controller's ledger",
+		DeliverPolicy: jetstream.DeliverAllPolicy,
+		AckPolicy:     jetstream.AckExplicitPolicy,
+		AckWait:       30 * time.Second,
+		MaxAckPending: 256,
+		FilterSubjects: []string{
+			events.TransactionCompleteFilter(),
+			events.ItemActionFilter(),
+			events.InventoryAdjustFilter(),
+			events.IntegrityRebuildFilter(),
+		},
 	}
 	return stream.CreateOrUpdateConsumer(ctx, cfg)
 }
@@ -183,6 +207,30 @@ func (a *Aggregator) handle(ctx context.Context, msg jetstream.Msg) {
 		a.handleTransactionComplete(msg, payload)
 	case strings.Contains(subject, ".item."):
 		a.handleItemAction(msg, payload)
+	case strings.HasSuffix(subject, ".inventory.adjust"):
+		// Audit-only today: log the adjustment and ack. No controller-side
+		// ledger projection yet — the qty drift it would fix is fleet-wide
+		// low-stock reporting, which is the next consumer to add here.
+		slog.Info("controller.aggregator.inventory_adjust",
+			"subject", subject,
+			"kiosk_code", payload.KioskCode,
+			"item_code", payload.ItemCode,
+			"delta", payload.Delta,
+			"new_quantity", payload.NewQuantity,
+			"reason", payload.Reason,
+			"admin_id", payload.AdminID)
+		_ = msg.Ack()
+	case strings.HasSuffix(subject, ".integrity.rebuild"):
+		// Audit-only today: log and ack. Surfaced here so a future ops view
+		// can list "kiosks that recently rebuilt their projection" without
+		// changing the publisher.
+		slog.Info("controller.aggregator.integrity_rebuild",
+			"subject", subject,
+			"kiosk_code", payload.KioskCode,
+			"admin_id", payload.AdminID,
+			"deleted", payload.Deleted,
+			"inserted", payload.Inserted)
+		_ = msg.Ack()
 	default:
 		// Stream subjects we don't recognize — ack so we don't pile up
 		// redeliveries, but log so the operator sees the drift.

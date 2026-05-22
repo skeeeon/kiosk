@@ -25,6 +25,12 @@ returns:
 nats:
   enabled: false
   url: "nats://localhost:4222"
+  # Protocol identifiers. Override only to avoid collisions on a shared NATS
+  # cluster (e.g. another app already owns "kiosk.>" or "KIOSK_EVENTS").
+  # Both kiosk and controller must use the same subject_prefix. stream_name
+  # is controller-only — kiosks ignore it. Leave blank for the defaults.
+  subject_prefix: ""    # default: "kiosk"
+  stream_name: ""       # default: "KIOSK_EVENTS"
   # Use whichever auth your nats-server expects; leave all blank for anonymous.
   token: ""
   username: ""

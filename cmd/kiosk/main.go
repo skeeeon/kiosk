@@ -32,6 +32,10 @@ func main() {
 		LocationCode: cfg.Kiosk.LocationCode,
 	})
 
+	// Install the configured NATS subject prefix before any code path that
+	// might publish (or log) an event runs. Empty falls back to the default.
+	events.SetSubjectPrefix(cfg.NATS.SubjectPrefix)
+
 	app := pocketbase.New()
 
 	// Apply registered Go migrations automatically on startup.

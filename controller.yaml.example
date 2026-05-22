@@ -29,6 +29,12 @@ branding:
 nats:
   enabled: true
   url: "nats://localhost:4222"
+  # Protocol identifiers. Override only to avoid collisions on a shared NATS
+  # cluster (e.g. another app already owns "kiosk.>" or "KIOSK_EVENTS").
+  # The kiosk side's subject_prefix must match; stream_name is consumed
+  # only here. Leave blank for the defaults.
+  subject_prefix: ""    # default: "kiosk"
+  stream_name: ""       # default: "KIOSK_EVENTS"
   token: ""
   username: ""
   password: ""

@@ -88,8 +88,23 @@ func (r ReturnsConfig) UncorrelatedAllowed() bool {
 // TLS is auto-negotiated when URL starts with tls:// or nats+tls://; you
 // can also configure CA/cert/key paths explicitly. TLSInsecure is for dev.
 type NATSConfig struct {
-	Enabled         bool   `yaml:"enabled"`
-	URL             string `yaml:"url"`
+	Enabled bool   `yaml:"enabled"`
+	URL     string `yaml:"url"`
+
+	// SubjectPrefix is the leading namespace for every event published by
+	// the kiosk (e.g. "kiosk.<code>.transaction.complete"). Override only
+	// when sharing a NATS cluster with another application that already
+	// owns the "kiosk.>" subject space. Both kiosk and controller must
+	// agree on the value. Empty → events.DefaultSubjectPrefix.
+	SubjectPrefix string `yaml:"subject_prefix"`
+
+	// StreamName is the JetStream stream the controller binds and consumes.
+	// Controller-only — the kiosk publishes to subjects, not streams.
+	// Override only to avoid collision with another stream that already
+	// owns the same subject space on a shared cluster. Empty →
+	// events.DefaultStreamName.
+	StreamName string `yaml:"stream_name"`
+
 	Token           string `yaml:"token"`
 	Username        string `yaml:"username"`
 	Password        string `yaml:"password"`
@@ -232,6 +247,12 @@ func applyEnvOverrides(c *Config) {
 	}
 	if v := os.Getenv("KIOSK_NATS_URL"); v != "" {
 		c.NATS.URL = v
+	}
+	if v := os.Getenv("KIOSK_NATS_SUBJECT_PREFIX"); v != "" {
+		c.NATS.SubjectPrefix = v
+	}
+	if v := os.Getenv("KIOSK_NATS_STREAM_NAME"); v != "" {
+		c.NATS.StreamName = v
 	}
 	if v := os.Getenv("KIOSK_NATS_TOKEN"); v != "" {
 		c.NATS.Token = v

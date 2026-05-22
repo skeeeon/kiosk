@@ -17,6 +17,7 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 
 	"github.com/skeeeon/kiosk/internal/cart"
+	"github.com/skeeeon/kiosk/internal/events"
 	"github.com/skeeeon/kiosk/internal/kioskctx"
 )
 
@@ -199,7 +200,7 @@ func Commit(app core.App, c *cart.Cart, id kioskctx.Identity, policy Policy, pub
 			}
 
 			lineEvents = append(lineEvents, lineEvent{
-				Subject: fmt.Sprintf("kiosk.%s.item.%s", id.KioskCode, l.Action),
+				Subject: events.ItemActionSubject(id.KioskCode, l.Action),
 				Payload: map[string]any{
 					"transaction_id": txRec.Id,
 					"line_id":        lineRec.Id,
@@ -230,7 +231,7 @@ func Commit(app core.App, c *cart.Cart, id kioskctx.Identity, policy Policy, pub
 		}
 
 		txCompleted = lineEvent{
-			Subject: fmt.Sprintf("kiosk.%s.transaction.complete", id.KioskCode),
+			Subject: events.TransactionCompleteSubject(id.KioskCode),
 			Payload: map[string]any{
 				"transaction_id": txRec.Id,
 				"kiosk_code":     id.KioskCode,

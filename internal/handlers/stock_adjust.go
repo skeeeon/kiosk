@@ -4,8 +4,12 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/pocketbase/pocketbase/core"
+
+	"github.com/skeeeon/kiosk/internal/events"
+	"github.com/skeeeon/kiosk/internal/kioskctx"
 )
 
 // AdjustItemStock is the admin endpoint that changes an item's
@@ -50,6 +54,30 @@ func (h *Handlers) AdjustItemStock(re *core.RequestEvent) error {
 		}
 		return re.InternalServerError("adjustment failed", err)
 	}
+
+	// Publish the audit event after the txn has committed. Item code/name
+	// are re-fetched (cheap, single row) so the pure-function signature of
+	// PerformStockAdjustment stays unchanged for its unit tests.
+	if item, ferr := h.App.FindRecordById("items", result.ItemID); ferr == nil {
+		id := kioskctx.Get()
+		events.Publish(events.InventoryAdjustSubject(id.KioskCode), map[string]any{
+			"adjustment_id": result.AdjustmentID,
+			"kiosk_code":    id.KioskCode,
+			"location_code": id.LocationCode,
+			"item_id":       result.ItemID,
+			"item_code":     item.GetString("code"),
+			"item_name":     item.GetString("name"),
+			"admin_id":      re.Auth.Id,
+			"mode":          body.Mode,
+			"value":         body.Value,
+			"delta":         result.Delta,
+			"prev_quantity": result.PrevQuantity,
+			"new_quantity":  result.NewQuantity,
+			"reason":        body.Reason,
+			"completed_at":  time.Now().UTC(),
+		})
+	}
+
 	return re.JSON(http.StatusOK, result)
 }
 
