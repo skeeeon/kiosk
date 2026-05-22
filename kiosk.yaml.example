@@ -36,6 +36,19 @@ nats:
   tls_key_file: ""
   tls_insecure: false     # skip cert verification — dev only
 
+# Optional. Opts this kiosk into central management by the kiosk-controller.
+# When enabled, the kiosk watches the JetStream KV buckets below for catalog
+# updates and projects them into its local items/users tables; the admin SPA
+# hides catalog edit affordances. Standalone kiosks leave this disabled.
+#
+# Requires nats.enabled=true with a connection to the same broker the
+# controller publishes to. Bucket names default to "catalog_items" and
+# "catalog_users" if blank.
+controller:
+  enabled: false
+  catalog_items_bucket: "catalog_items"
+  catalog_users_bucket: "catalog_users"
+
 # Optional. Customize the kiosk's visual identity. All keys are optional;
 # omitted values fall back to built-in defaults. The example logo + tagline
 # below match the file shipped at ./branding/logo.svg in the repo.

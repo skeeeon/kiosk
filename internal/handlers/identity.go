@@ -26,6 +26,11 @@ type identityPayload struct {
 	// ceiling the server enforces, without hardcoding the constant on both
 	// sides. Source of truth is cart.MaxQty.
 	MaxQty int `json:"max_qty"`
+	// Managed reports whether this kiosk is opted into central control —
+	// catalog (items + users) is pushed down from the controller, so the
+	// admin SPA hides Add/Edit/Delete/Import affordances. Local stock
+	// adjustments and other kiosk-local actions remain available.
+	Managed bool `json:"managed"`
 }
 
 // Identity returns the kiosk's stable identity (kiosk_code + location_code)
@@ -34,6 +39,7 @@ func (h *Handlers) Identity(re *core.RequestEvent) error {
 	out := identityPayload{
 		Identity: kioskctx.Get(),
 		MaxQty:   cart.MaxQty,
+		Managed:  h.Cfg.Controller.Enabled,
 	}
 	if strings.TrimSpace(h.Cfg.Branding.LogoPath) != "" {
 		out.Branding.LogoURL = "/branding/logo"

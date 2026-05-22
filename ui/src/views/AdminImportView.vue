@@ -1,6 +1,10 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { pb } from '../lib/pb'
+import { useKioskIdentity } from '../composables/useKioskIdentity'
+
+const { identity } = useKioskIdentity()
+const managed = computed(() => identity.value?.managed ?? false)
 
 interface ImportError {
   row: number
@@ -54,13 +58,23 @@ async function onSubmit() {
 <template>
   <main class="p-6 max-w-3xl mx-auto w-full">
     <h1 class="text-2xl font-semibold mb-2">Import items</h1>
-    <p class="text-sm text-slate-400 mb-6">
+
+    <div
+      v-if="managed"
+      class="rounded-lg bg-sky-950/60 border border-sky-800 text-sky-200 px-4 py-3 mb-4"
+    >
+      Catalog is managed by the controller — import items there instead. This
+      kiosk receives item updates over JetStream as the central catalog changes.
+    </div>
+
+    <p v-if="!managed" class="text-sm text-slate-400 mb-6">
       Upload a CSV with columns:
       <code class="font-mono text-slate-300">code, name, type, unit, tracking_mode, serial, category, rfid_epc, active, notes, quantity_on_hand, reorder_threshold</code>.
       Rows match existing items by <code class="font-mono text-slate-300">code</code> (upsert). Items not in the CSV are left alone.
     </p>
 
     <form
+      v-if="!managed"
       class="bg-slate-900 border border-slate-800 rounded-2xl p-6 flex flex-col gap-4"
       @submit.prevent="onSubmit"
     >

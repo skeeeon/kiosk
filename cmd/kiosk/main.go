@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"github.com/pocketbase/pocketbase/plugins/migratecmd"
 
 	"github.com/skeeeon/kiosk/internal/cart"
+	"github.com/skeeeon/kiosk/internal/catalog"
 	"github.com/skeeeon/kiosk/internal/config"
 	"github.com/skeeeon/kiosk/internal/events"
 	"github.com/skeeeon/kiosk/internal/handlers"
@@ -47,7 +49,37 @@ func main() {
 		log.Printf("nats: continuing without event publishing — %v", err)
 	}
 	events.SetPublisher(pub)
+
+	// Managed mode: subscribe to the controller's catalog KV buckets and
+	// project changes into local items/users. Watcher is best-effort —
+	// failures here log but don't block kiosk startup, because the kiosk
+	// can still serve checkouts against whatever catalog state it has.
+	var catalogWatcher *catalog.Watcher
+	watcherCtx, watcherCancel := context.WithCancel(context.Background())
+	if cfg.Controller.Enabled {
+		if pub == nil {
+			log.Printf("controller.enabled=true but nats is not connected — catalog will not sync")
+		} else if js, err := events.JetStream(pub); err != nil {
+			log.Printf("controller.enabled=true but jetstream unavailable: %v", err)
+		} else {
+			catalogWatcher = catalog.NewWatcher(app, js,
+				cfg.Controller.CatalogItemsBucket,
+				cfg.Controller.CatalogUsersBucket)
+			app.OnServe().BindFunc(func(e *core.ServeEvent) error {
+				if err := catalogWatcher.Start(watcherCtx); err != nil {
+					log.Printf("catalog watcher: %v — kiosk will continue without sync", err)
+					catalogWatcher = nil
+				}
+				return e.Next()
+			})
+		}
+	}
+
 	app.OnTerminate().BindFunc(func(e *core.TerminateEvent) error {
+		if catalogWatcher != nil {
+			catalogWatcher.Stop()
+		}
+		watcherCancel()
 		if p := events.CurrentPublisher(); p != nil {
 			p.Close()
 		}

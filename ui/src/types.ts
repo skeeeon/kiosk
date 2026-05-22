@@ -9,6 +9,10 @@ export interface KioskIdentity {
   location_code: string
   branding: KioskBranding
   max_qty: number
+  // True when this kiosk is opted into central control by the
+  // kiosk-controller: items + users are pushed down from the controller via
+  // JetStream KV, and the admin SPA hides catalog mutation affordances.
+  managed: boolean
 }
 
 export interface User {

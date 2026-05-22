@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
+import { useKioskIdentity } from '../composables/useKioskIdentity'
 import AdminToast from '../components/AdminToast.vue'
 
 const auth = useAuthStore()
 const router = useRouter()
+const { identity } = useKioskIdentity()
 
 function onLogout() {
   auth.logout()
@@ -30,6 +32,7 @@ function onLogout() {
         Workers
       </RouterLink>
       <RouterLink
+        v-if="!identity?.managed"
         :to="{ name: 'admin-import' }"
         class="px-3 py-2 rounded-lg text-slate-300 hover:bg-slate-800"
         active-class="bg-slate-800 text-slate-100"
@@ -54,6 +57,12 @@ function onLogout() {
         </button>
       </span>
     </nav>
+    <div
+      v-if="identity?.managed"
+      class="px-6 py-2 bg-sky-950/60 border-b border-sky-800 text-sky-200 text-sm flex items-center gap-2"
+    >
+      <span>Catalog managed by controller — items and workers are edited centrally and synced down to this kiosk.</span>
+    </div>
     <div class="flex-1 overflow-auto">
       <RouterView />
     </div>

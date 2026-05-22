@@ -1,0 +1,26 @@
+# kiosk-controller config. Loaded from ./controller.yaml by default;
+# override with KIOSK_CONFIG=/path/to/file. Every YAML key has a matching
+# KIOSK_* env override (prefix KIOSK_, dots to underscores, uppercase).
+#
+# The controller shares the Config struct with the kiosk binary — the
+# `kiosk:` block is intentionally absent here because the controller isn't
+# a kiosk (its identity comes from its place in the fleet, not from a code).
+
+server:
+  port: 8091
+  bind: "127.0.0.1"
+
+# NATS is REQUIRED for the controller — without a broker connection the
+# controller has nothing to aggregate.
+nats:
+  enabled: true
+  url: "nats://localhost:4222"
+  token: ""
+  username: ""
+  password: ""
+  credentials_file: ""
+  nkey_seed_file: ""
+  tls_ca_file: ""
+  tls_cert_file: ""
+  tls_key_file: ""
+  tls_insecure: false

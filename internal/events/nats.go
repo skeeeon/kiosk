@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/skeeeon/kiosk/internal/config"
 )
@@ -51,6 +52,32 @@ func (p *natsPublisher) Close() {
 		return
 	}
 	p.nc.Close()
+}
+
+// Conn exposes the underlying *nats.Conn for callers that need JetStream,
+// KV, or a consumer (e.g., the kiosk's catalog watcher and the controller).
+// Returning the live conn is safe because both Conn() and PublishJSON share
+// it — there's no parallel state to coordinate.
+func (p *natsPublisher) Conn() *nats.Conn { return p.nc }
+
+// JetStream returns a jetstream.JetStream context from the active publisher.
+// Errors when the publisher is nil/disabled (NATS not enabled) or when it's
+// a non-NATS test fake. Callers that need JS during startup should treat a
+// nil err + nil JS as "JS not available, run in degraded mode."
+func JetStream(p Publisher) (jetstream.JetStream, error) {
+	if p == nil {
+		return nil, errors.New("nats publisher is nil — events.enabled likely false")
+	}
+	type connHolder interface{ Conn() *nats.Conn }
+	holder, ok := p.(connHolder)
+	if !ok {
+		return nil, errors.New("publisher does not expose a NATS connection")
+	}
+	nc := holder.Conn()
+	if nc == nil {
+		return nil, errors.New("publisher has no NATS connection")
+	}
+	return jetstream.New(nc)
 }
 
 // Connect dials NATS using the auth knobs the operator filled in. Returns

@@ -6,10 +6,17 @@ import StockAdjustDialog from './StockAdjustDialog.vue'
 import StockAdjustmentHistoryDialog from './StockAdjustmentHistoryDialog.vue'
 import type { ItemRecord, StockAdjustmentResult } from '../types'
 
-const props = defineProps<{
-  open: boolean
-  item: Partial<ItemRecord> | null
-}>()
+const props = withDefaults(
+  defineProps<{
+    open: boolean
+    item: Partial<ItemRecord> | null
+    // Managed mode renders the catalog fields read-only. Local affordances
+    // (stock adjust, adjustment history) remain available so floor admins can
+    // still keep qty truthful.
+    managed?: boolean
+  }>(),
+  { managed: false },
+)
 
 const emit = defineEmits<{
   'update:open': [value: boolean]
@@ -84,7 +91,8 @@ function onAdjusted(result: StockAdjustmentResult) {
             v-model="form.code"
             type="text"
             required
-            class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100"
+            :disabled="managed"
+            class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 disabled:opacity-60 disabled:cursor-not-allowed"
           />
         </label>
         <label class="flex flex-col gap-1">
@@ -93,7 +101,8 @@ function onAdjusted(result: StockAdjustmentResult) {
             v-model="form.name"
             type="text"
             required
-            class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100"
+            :disabled="managed"
+            class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 disabled:opacity-60 disabled:cursor-not-allowed"
           />
         </label>
       </div>
@@ -103,7 +112,8 @@ function onAdjusted(result: StockAdjustmentResult) {
           <span class="text-sm text-slate-400">Type</span>
           <select
             v-model="form.type"
-            class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100"
+            :disabled="managed"
+            class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 disabled:opacity-60 disabled:cursor-not-allowed"
           >
             <option value="tool">Tool</option>
             <option value="consumable">Consumable</option>
@@ -113,7 +123,8 @@ function onAdjusted(result: StockAdjustmentResult) {
           <span class="text-sm text-slate-400">Tracking</span>
           <select
             v-model="form.tracking_mode"
-            class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100"
+            :disabled="managed"
+            class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 disabled:opacity-60 disabled:cursor-not-allowed"
           >
             <option value="quantity">Quantity</option>
             <option value="serialized">Serialized</option>
@@ -124,7 +135,8 @@ function onAdjusted(result: StockAdjustmentResult) {
           <input
             v-model="form.unit"
             type="text"
-            class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100"
+            :disabled="managed"
+            class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 disabled:opacity-60 disabled:cursor-not-allowed"
           />
         </label>
       </div>
@@ -163,7 +175,8 @@ function onAdjusted(result: StockAdjustmentResult) {
             type="number"
             step="1"
             min="0"
-            class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100"
+            :disabled="managed"
+            class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 disabled:opacity-60 disabled:cursor-not-allowed"
           />
           <span class="text-xs text-slate-500">
             {{ form.type === 'tool'
@@ -186,7 +199,8 @@ function onAdjusted(result: StockAdjustmentResult) {
             type="number"
             step="1"
             min="0"
-            class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100"
+            :disabled="managed"
+            class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 disabled:opacity-60 disabled:cursor-not-allowed"
           />
           <span class="text-xs text-slate-500">Alert when available at or below this. 0 = no alert.</span>
         </label>
@@ -199,7 +213,8 @@ function onAdjusted(result: StockAdjustmentResult) {
             v-model="form.category"
             type="text"
             placeholder="e.g. Power Tools"
-            class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100"
+            :disabled="managed"
+            class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 disabled:opacity-60 disabled:cursor-not-allowed"
           />
         </label>
         <label v-if="!isSerialized" class="flex flex-col gap-1">
@@ -207,7 +222,8 @@ function onAdjusted(result: StockAdjustmentResult) {
           <input
             v-model="form.rfid_epc"
             type="text"
-            class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100"
+            :disabled="managed"
+            class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 disabled:opacity-60 disabled:cursor-not-allowed"
           />
         </label>
       </div>
@@ -222,12 +238,13 @@ function onAdjusted(result: StockAdjustmentResult) {
         <textarea
           v-model="form.notes"
           rows="2"
-          class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 resize-none"
+          :disabled="managed"
+          class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 resize-none disabled:opacity-60 disabled:cursor-not-allowed"
         ></textarea>
       </label>
 
       <label class="flex items-center gap-2 text-slate-300">
-        <input v-model="form.active" type="checkbox" class="w-4 h-4" />
+        <input v-model="form.active" type="checkbox" :disabled="managed" class="w-4 h-4 disabled:opacity-60" />
         Active
       </label>
 
@@ -237,9 +254,10 @@ function onAdjusted(result: StockAdjustmentResult) {
           class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200"
           @click="emit('update:open', false)"
         >
-          Cancel
+          {{ managed ? 'Close' : 'Cancel' }}
         </button>
         <button
+          v-if="!managed"
           type="submit"
           class="px-4 py-2 rounded-lg bg-brand-primary hover:bg-brand-primary-hover text-white font-medium"
         >

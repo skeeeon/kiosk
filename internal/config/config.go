@@ -15,13 +15,14 @@ import (
 )
 
 type Config struct {
-	Kiosk    KioskConfig    `yaml:"kiosk"`
-	Server   ServerConfig   `yaml:"server"`
-	Session  SessionConfig  `yaml:"session"`
-	Scanning ScanningConfig `yaml:"scanning"`
-	Returns  ReturnsConfig  `yaml:"returns"`
-	Branding BrandingConfig `yaml:"branding"`
-	NATS     NATSConfig     `yaml:"nats"`
+	Kiosk      KioskConfig      `yaml:"kiosk"`
+	Server     ServerConfig     `yaml:"server"`
+	Session    SessionConfig    `yaml:"session"`
+	Scanning   ScanningConfig   `yaml:"scanning"`
+	Returns    ReturnsConfig    `yaml:"returns"`
+	Branding   BrandingConfig   `yaml:"branding"`
+	NATS       NATSConfig       `yaml:"nats"`
+	Controller ControllerConfig `yaml:"controller"`
 }
 
 type KioskConfig struct {
@@ -98,6 +99,20 @@ type NATSConfig struct {
 	TLSCertFile     string `yaml:"tls_cert_file"`
 	TLSKeyFile      string `yaml:"tls_key_file"`
 	TLSInsecure     bool   `yaml:"tls_insecure"`
+}
+
+// ControllerConfig opts a kiosk into "managed" mode. When enabled, the kiosk
+// watches the JetStream KV buckets named below for catalog updates pushed
+// down by the central kiosk-controller and projects them into its local
+// items/users tables. The admin SPA hides catalog mutation affordances so
+// edits go through the controller instead.
+//
+// Disabled by default — a kiosk with controller.enabled=false continues to
+// behave as a standalone v1 kiosk regardless of whether NATS is on.
+type ControllerConfig struct {
+	Enabled            bool   `yaml:"enabled"`
+	CatalogItemsBucket string `yaml:"catalog_items_bucket"`
+	CatalogUsersBucket string `yaml:"catalog_users_bucket"`
 }
 
 // BrandingConfig customizes the kiosk's visual identity. All fields are
@@ -245,6 +260,15 @@ func applyEnvOverrides(c *Config) {
 	if v := os.Getenv("KIOSK_NATS_TLS_INSECURE"); v != "" {
 		c.NATS.TLSInsecure = parseBool(v)
 	}
+	if v := os.Getenv("KIOSK_CONTROLLER_ENABLED"); v != "" {
+		c.Controller.Enabled = parseBool(v)
+	}
+	if v := os.Getenv("KIOSK_CONTROLLER_CATALOG_ITEMS_BUCKET"); v != "" {
+		c.Controller.CatalogItemsBucket = v
+	}
+	if v := os.Getenv("KIOSK_CONTROLLER_CATALOG_USERS_BUCKET"); v != "" {
+		c.Controller.CatalogUsersBucket = v
+	}
 }
 
 func parseBool(s string) bool {
@@ -257,11 +281,16 @@ func parseBool(s string) bool {
 }
 
 func validate(c *Config) error {
-	if c.Kiosk.Code == "" {
-		return fmt.Errorf("kiosk.code is required")
-	}
-	if c.Kiosk.LocationCode == "" {
-		return fmt.Errorf("kiosk.location_code is required")
+	// The controller binary uses the same Config struct but doesn't have a
+	// kiosk identity — it's the central aggregator, not a kiosk. cmd/controller
+	// sets KIOSK_ROLE=controller before Load runs.
+	if os.Getenv("KIOSK_ROLE") != "controller" {
+		if c.Kiosk.Code == "" {
+			return fmt.Errorf("kiosk.code is required")
+		}
+		if c.Kiosk.LocationCode == "" {
+			return fmt.Errorf("kiosk.location_code is required")
+		}
 	}
 	if c.Server.Port == 0 {
 		c.Server.Port = 8090

@@ -3,10 +3,14 @@ import { computed, reactive, watch } from 'vue'
 import AppDialog from './AppDialog.vue'
 import type { WorkerRecord } from '../types'
 
-const props = defineProps<{
-  open: boolean
-  user: Partial<WorkerRecord> | null
-}>()
+const props = withDefaults(
+  defineProps<{
+    open: boolean
+    user: Partial<WorkerRecord> | null
+    managed?: boolean
+  }>(),
+  { managed: false },
+)
 
 const emit = defineEmits<{
   'update:open': [value: boolean]
@@ -60,7 +64,8 @@ function onSubmit() {
             type="text"
             required
             placeholder="EMP-4042"
-            class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100"
+            :disabled="managed"
+            class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 disabled:opacity-60 disabled:cursor-not-allowed"
           />
         </label>
         <label class="flex flex-col gap-1">
@@ -69,7 +74,8 @@ function onSubmit() {
             v-model="form.name"
             type="text"
             required
-            class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100"
+            :disabled="managed"
+            class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 disabled:opacity-60 disabled:cursor-not-allowed"
           />
         </label>
       </div>
@@ -81,14 +87,16 @@ function onSubmit() {
             v-model="form.email"
             type="email"
             required
-            class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100"
+            :disabled="managed"
+            class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 disabled:opacity-60 disabled:cursor-not-allowed"
           />
         </label>
         <label class="flex flex-col gap-1">
           <span class="text-sm text-slate-400">Role</span>
           <select
             v-model="form.role"
-            class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100"
+            :disabled="managed"
+            class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 disabled:opacity-60 disabled:cursor-not-allowed"
           >
             <option value="worker">Worker</option>
             <option value="foreman">Foreman</option>
@@ -97,7 +105,7 @@ function onSubmit() {
       </div>
 
       <label class="flex items-center gap-2 text-slate-300">
-        <input v-model="form.active" type="checkbox" class="w-4 h-4" />
+        <input v-model="form.active" type="checkbox" :disabled="managed" class="w-4 h-4 disabled:opacity-60" />
         Active
       </label>
 
@@ -107,9 +115,10 @@ function onSubmit() {
           class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200"
           @click="emit('update:open', false)"
         >
-          Cancel
+          {{ managed ? 'Close' : 'Cancel' }}
         </button>
         <button
+          v-if="!managed"
           type="submit"
           class="px-4 py-2 rounded-lg bg-brand-primary hover:bg-brand-primary-hover text-white font-medium"
         >

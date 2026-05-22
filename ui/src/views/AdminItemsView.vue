@@ -5,9 +5,12 @@ import { download } from '../lib/api'
 import ItemDialog from '../components/ItemDialog.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import { useAdminToast } from '../composables/useAdminToast'
+import { useKioskIdentity } from '../composables/useKioskIdentity'
 import type { ItemRecord } from '../types'
 
 const toast = useAdminToast()
+const { identity } = useKioskIdentity()
+const managed = computed(() => identity.value?.managed ?? false)
 
 const items = ref<ItemRecord[]>([])
 const instanceCounts = ref<Record<string, number>>({})
@@ -158,6 +161,7 @@ async function onDelete() {
           Export CSV
         </button>
         <button
+          v-if="!managed"
           type="button"
           class="px-4 py-2 rounded-lg bg-brand-primary hover:bg-brand-primary-hover text-white font-medium"
           @click="openNew"
@@ -257,6 +261,7 @@ async function onDelete() {
             </td>
             <td class="px-4 py-3 text-right">
               <button
+                v-if="!managed"
                 type="button"
                 class="text-red-400 hover:text-red-300 px-2 py-1"
                 @click.stop="deleting = item"
@@ -272,6 +277,7 @@ async function onDelete() {
     <ItemDialog
       :open="editing !== null"
       :item="editing"
+      :managed="managed"
       @update:open="(v) => { if (!v) { editing = null; void load() } }"
       @save="onSave"
     />

@@ -4,9 +4,12 @@ import { pb } from '../lib/pb'
 import UserDialog from '../components/UserDialog.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import { useAdminToast } from '../composables/useAdminToast'
+import { useKioskIdentity } from '../composables/useKioskIdentity'
 import type { WorkerRecord } from '../types'
 
 const toast = useAdminToast()
+const { identity } = useKioskIdentity()
+const managed = computed(() => identity.value?.managed ?? false)
 
 const users = ref<WorkerRecord[]>([])
 const loading = ref(false)
@@ -118,6 +121,7 @@ async function onDelete() {
         <p class="text-sm text-slate-400">{{ users.length }} total</p>
       </div>
       <button
+        v-if="!managed"
         type="button"
         class="px-4 py-2 rounded-lg bg-brand-primary hover:bg-brand-primary-hover text-white font-medium"
         @click="openNew"
@@ -174,6 +178,7 @@ async function onDelete() {
             </td>
             <td class="px-4 py-3 text-right">
               <button
+                v-if="!managed"
                 type="button"
                 class="text-red-400 hover:text-red-300 px-2 py-1"
                 @click.stop="deleting = user"
@@ -189,6 +194,7 @@ async function onDelete() {
     <UserDialog
       :open="editing !== null"
       :user="editing"
+      :managed="managed"
       @update:open="(v) => { if (!v) editing = null }"
       @save="onSave"
     />
