@@ -11,6 +11,7 @@ import AdminImportView from './views/AdminImportView.vue'
 import AdminReportsView from './views/AdminReportsView.vue'
 import AdminKiosksView from './views/AdminKiosksView.vue'
 import AdminTransactionsView from './views/AdminTransactionsView.vue'
+import AdminCatalogSyncView from './views/AdminCatalogSyncView.vue'
 
 export const router = createRouter({
   history: createWebHistory(),
@@ -33,6 +34,7 @@ export const router = createRouter({
         // queries hit empty / nonexistent data.
         { path: 'kiosks', name: 'admin-kiosks', component: AdminKiosksView },
         { path: 'transactions', name: 'admin-transactions', component: AdminTransactionsView },
+        { path: 'catalog-sync', name: 'admin-catalog-sync', component: AdminCatalogSyncView },
       ],
     },
   ],

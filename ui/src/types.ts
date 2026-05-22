@@ -174,3 +174,46 @@ export interface StockAdjustmentResult {
   new_quantity: number
   prev_quantity: number
 }
+
+// CatalogIntegrityReport mirrors the controller's
+// GET /api/kiosk/catalog/integrity response. One bucket per KV store
+// (items, users). Keys are sorted on the server so consecutive runs
+// produce stable diffs.
+export interface CatalogIntegrityBucket {
+  bucket: string
+  expected_keys: number
+  actual_keys: number
+  missing_in_kv: string[]
+  extra_in_kv: string[]
+}
+
+export interface CatalogIntegrityReport {
+  items: CatalogIntegrityBucket
+  users: CatalogIntegrityBucket
+}
+
+// CatalogReconcileBucket / Report mirror the response from
+// POST /api/kiosk/catalog/reconcile. Errors are per-key strings so the UI
+// can render them; absence means no errors.
+export interface CatalogReconcileBucket {
+  bucket: string
+  published: number
+  deleted: number
+  publish_errors?: string[]
+  delete_errors?: string[]
+}
+
+export interface CatalogReconcileReport {
+  items: CatalogReconcileBucket
+  users: CatalogReconcileBucket
+}
+
+// LedgerRepublishResult mirrors POST /api/kiosk/ledger/republish.
+// From/to echo back the request scope; counts report what was walked.
+export interface LedgerRepublishResult {
+  from?: string
+  to?: string
+  transactions_published: number
+  lines_published: number
+  skipped: number
+}

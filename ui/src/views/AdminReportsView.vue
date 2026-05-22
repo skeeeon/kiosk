@@ -3,11 +3,15 @@ import { computed, ref, watch } from 'vue'
 import { pb } from '../lib/pb'
 import { api, download } from '../lib/api'
 import { useAdminToast } from '../composables/useAdminToast'
+import { useKioskIdentity } from '../composables/useKioskIdentity'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import TransactionDetailDialog, {
   type TxSummary,
 } from '../components/TransactionDetailDialog.vue'
-import type { ItemRecord } from '../types'
+import type { ItemRecord, LedgerRepublishResult } from '../types'
+
+const { identity } = useKioskIdentity()
+const isManaged = computed(() => identity.value?.managed === true)
 
 type Tab = 'currently-out' | 'low-stock' | 'recent'
 const tab = ref<Tab>('currently-out')
@@ -52,6 +56,8 @@ const error = ref<string | null>(null)
 
 const rebuildOpen = ref(false)
 const rebuilding = ref(false)
+const resyncOpen = ref(false)
+const resyncing = ref(false)
 
 const selectedTx = ref<TxSummary | null>(null)
 const detailOpen = ref(false)
@@ -142,6 +148,28 @@ async function onRebuild() {
     toast.error(`Rebuild failed: ${(e as Error).message}`)
   } finally {
     rebuilding.value = false
+  }
+}
+
+// Resync every completed transaction's events to the controller. Safe to
+// re-run — the controller's aggregator dedupes by (source_kiosk_code,
+// source_transaction_id). Used when the controller's projected ledger
+// shows drift, typically after a NATS outage. UI is intentionally bare:
+// republishing all history is the safe-default, date-range scoping is
+// available via the API for operators who need it.
+async function onResync() {
+  resyncOpen.value = false
+  resyncing.value = true
+  try {
+    const r = await api.post<LedgerRepublishResult>('/api/kiosk/ledger/republish', {})
+    toast.success(
+      `Resync complete: republished ${r.transactions_published} transactions, ${r.lines_published} lines` +
+        (r.skipped > 0 ? ` (${r.skipped} skipped)` : ''),
+    )
+  } catch (e) {
+    toast.error(`Resync failed: ${(e as Error).message}`)
+  } finally {
+    resyncing.value = false
   }
 }
 
@@ -298,7 +326,16 @@ function openTxDetail(t: TxRow) {
         </table>
       </div>
 
-      <div class="flex justify-end mt-2">
+      <div class="flex justify-end gap-4 mt-2">
+        <button
+          v-if="isManaged"
+          type="button"
+          class="text-xs text-slate-500 hover:text-slate-300 underline-offset-2 hover:underline"
+          :disabled="resyncing"
+          @click="resyncOpen = true"
+        >
+          {{ resyncing ? 'Resyncing…' : 'Resync ledger to controller' }}
+        </button>
         <button
           type="button"
           class="text-xs text-slate-500 hover:text-slate-300 underline-offset-2 hover:underline"
@@ -440,6 +477,15 @@ function openTxDetail(t: TxRow) {
       destructive
       @update:open="rebuildOpen = $event"
       @confirm="onRebuild"
+    />
+
+    <ConfirmDialog
+      :open="resyncOpen"
+      title="Resync ledger to controller"
+      message="This re-emits every completed transaction's events to the controller. Safe to run any time — the controller deduplicates by source transaction id. Use after a suspected NATS outage to recover dropped events. Continue?"
+      confirm-label="Resync"
+      @update:open="resyncOpen = $event"
+      @confirm="onResync"
     />
 
     <TransactionDetailDialog

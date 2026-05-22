@@ -68,6 +68,14 @@ function onLogout() {
         Transactions
       </RouterLink>
       <RouterLink
+        v-if="isController"
+        :to="{ name: 'admin-catalog-sync' }"
+        class="px-3 py-2 rounded-lg text-slate-300 hover:bg-slate-800"
+        active-class="bg-slate-800 text-slate-100"
+      >
+        Catalog sync
+      </RouterLink>
+      <RouterLink
         v-if="!isController && !identity?.managed"
         :to="{ name: 'admin-import' }"
         class="px-3 py-2 rounded-lg text-slate-300 hover:bg-slate-800"
