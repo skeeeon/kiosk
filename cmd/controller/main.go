@@ -17,6 +17,7 @@ import (
 	"os"
 
 	"github.com/pocketbase/pocketbase"
+	"github.com/pocketbase/pocketbase/apis"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/plugins/migratecmd"
 
@@ -59,11 +60,24 @@ func main() {
 
 	controller.RegisterSeedCommand(app, cfg)
 
+	h := controller.New(app, cfg)
+
 	// All NATS-dependent setup goes inside OnServe so non-serve subcommands
 	// (--help, seed-catalog, migrate, etc.) don't attempt to connect to a
 	// broker and fail when none is reachable. The seed subcommand brings up
 	// its own NATS + publisher hooks before running.
 	app.OnServe().BindFunc(func(e *core.ServeEvent) error {
+		// Custom HTTP routes for the SPA's identity, branding, and CSV
+		// exports. PB's REST API at /api/collections/* still handles CRUD.
+		e.Router.GET("/api/kiosk/identity", h.Identity)
+		e.Router.GET("/branding/logo", h.Logo)
+		e.Router.GET("/api/kiosk/items.csv", h.ItemsExportCSV)
+		e.Router.GET("/api/kiosk/transactions.csv", h.TransactionsExportCSV)
+
+		// Serve the same Vue SPA the kiosk uses. The SPA detects role at
+		// boot via /api/kiosk/identity and gates its UI accordingly.
+		e.Router.GET("/{path...}", apis.Static(os.DirFS("./pb_public"), true))
+
 		if !cfg.NATS.Enabled {
 			return fmt.Errorf("nats.enabled must be true for the controller — set nats.url and enable")
 		}

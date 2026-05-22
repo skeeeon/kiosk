@@ -4,15 +4,19 @@ export interface KioskBranding {
   primary_color?: string
 }
 
+// Identity payload returned by /api/kiosk/identity on both binaries.
+// `role` is the discriminator the SPA checks at boot. Kiosk-only fields are
+// present when role === 'kiosk' and absent (or zero-valued) on the controller.
 export interface KioskIdentity {
-  kiosk_code: string
-  location_code: string
+  role: 'kiosk' | 'controller'
   branding: KioskBranding
-  max_qty: number
-  // True when this kiosk is opted into central control by the
-  // kiosk-controller: items + users are pushed down from the controller via
-  // JetStream KV, and the admin SPA hides catalog mutation affordances.
-  managed: boolean
+  // Present on kiosks; absent on the controller.
+  kiosk_code?: string
+  location_code?: string
+  max_qty?: number
+  // Present on kiosks; true when this kiosk is opted into central control by
+  // the kiosk-controller (catalog read-only, admin mutation affordances hidden).
+  managed?: boolean
 }
 
 export interface User {
@@ -126,6 +130,17 @@ export interface WorkerRecord {
   name: string
   role: 'worker' | 'foreman'
   active: boolean
+  created?: string
+  updated?: string
+}
+
+export interface KioskRecord {
+  id: string
+  kiosk_code: string
+  location_code: string
+  last_seen?: string
+  status: 'unknown' | 'active' | 'disabled'
+  notes: string
   created?: string
   updated?: string
 }

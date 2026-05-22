@@ -10,6 +10,13 @@ server:
   port: 8091
   bind: "127.0.0.1"
 
+# Optional. Customize the controller admin UI's visual identity. All keys
+# are optional; omitted values fall back to built-in SPA defaults.
+branding:
+  logo_path: ""                       # served at /branding/logo
+  tagline: "Fleet Controller"
+  primary_color: ""                   # CSS color (e.g. "#0284c7")
+
 # NATS is REQUIRED for the controller — without a broker connection the
 # controller has nothing to aggregate.
 nats:

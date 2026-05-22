@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { useKioskIdentity } from '../composables/useKioskIdentity'
@@ -8,9 +9,11 @@ const auth = useAuthStore()
 const router = useRouter()
 const { identity } = useKioskIdentity()
 
+const isController = computed(() => identity.value?.role === 'controller')
+
 function onLogout() {
   auth.logout()
-  router.push('/')
+  router.push(isController.value ? { name: 'admin-login' } : '/')
 }
 </script>
 
@@ -32,7 +35,23 @@ function onLogout() {
         Workers
       </RouterLink>
       <RouterLink
-        v-if="!identity?.managed"
+        v-if="isController"
+        :to="{ name: 'admin-kiosks' }"
+        class="px-3 py-2 rounded-lg text-slate-300 hover:bg-slate-800"
+        active-class="bg-slate-800 text-slate-100"
+      >
+        Kiosks
+      </RouterLink>
+      <RouterLink
+        v-if="isController"
+        :to="{ name: 'admin-transactions' }"
+        class="px-3 py-2 rounded-lg text-slate-300 hover:bg-slate-800"
+        active-class="bg-slate-800 text-slate-100"
+      >
+        Transactions
+      </RouterLink>
+      <RouterLink
+        v-if="!isController && !identity?.managed"
         :to="{ name: 'admin-import' }"
         class="px-3 py-2 rounded-lg text-slate-300 hover:bg-slate-800"
         active-class="bg-slate-800 text-slate-100"
@@ -40,6 +59,7 @@ function onLogout() {
         Import
       </RouterLink>
       <RouterLink
+        v-if="!isController"
         :to="{ name: 'admin-reports' }"
         class="px-3 py-2 rounded-lg text-slate-300 hover:bg-slate-800"
         active-class="bg-slate-800 text-slate-100"

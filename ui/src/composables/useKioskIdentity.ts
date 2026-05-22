@@ -4,7 +4,7 @@ import type { KioskIdentity } from '../types'
 
 // Module-level cache so multiple components share the single fetch.
 const identity = ref<KioskIdentity | null>(null)
-let fetched = false
+let loadPromise: Promise<KioskIdentity | null> | null = null
 
 // applyBranding writes the runtime overrides from the kiosk's config into
 // CSS variables on :root. Tailwind's @theme block in style.css declares the
@@ -22,17 +22,29 @@ function applyBranding(id: KioskIdentity) {
   }
 }
 
-export function useKioskIdentity() {
-  onMounted(async () => {
-    if (fetched) return
-    fetched = true
+// loadKioskIdentity fetches identity once and caches it. Subsequent callers
+// (composable, router guard) share the same in-flight promise. Exposed so
+// the router's beforeEach can await identity before deciding where to land.
+export function loadKioskIdentity(): Promise<KioskIdentity | null> {
+  if (identity.value) return Promise.resolve(identity.value)
+  if (loadPromise) return loadPromise
+  loadPromise = (async () => {
     try {
       const fresh = await api.get<KioskIdentity>('/api/kiosk/identity')
       identity.value = fresh
       applyBranding(fresh)
+      return fresh
     } catch {
-      fetched = false // allow retry on remount
+      loadPromise = null // allow retry on next caller
+      return null
     }
+  })()
+  return loadPromise
+}
+
+export function useKioskIdentity() {
+  onMounted(() => {
+    void loadKioskIdentity()
   })
   return { identity }
 }

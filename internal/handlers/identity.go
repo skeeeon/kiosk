@@ -20,6 +20,11 @@ type brandingPayload struct {
 }
 
 type identityPayload struct {
+	// Role tells the SPA which binary it's running against so it can route
+	// the operator at boot (checkout vs admin) and gate role-specific
+	// affordances. Kiosks always emit "kiosk"; the controller's analogous
+	// endpoint emits "controller".
+	Role string `json:"role"`
 	kioskctx.Identity
 	Branding brandingPayload `json:"branding"`
 	// MaxQty is published so the SPA's +/- button can disable at the same
@@ -37,6 +42,7 @@ type identityPayload struct {
 // plus the configured branding. The SPA fetches this once on boot.
 func (h *Handlers) Identity(re *core.RequestEvent) error {
 	out := identityPayload{
+		Role:     "kiosk",
 		Identity: kioskctx.Get(),
 		MaxQty:   cart.MaxQty,
 		Managed:  h.Cfg.Controller.Enabled,

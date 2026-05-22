@@ -9,6 +9,8 @@ import (
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
+
+	"github.com/skeeeon/kiosk/internal/exports"
 )
 
 const maxCSVUploadBytes = 10 << 20 // 10 MB — enough for tens of thousands of items
@@ -228,26 +230,17 @@ func (h *Handlers) TransactionsExportCSV(re *core.RequestEvent) error {
 		return err
 	}
 
-	filter := `status = "completed"`
-	params := dbx.Params{}
-	if from := re.Request.URL.Query().Get("from"); from != "" {
+	from := re.Request.URL.Query().Get("from")
+	to := re.Request.URL.Query().Get("to")
+	if from != "" {
 		if _, err := time.Parse(time.RFC3339, from); err != nil {
 			return re.BadRequestError("from must be RFC3339 (e.g. 2026-05-01T00:00:00Z)", err)
 		}
-		filter += " && completed_at >= {:from}"
-		params["from"] = from
 	}
-	if to := re.Request.URL.Query().Get("to"); to != "" {
+	if to != "" {
 		if _, err := time.Parse(time.RFC3339, to); err != nil {
 			return re.BadRequestError("to must be RFC3339", err)
 		}
-		filter += " && completed_at <= {:to}"
-		params["to"] = to
-	}
-
-	txs, err := h.App.FindRecordsByFilter("transactions", filter, "-completed_at", 0, 0, params)
-	if err != nil {
-		return err
 	}
 
 	w := re.Response
@@ -255,42 +248,12 @@ func (h *Handlers) TransactionsExportCSV(re *core.RequestEvent) error {
 	w.Header().Set("Content-Disposition", fmt.Sprintf(
 		"attachment; filename=\"transactions-%s.csv\"", time.Now().UTC().Format("20060102-150405"),
 	))
-
-	cw := csv.NewWriter(w)
-	defer cw.Flush()
-
-	if err := cw.Write([]string{
-		"transaction_id", "completed_at", "user_code", "user_name",
-		"line_count", "kiosk_code", "location_code",
-	}); err != nil {
-		return err
-	}
-
-	userCache := map[string]*core.Record{}
-	for _, t := range txs {
-		userID := t.GetString("user")
-		u, ok := userCache[userID]
-		if !ok {
-			u, _ = h.App.FindRecordById("users", userID)
-			userCache[userID] = u
-		}
-		var userCode, userName string
-		if u != nil {
-			userCode = u.GetString("code")
-			userName = u.GetString("name")
-		}
-		if err := cw.Write([]string{
-			t.Id,
-			t.GetDateTime("completed_at").Time().Format(time.RFC3339),
-			userCode, userName,
-			fmt.Sprintf("%d", t.GetInt("lines_count")),
-			t.GetString("kiosk_code"),
-			t.GetString("location_code"),
-		}); err != nil {
-			return err
-		}
-	}
-	return nil
+	return exports.WriteTransactionsCSV(h.App, w, exports.TransactionsOptions{
+		From: from,
+		To:   to,
+		// IncludeSourceKiosk left false — on a standalone kiosk those fields
+		// are always blank.
+	})
 }
 
 // ItemsExportCSV streams the items collection as CSV with the same column
@@ -302,51 +265,12 @@ func (h *Handlers) ItemsExportCSV(re *core.RequestEvent) error {
 		return err
 	}
 
-	items, err := h.App.FindRecordsByFilter("items", "", "code", 0, 0)
-	if err != nil {
-		return err
-	}
-
 	w := re.Response
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(
 		"attachment; filename=\"items-%s.csv\"", time.Now().UTC().Format("20060102-150405"),
 	))
-
-	cw := csv.NewWriter(w)
-	defer cw.Flush()
-
-	if err := cw.Write([]string{
-		"code", "name", "type", "unit", "tracking_mode", "serial",
-		"category", "rfid_epc", "active", "notes",
-		"quantity_on_hand", "reorder_threshold",
-	}); err != nil {
-		return err
-	}
-
-	for _, it := range items {
-		active := "false"
-		if it.GetBool("active") {
-			active = "true"
-		}
-		if err := cw.Write([]string{
-			it.GetString("code"),
-			it.GetString("name"),
-			it.GetString("type"),
-			it.GetString("unit"),
-			it.GetString("tracking_mode"),
-			it.GetString("serial"),
-			it.GetString("category"),
-			it.GetString("rfid_epc"),
-			active,
-			it.GetString("notes"),
-			fmt.Sprintf("%d", it.GetInt("quantity_on_hand")),
-			fmt.Sprintf("%d", it.GetInt("reorder_threshold")),
-		}); err != nil {
-			return err
-		}
-	}
-	return nil
+	return exports.WriteItemsCSV(h.App, w)
 }
 
 // parseCSVActive treats empty as active=true; only explicit falsy values

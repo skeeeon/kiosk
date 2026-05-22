@@ -10,12 +10,15 @@ const props = withDefaults(
   defineProps<{
     open: boolean
     item: Partial<ItemRecord> | null
-    // Managed mode renders the catalog fields read-only. Local affordances
-    // (stock adjust, adjustment history) remain available so floor admins can
-    // still keep qty truthful.
+    // Managed mode (kiosk only): catalog fields read-only; stock adjust still
+    // available locally.
     managed?: boolean
+    // Controller mode: full edit access, but the quantity / threshold / stock
+    // adjust / instances affordances are hidden because they're kiosk-local
+    // concepts.
+    isController?: boolean
   }>(),
-  { managed: false },
+  { managed: false, isController: false },
 )
 
 const emit = defineEmits<{
@@ -149,7 +152,7 @@ function onAdjusted(result: StockAdjustmentResult) {
         code, serial, RFID) in the panel that appears below.
       </label>
 
-      <div class="grid grid-cols-2 gap-3">
+      <div v-if="!isController" class="grid grid-cols-2 gap-3">
         <div class="flex flex-col gap-1">
           <span class="text-sm text-slate-400">
             {{ form.type === 'tool' ? 'Fleet quantity' : 'Quantity on hand' }}
@@ -229,7 +232,7 @@ function onAdjusted(result: StockAdjustmentResult) {
       </div>
 
       <ItemInstancesPanel
-        v-if="isSerialized && isEdit && form.id"
+        v-if="!isController && isSerialized && isEdit && form.id"
         :item-id="form.id"
       />
 
@@ -268,7 +271,7 @@ function onAdjusted(result: StockAdjustmentResult) {
   </AppDialog>
 
   <StockAdjustDialog
-    v-if="isEdit && form.id"
+    v-if="!isController && isEdit && form.id"
     :open="adjustOpen"
     :item-id="form.id"
     :item-code="form.code ?? ''"
@@ -278,7 +281,7 @@ function onAdjusted(result: StockAdjustmentResult) {
     @applied="onAdjusted"
   />
   <StockAdjustmentHistoryDialog
-    v-if="isEdit && form.id"
+    v-if="!isController && isEdit && form.id"
     :open="historyOpen"
     :item-id="form.id"
     :item-code="form.code ?? ''"
