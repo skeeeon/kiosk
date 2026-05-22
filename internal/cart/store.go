@@ -55,10 +55,11 @@ type Cart struct {
 const MaxQty = 99
 
 var (
-	ErrNotFound      = errors.New("cart not found or expired")
-	ErrLineNotFound  = errors.New("cart line not found")
-	ErrQtyOutOfRange = errors.New("qty must be between 1 and MaxQty")
-	ErrInvalidAction = errors.New("action is not valid for this item type")
+	ErrNotFound          = errors.New("cart not found or expired")
+	ErrLineNotFound      = errors.New("cart line not found")
+	ErrQtyOutOfRange     = errors.New("qty must be between 1 and MaxQty")
+	ErrInvalidAction     = errors.New("action is not valid for this item type")
+	ErrDuplicateInstance = errors.New("instance already in cart")
 )
 
 // ValidActionForType reports whether the action makes sense for the item type.
@@ -152,6 +153,18 @@ func (s *Store) AddLine(cartID string, in *Line) (*Cart, *Line, error) {
 				existing.Qty += in.Qty
 				s.touchLocked(c)
 				return c, existing, nil
+			}
+		}
+	}
+
+	// Serialized scans can't be stacked (qty must be 1) and the same
+	// physical unit can't be scanned twice in one cart — the open_checkouts
+	// unique-serial index would reject the second commit row with an opaque
+	// error. Catch it here with a friendlier signal.
+	if in.ItemInstanceID != "" {
+		for _, existing := range c.Lines {
+			if existing.ItemInstanceID == in.ItemInstanceID {
+				return nil, nil, ErrDuplicateInstance
 			}
 		}
 	}

@@ -127,6 +127,8 @@ func (h *Handlers) CartAdd(re *core.RequestEvent) error {
 			return re.BadRequestError(fmt.Sprintf("qty per line is capped at %d", cart.MaxQty), nil)
 		case errors.Is(err, cart.ErrInvalidAction):
 			return re.BadRequestError("action is not valid for this item type", nil)
+		case errors.Is(err, cart.ErrDuplicateInstance):
+			return re.BadRequestError("this unit is already in your cart", nil)
 		}
 		return re.NotFoundError("cart not found or expired", nil)
 	}

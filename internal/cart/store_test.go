@@ -1,6 +1,7 @@
 package cart
 
 import (
+	"errors"
 	"testing"
 	"time"
 )
@@ -76,6 +77,57 @@ func TestNoStackingForSerializedItems(t *testing.T) {
 	})
 	if len(c.Lines) != 2 {
 		t.Fatalf("expected 2 lines for serialized items, got %d", len(c.Lines))
+	}
+}
+
+// Two scans of the same physical instance in one cart would both pass the
+// no-stacking rule above (each becomes its own line), then collide at
+// commit-time against the open_checkouts unique-serial index with an
+// opaque error. AddLine catches it up front instead.
+func TestDuplicateInstanceRejected(t *testing.T) {
+	s, _ := newTestStore()
+	c := s.Start("u1", "EMP-1", "Alice")
+	_, _, err := s.AddLine(c.ID, &Line{
+		ItemID: "item-a", ItemType: "tool", TrackingMode: "serialized",
+		Action: "checkout", Qty: 1, Serial: "SN-1",
+		ItemInstanceID: "inst-A",
+	})
+	if err != nil {
+		t.Fatalf("first add: %v", err)
+	}
+	_, _, err = s.AddLine(c.ID, &Line{
+		ItemID: "item-a", ItemType: "tool", TrackingMode: "serialized",
+		Action: "checkout", Qty: 1, Serial: "SN-1",
+		ItemInstanceID: "inst-A",
+	})
+	if !errors.Is(err, ErrDuplicateInstance) {
+		t.Fatalf("second add: want ErrDuplicateInstance, got %v", err)
+	}
+	if len(c.Lines) != 1 {
+		t.Errorf("cart should still have 1 line, got %d", len(c.Lines))
+	}
+}
+
+// Different instances of the same SKU should still get separate lines —
+// the duplicate guard only rejects exact ItemInstanceID matches.
+func TestDifferentInstancesSameSKUStillSeparate(t *testing.T) {
+	s, _ := newTestStore()
+	c := s.Start("u1", "EMP-1", "Alice")
+	_, _, _ = s.AddLine(c.ID, &Line{
+		ItemID: "item-a", ItemType: "tool", TrackingMode: "serialized",
+		Action: "checkout", Qty: 1, Serial: "SN-1",
+		ItemInstanceID: "inst-A",
+	})
+	_, _, err := s.AddLine(c.ID, &Line{
+		ItemID: "item-a", ItemType: "tool", TrackingMode: "serialized",
+		Action: "checkout", Qty: 1, Serial: "SN-2",
+		ItemInstanceID: "inst-B",
+	})
+	if err != nil {
+		t.Fatalf("second add (different instance): %v", err)
+	}
+	if len(c.Lines) != 2 {
+		t.Errorf("expected 2 lines, got %d", len(c.Lines))
 	}
 }
 
