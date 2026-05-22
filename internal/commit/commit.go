@@ -86,8 +86,10 @@ func Commit(app core.App, c *cart.Cart, id kioskctx.Identity, policy Policy, pub
 		if err != nil {
 			return fmt.Errorf("find user %s: %w", c.UserID, err)
 		}
+		cartUserRole := userRec.GetString("role")
+		cartUserGroup := userRec.GetString("group")
 
-		txRec, err := createTransaction(tx, c, id, completedAt)
+		txRec, err := createTransaction(tx, c, id, cartUserGroup, completedAt)
 		if err != nil {
 			return err
 		}
@@ -147,6 +149,25 @@ func Commit(app core.App, c *cart.Cart, id kioskctx.Identity, policy Policy, pub
 				result.CheckedOut++
 
 			case "return":
+				// Cross-user returns: only a foreman acting within their own
+				// non-empty group can do this. Pre-flight AllowCrossUser kill
+				// switch above already short-circuited the strict-policy case.
+				if l.OriginalCheckoutUserID != "" && l.OriginalCheckoutUserID != c.UserID {
+					if cartUserRole != "foreman" {
+						return fmt.Errorf("item %s is checked out to another worker; only a foreman can return it", itemRec.GetString("code"))
+					}
+					if cartUserGroup == "" {
+						return fmt.Errorf("foreman %s has no group set; cross-user returns require a group", c.UserCode)
+					}
+					origUser, err := tx.FindRecordById("users", l.OriginalCheckoutUserID)
+					if err != nil {
+						return fmt.Errorf("find original checkout user %s: %w", l.OriginalCheckoutUserID, err)
+					}
+					if origUser.GetString("group") != cartUserGroup {
+						return fmt.Errorf("item %s is checked out to a worker in a different group; an admin must handle cross-group returns", itemRec.GetString("code"))
+					}
+				}
+
 				uncorrelated, err := closeCheckoutsForLine(tx, l, lineRec, itemRec, c.UserID, l.Qty)
 				if err != nil {
 					return err
@@ -154,6 +175,9 @@ func Commit(app core.App, c *cart.Cart, id kioskctx.Identity, policy Policy, pub
 				if uncorrelated {
 					if !policy.AllowUncorrelated {
 						return fmt.Errorf("return of %s does not match any open checkout; uncorrelated returns are not allowed", itemRec.GetString("code"))
+					}
+					if cartUserRole != "foreman" {
+						return fmt.Errorf("return of %s does not match any open checkout; only a foreman can record an uncorrelated return", itemRec.GetString("code"))
 					}
 					lineRec.Set("uncorrelated", true)
 					if err := tx.Save(lineRec); err != nil {
@@ -183,6 +207,7 @@ func Commit(app core.App, c *cart.Cart, id kioskctx.Identity, policy Policy, pub
 					"location_code":  id.LocationCode,
 					"user_id":        c.UserID,
 					"user_code":      c.UserCode,
+					"user_group":     cartUserGroup,
 					"item_id":        itemRec.Id,
 					"item_code":      itemRec.GetString("code"),
 					"item_name":      itemRec.GetString("name"),
@@ -213,6 +238,7 @@ func Commit(app core.App, c *cart.Cart, id kioskctx.Identity, policy Policy, pub
 				"user_id":        c.UserID,
 				"user_code":      c.UserCode,
 				"user_name":      userRec.GetString("name"),
+				"user_group":     cartUserGroup,
 				"started_at":     c.StartedAt,
 				"completed_at":   completedAt,
 				"lines_count":    result.LinesCount,
@@ -239,7 +265,7 @@ type lineEvent struct {
 	Payload map[string]any
 }
 
-func createTransaction(tx core.App, c *cart.Cart, id kioskctx.Identity, completedAt time.Time) (*core.Record, error) {
+func createTransaction(tx core.App, c *cart.Cart, id kioskctx.Identity, userGroup string, completedAt time.Time) (*core.Record, error) {
 	col, err := tx.FindCollectionByNameOrId("transactions")
 	if err != nil {
 		return nil, fmt.Errorf("find transactions collection: %w", err)
@@ -248,6 +274,7 @@ func createTransaction(tx core.App, c *cart.Cart, id kioskctx.Identity, complete
 	rec.Set("kiosk_code", id.KioskCode)
 	rec.Set("location_code", id.LocationCode)
 	rec.Set("user", c.UserID)
+	rec.Set("user_group", userGroup)
 	rec.Set("started_at", c.StartedAt)
 	rec.Set("completed_at", completedAt)
 	rec.Set("status", "completed")

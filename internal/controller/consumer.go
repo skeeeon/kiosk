@@ -35,6 +35,7 @@ type EventPayload struct {
 	LocationCode  string    `json:"location_code"`
 	UserID        string    `json:"user_id"`
 	UserCode      string    `json:"user_code"`
+	UserGroup     string    `json:"user_group,omitempty"`
 	CompletedAt   time.Time `json:"completed_at"`
 
 	// transaction.complete fields.
@@ -246,6 +247,7 @@ func (a *Aggregator) ProjectTransaction(p EventPayload) projectOutcome {
 	rec.Set("kiosk_code", p.KioskCode)
 	rec.Set("location_code", p.LocationCode)
 	rec.Set("user", user.Id)
+	rec.Set("user_group", p.UserGroup)
 	rec.Set("started_at", p.StartedAt)
 	rec.Set("completed_at", p.CompletedAt)
 	rec.Set("status", "completed")

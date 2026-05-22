@@ -8,8 +8,9 @@ const props = withDefaults(
     open: boolean
     user: Partial<WorkerRecord> | null
     managed?: boolean
+    existingGroups?: string[]
   }>(),
-  { managed: false },
+  { managed: false, existingGroups: () => [] },
 )
 
 const emit = defineEmits<{
@@ -22,6 +23,7 @@ const form = reactive<Partial<WorkerRecord>>({
   name: '',
   email: '',
   role: 'worker',
+  group: '',
   active: true,
 })
 
@@ -34,6 +36,7 @@ watch(
       name: '',
       email: '',
       role: 'worker',
+      group: '',
       active: true,
       ...(props.user ?? {}),
     })
@@ -103,6 +106,24 @@ function onSubmit() {
           </select>
         </label>
       </div>
+
+      <label class="flex flex-col gap-1">
+        <span class="text-sm text-slate-400">Group <span class="text-slate-500">(optional)</span></span>
+        <input
+          v-model="form.group"
+          type="text"
+          list="user-groups-list"
+          placeholder="electrical, hvac, plumbing…"
+          :disabled="managed"
+          class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 disabled:opacity-60 disabled:cursor-not-allowed"
+        />
+        <datalist id="user-groups-list">
+          <option v-for="g in existingGroups" :key="g" :value="g" />
+        </datalist>
+        <span class="text-xs text-slate-500">
+          Foremen can only return tools across users within their own group. Leave blank for ungrouped (strictest).
+        </span>
+      </label>
 
       <label class="flex items-center gap-2 text-slate-300">
         <input v-model="form.active" type="checkbox" :disabled="managed" class="w-4 h-4 disabled:opacity-60" />

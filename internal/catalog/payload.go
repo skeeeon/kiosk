@@ -38,7 +38,8 @@ type UserPayload struct {
 	Code   string `json:"code"`
 	Name   string `json:"name"`
 	Email  string `json:"email,omitempty"`
-	Role   string `json:"role"` // "worker" | "foreman"
+	Role   string `json:"role"`            // "worker" | "foreman"
+	Group  string `json:"group,omitempty"` // free-text crew/trade, e.g. "electrical"
 	Active bool   `json:"active"`
 }
 

@@ -37,6 +37,14 @@ async function load() {
 
 onMounted(load)
 
+// Distinct non-empty groups across the current roster, surfaced as
+// <datalist> suggestions in UserDialog so admins reuse existing values
+// instead of typing fresh ones. Free-text still works for the first user
+// in a new group.
+const existingGroups = computed(() =>
+  [...new Set(users.value.map((u) => u.group).filter((g): g is string => !!g))].sort(),
+)
+
 const filtered = computed(() => {
   const q = search.value.trim().toLowerCase()
   if (!q) return users.value
@@ -44,7 +52,8 @@ const filtered = computed(() => {
     (u) =>
       u.code.toLowerCase().includes(q) ||
       u.name.toLowerCase().includes(q) ||
-      u.email.toLowerCase().includes(q),
+      u.email.toLowerCase().includes(q) ||
+      (u.group ?? '').toLowerCase().includes(q),
   )
 })
 
@@ -133,7 +142,7 @@ async function onDelete() {
     <input
       v-model="search"
       type="search"
-      placeholder="Search code, name, email…"
+      placeholder="Search code, name, email, group…"
       class="w-full rounded-lg bg-slate-900 border border-slate-800 px-3 py-2 text-slate-100 mb-4"
     />
 
@@ -149,16 +158,17 @@ async function onDelete() {
             <th class="px-4 py-3 font-medium">Name</th>
             <th class="px-4 py-3 font-medium">Email</th>
             <th class="px-4 py-3 font-medium">Role</th>
+            <th class="px-4 py-3 font-medium">Group</th>
             <th class="px-4 py-3 font-medium">Active</th>
             <th class="px-4 py-3"></th>
           </tr>
         </thead>
         <tbody class="divide-y divide-slate-800">
           <tr v-if="loading">
-            <td colspan="6" class="text-center text-slate-500 py-8">Loading…</td>
+            <td colspan="7" class="text-center text-slate-500 py-8">Loading…</td>
           </tr>
           <tr v-else-if="filtered.length === 0">
-            <td colspan="6" class="text-center text-slate-500 py-8">
+            <td colspan="7" class="text-center text-slate-500 py-8">
               {{ users.length === 0 ? 'No workers yet. Click "New worker" to add one.' : 'No workers match your filter.' }}
             </td>
           </tr>
@@ -172,6 +182,7 @@ async function onDelete() {
             <td class="px-4 py-3">{{ user.name }}</td>
             <td class="px-4 py-3 text-slate-400">{{ user.email }}</td>
             <td class="px-4 py-3 text-slate-400">{{ user.role }}</td>
+            <td class="px-4 py-3 text-slate-400">{{ user.group || '—' }}</td>
             <td class="px-4 py-3">
               <span v-if="user.active" class="text-emerald-400">●</span>
               <span v-else class="text-slate-600">●</span>
@@ -195,6 +206,7 @@ async function onDelete() {
       :open="editing !== null"
       :user="editing"
       :managed="managed"
+      :existing-groups="existingGroups"
       @update:open="(v) => { if (!v) editing = null }"
       @save="onSave"
     />

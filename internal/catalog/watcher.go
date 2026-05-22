@@ -279,6 +279,7 @@ func (w *Watcher) upsertUser(p UserPayload) error {
 	rec.Set("name", p.Name)
 	rec.Set("email", p.Email)
 	rec.Set("role", p.Role)
+	rec.Set("group", p.Group)
 	rec.Set("active", p.Active)
 	return w.app.Save(rec)
 }

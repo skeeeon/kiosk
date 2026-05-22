@@ -126,6 +126,7 @@ export interface WorkerRecord {
   code: string
   name: string
   role: 'worker' | 'foreman'
+  group?: string
   active: boolean
   created?: string
   updated?: string

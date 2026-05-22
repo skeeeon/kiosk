@@ -244,6 +244,7 @@ func (p *CatalogPublisher) publishUser(rec *core.Record) {
 		Name:   rec.GetString("name"),
 		Email:  rec.GetString("email"),
 		Role:   rec.GetString("role"),
+		Group:  rec.GetString("group"),
 		Active: rec.GetBool("active"),
 	}
 	data, err := catalog.MarshalUser(payload)

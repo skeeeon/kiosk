@@ -243,6 +243,22 @@ The `returns.*` flags are enforced at commit time. With either flag set to
 `false`, the matching transaction fails and rolls back; the cart is left
 intact for the worker to fix and retry.
 
+In addition to the kill-switch flags, two role-based rules always apply at
+commit time:
+
+- **Cross-user return** (active worker returning a tool checked out to a
+  different worker) requires the active worker to be a `foreman` whose
+  `group` matches the original checkout user's group. Both groups must be
+  non-empty. An ungrouped foreman, or a foreman in a different group, is
+  rejected — the admin handles that case.
+- **Uncorrelated return** (no matching open checkout) requires the active
+  worker to be a `foreman`. Group is irrelevant; this is a janitorial
+  action.
+
+These rules apply regardless of the kill-switch flags; setting
+`allow_cross_user: false` simply short-circuits the foreman check by
+rejecting any cross-user return outright.
+
 The `nats.*` block enables an optional publisher. The kiosk's primary job is
 the local ledger, so NATS is best-effort: an unreachable server at startup
 does **not** block the kiosk from booting (the connection enters a buffering
@@ -769,10 +785,15 @@ Read-only — the source of truth is per-kiosk membership.
 the kiosk's `/api/kiosk/items/import` endpoint (see below). Users:
 
 ```csv
-code,name,email,role,active
-WORKER-1,Alice,alice@example.com,worker,true
-FOREMAN-1,Bob,bob@example.com,foreman,true
+code,name,email,role,group,active
+WORKER-1,Alice,alice@example.com,worker,electrical,true
+FOREMAN-1,Bob,bob@example.com,foreman,electrical,true
 ```
+
+The `group` column is optional (blank = ungrouped). On shared sites with
+multiple trades, set each worker's group so a foreman can return tools
+across users **only within their own group**; an ungrouped foreman can't
+act for anyone. See "Groups and roles" below for the full rules.
 
 `--no-publish` skips the KV fan-out (useful for first-time seeding before
 the broker is reachable; the next normal startup re-emits whatever needs

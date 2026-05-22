@@ -59,11 +59,15 @@ func seedFixtures(t *testing.T, app core.App) seed {
 	if err != nil {
 		t.Fatalf("find users: %v", err)
 	}
+	// Alice is a foreman in the "electrical" group. The positive-path return
+	// tests below rely on this: only a foreman in the same group as the
+	// original checkout user can perform cross-user or uncorrelated returns.
 	alice := core.NewRecord(users)
 	alice.Set("email", "alice@test.local")
 	alice.Set("name", "Alice")
 	alice.Set("code", "EMP-1")
-	alice.Set("role", "worker")
+	alice.Set("role", "foreman")
+	alice.Set("group", "electrical")
 	alice.Set("active", true)
 	alice.SetPassword("alice-password-123")
 	if err := app.Save(alice); err != nil {
@@ -75,6 +79,7 @@ func seedFixtures(t *testing.T, app core.App) seed {
 	bob.Set("name", "Bob")
 	bob.Set("code", "EMP-2")
 	bob.Set("role", "worker")
+	bob.Set("group", "electrical")
 	bob.Set("active", true)
 	bob.SetPassword("bob-password-123")
 	if err := app.Save(bob); err != nil {
@@ -638,6 +643,147 @@ func TestUncorrelatedReturn_RejectedWhenPolicyDenies(t *testing.T) {
 	txs, _ := app.FindRecordsByFilter("transactions", "", "", 0, 0)
 	if len(txs) != 0 {
 		t.Errorf("transactions after rejected return: want 0, got %d", len(txs))
+	}
+}
+
+// setUserRoleAndGroup is a test helper that flips a seeded user's role/group
+// for the role+group rules below. Direct DAO update; bypasses collection rules.
+func setUserRoleAndGroup(t *testing.T, app core.App, userID, role, group string) {
+	t.Helper()
+	rec, err := app.FindRecordById("users", userID)
+	if err != nil {
+		t.Fatalf("find user %s: %v", userID, err)
+	}
+	rec.Set("role", role)
+	rec.Set("group", group)
+	if err := app.Save(rec); err != nil {
+		t.Fatalf("save user %s: %v", userID, err)
+	}
+}
+
+func TestCrossUserReturn_RejectedWhenCartUserIsNotForeman(t *testing.T) {
+	app := setupApp(t)
+	s := seedFixtures(t, app)
+	// Demote Alice to a plain worker; group stays "electrical".
+	setUserRoleAndGroup(t, app, s.UserID, "worker", "electrical")
+
+	// Bob (worker, electrical) checks out the tool.
+	bobCheckout := newCart(s.OtherUserID, &cart.Line{
+		ItemID: s.ToolQtyID, Action: "checkout", Qty: 1,
+		ItemType: "tool", TrackingMode: "quantity",
+	})
+	bobCheckout.UserCode = "EMP-2"
+	bobCheckout.UserName = "Bob"
+	if _, err := commit.Commit(app, bobCheckout, testIdentity, commit.DefaultPolicy(), (&captured{}).publish); err != nil {
+		t.Fatalf("seed bob checkout: %v", err)
+	}
+
+	// Alice (worker) attempts cross-user return — should be blocked regardless
+	// of the permissive policy because she isn't a foreman.
+	aliceReturn := newCart(s.UserID, &cart.Line{
+		ItemID: s.ToolQtyID, Action: "return", Qty: 1,
+		ItemType: "tool", TrackingMode: "quantity",
+		OriginalCheckoutUserID: s.OtherUserID,
+	})
+	if _, err := commit.Commit(app, aliceReturn, testIdentity, commit.DefaultPolicy(), (&captured{}).publish); err == nil {
+		t.Fatal("expected error: non-foreman cross-user return must be blocked")
+	}
+
+	// Bob's open checkout should still be there (transaction rolled back).
+	if n := countOpenCheckouts(t, app, "user = {:u}", dbx.Params{"u": s.OtherUserID}); n != 1 {
+		t.Errorf("bob's open rows after rejected return: want 1, got %d", n)
+	}
+}
+
+func TestCrossUserReturn_RejectedWhenForemanHasNoGroup(t *testing.T) {
+	app := setupApp(t)
+	s := seedFixtures(t, app)
+	// Strip Alice's group while leaving her as a foreman. Ungrouped foremen
+	// can't act for anyone — strictest interpretation.
+	setUserRoleAndGroup(t, app, s.UserID, "foreman", "")
+
+	bobCheckout := newCart(s.OtherUserID, &cart.Line{
+		ItemID: s.ToolQtyID, Action: "checkout", Qty: 1,
+		ItemType: "tool", TrackingMode: "quantity",
+	})
+	bobCheckout.UserCode = "EMP-2"
+	bobCheckout.UserName = "Bob"
+	if _, err := commit.Commit(app, bobCheckout, testIdentity, commit.DefaultPolicy(), (&captured{}).publish); err != nil {
+		t.Fatalf("seed bob checkout: %v", err)
+	}
+
+	aliceReturn := newCart(s.UserID, &cart.Line{
+		ItemID: s.ToolQtyID, Action: "return", Qty: 1,
+		ItemType: "tool", TrackingMode: "quantity",
+		OriginalCheckoutUserID: s.OtherUserID,
+	})
+	if _, err := commit.Commit(app, aliceReturn, testIdentity, commit.DefaultPolicy(), (&captured{}).publish); err == nil {
+		t.Fatal("expected error: ungrouped foreman cross-user return must be blocked")
+	}
+}
+
+func TestCrossUserReturn_RejectedWhenGroupsDiffer(t *testing.T) {
+	app := setupApp(t)
+	s := seedFixtures(t, app)
+	// Put Bob in a different group than Alice.
+	setUserRoleAndGroup(t, app, s.OtherUserID, "worker", "hvac")
+
+	bobCheckout := newCart(s.OtherUserID, &cart.Line{
+		ItemID: s.ToolQtyID, Action: "checkout", Qty: 1,
+		ItemType: "tool", TrackingMode: "quantity",
+	})
+	bobCheckout.UserCode = "EMP-2"
+	bobCheckout.UserName = "Bob"
+	if _, err := commit.Commit(app, bobCheckout, testIdentity, commit.DefaultPolicy(), (&captured{}).publish); err != nil {
+		t.Fatalf("seed bob checkout: %v", err)
+	}
+
+	// Alice (foreman/electrical) tries to return Bob's (worker/hvac) tool.
+	aliceReturn := newCart(s.UserID, &cart.Line{
+		ItemID: s.ToolQtyID, Action: "return", Qty: 1,
+		ItemType: "tool", TrackingMode: "quantity",
+		OriginalCheckoutUserID: s.OtherUserID,
+	})
+	if _, err := commit.Commit(app, aliceReturn, testIdentity, commit.DefaultPolicy(), (&captured{}).publish); err == nil {
+		t.Fatal("expected error: cross-group return must be blocked")
+	}
+}
+
+func TestUncorrelatedReturn_RejectedWhenCartUserIsNotForeman(t *testing.T) {
+	app := setupApp(t)
+	s := seedFixtures(t, app)
+	// Demote Alice; uncorrelated returns are a janitorial action reserved
+	// for foremen regardless of group.
+	setUserRoleAndGroup(t, app, s.UserID, "worker", "electrical")
+
+	c := newCart(s.UserID, &cart.Line{
+		ItemID: s.ToolQtyID, Action: "return", Qty: 1,
+		ItemType: "tool", TrackingMode: "quantity",
+	})
+	if _, err := commit.Commit(app, c, testIdentity, commit.DefaultPolicy(), (&captured{}).publish); err == nil {
+		t.Fatal("expected error: non-foreman uncorrelated return must be blocked")
+	}
+}
+
+func TestCommit_StampsUserGroupOnTransaction(t *testing.T) {
+	app := setupApp(t)
+	s := seedFixtures(t, app)
+	// Alice (foreman, electrical) does a plain self-checkout.
+
+	c := newCart(s.UserID, &cart.Line{
+		ItemID: s.ToolQtyID, Action: "checkout", Qty: 1,
+		ItemType: "tool", TrackingMode: "quantity",
+	})
+	result, err := commit.Commit(app, c, testIdentity, commit.DefaultPolicy(), (&captured{}).publish)
+	if err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	rec, err := app.FindRecordById("transactions", result.TransactionID)
+	if err != nil {
+		t.Fatalf("find transaction: %v", err)
+	}
+	if got := rec.GetString("user_group"); got != "electrical" {
+		t.Errorf("user_group snapshot: want %q, got %q", "electrical", got)
 	}
 }
 
