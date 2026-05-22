@@ -10,6 +10,7 @@ import AdminUsersView from './views/AdminUsersView.vue'
 import AdminGroupsView from './views/AdminGroupsView.vue'
 import AdminImportView from './views/AdminImportView.vue'
 import AdminReportsView from './views/AdminReportsView.vue'
+import AdminNotificationsView from './views/AdminNotificationsView.vue'
 import AdminKiosksView from './views/AdminKiosksView.vue'
 import AdminTransactionsView from './views/AdminTransactionsView.vue'
 import AdminCatalogSyncView from './views/AdminCatalogSyncView.vue'
@@ -30,6 +31,7 @@ export const router = createRouter({
         { path: 'groups', name: 'admin-groups', component: AdminGroupsView },
         { path: 'import', name: 'admin-import', component: AdminImportView },
         { path: 'reports', name: 'admin-reports', component: AdminReportsView },
+        { path: 'notifications', name: 'admin-notifications', component: AdminNotificationsView },
         // Controller-only views. Nav links only render when role=controller,
         // but the routes are always registered so deep-links work on the
         // controller binary. On the kiosk binary the views render but their

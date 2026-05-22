@@ -17,6 +17,7 @@ import (
 	"github.com/skeeeon/kiosk/internal/events"
 	"github.com/skeeeon/kiosk/internal/handlers"
 	"github.com/skeeeon/kiosk/internal/kioskctx"
+	"github.com/skeeeon/kiosk/internal/notifications"
 
 	// Register schema migrations via init() side effects.
 	_ "github.com/skeeeon/kiosk/migrations"
@@ -93,7 +94,8 @@ func main() {
 	})
 
 	carts := cart.NewStore(cfg.Session.IdleTimeout.AsDuration())
-	h := handlers.New(app, cfg, carts)
+	notifier := notifications.New(app)
+	h := handlers.New(app, cfg, carts, notifier)
 
 	app.OnServe().BindFunc(func(e *core.ServeEvent) error {
 		e.Router.GET("/health", func(re *core.RequestEvent) error {
@@ -117,6 +119,9 @@ func main() {
 		e.Router.GET("/api/kiosk/items.csv", h.ItemsExportCSV)
 		e.Router.POST("/api/kiosk/items/{id}/adjust", h.AdjustItemStock)
 		e.Router.GET("/api/kiosk/transactions.csv", h.TransactionsExportCSV)
+		e.Router.GET("/api/kiosk/notifications", h.ListNotificationTemplates)
+		e.Router.PATCH("/api/kiosk/notifications/{event_type}", h.UpdateNotificationTemplate)
+		e.Router.GET("/api/kiosk/notifications/{event_type}/defaults", h.GetNotificationTemplateDefaults)
 
 		// Serve the Vue SPA from pb_public. indexFallback=true means unknown
 		// paths return index.html so client-side routes (/admin/*) resolve.

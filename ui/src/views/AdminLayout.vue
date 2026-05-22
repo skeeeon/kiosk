@@ -97,6 +97,13 @@ function onLogout() {
       >
         Reports
       </RouterLink>
+      <RouterLink
+        :to="{ name: 'admin-notifications' }"
+        class="px-3 py-2 rounded-lg text-slate-300 hover:bg-slate-800"
+        active-class="bg-slate-800 text-slate-100"
+      >
+        Notifications
+      </RouterLink>
       <span class="ml-auto flex items-center gap-3 text-sm">
         <span class="text-slate-400">{{ auth.admin?.email }}</span>
         <button

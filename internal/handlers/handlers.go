@@ -11,17 +11,19 @@ import (
 
 	"github.com/skeeeon/kiosk/internal/cart"
 	"github.com/skeeeon/kiosk/internal/config"
+	"github.com/skeeeon/kiosk/internal/notifications"
 	"github.com/skeeeon/kiosk/internal/scan"
 )
 
 type Handlers struct {
-	App   core.App
-	Cfg   *config.Config
-	Carts *cart.Store
+	App      core.App
+	Cfg      *config.Config
+	Carts    *cart.Store
+	Notifier *notifications.Notifier
 }
 
-func New(app core.App, cfg *config.Config, carts *cart.Store) *Handlers {
-	return &Handlers{App: app, Cfg: cfg, Carts: carts}
+func New(app core.App, cfg *config.Config, carts *cart.Store, notifier *notifications.Notifier) *Handlers {
+	return &Handlers{App: app, Cfg: cfg, Carts: carts, Notifier: notifier}
 }
 
 // requireAdmin enforces that the request carries a valid token for the

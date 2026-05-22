@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
@@ -12,6 +13,7 @@ import (
 	"github.com/skeeeon/kiosk/internal/commit"
 	"github.com/skeeeon/kiosk/internal/events"
 	"github.com/skeeeon/kiosk/internal/kioskctx"
+	"github.com/skeeeon/kiosk/internal/notifications"
 )
 
 // CartStart begins (or resumes) a cart for the badged-in user.
@@ -217,12 +219,23 @@ func (h *Handlers) CartCommit(re *core.RequestEvent) error {
 		return re.NotFoundError("cart not found or expired", nil)
 	}
 
-	result, err := commit.Commit(h.App, c, kioskctx.Get(), commit.Policy{
+	id := kioskctx.Get()
+	result, err := commit.Commit(h.App, c, id, commit.Policy{
 		AllowCrossUser:    h.Cfg.Returns.CrossUserAllowed(),
 		AllowUncorrelated: h.Cfg.Returns.UncorrelatedAllowed(),
 	}, events.Publish)
 	if err != nil {
 		return re.InternalServerError("commit failed", err)
+	}
+
+	// Fire the receipt email asynchronously. BuildReceiptContext does one
+	// extra users-table read for the email address; failures there log and
+	// drop the receipt without affecting the commit response. Notifier
+	// itself is goroutine-internal — it returns immediately.
+	if h.Notifier != nil {
+		if rc, berr := notifications.BuildReceiptContext(h.App, c, id, result, time.Now().UTC()); berr == nil {
+			h.Notifier.Send(notifications.EventTypeReceiptTransaction, rc)
+		}
 	}
 
 	_ = h.Carts.Delete(body.CartID)
