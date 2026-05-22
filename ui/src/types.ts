@@ -193,20 +193,24 @@ export interface StockAdjustmentResult {
 
 // CatalogIntegrityReport mirrors the controller's
 // GET /api/kiosk/catalog/integrity response. One bucket per KV store
-// (items, users). Keys are sorted on the server so consecutive runs
-// produce stable diffs.
+// (items, users, groups). Keys are sorted on the server so consecutive
+// runs produce stable diffs.
+//
+// Slice fields are marked nullable so the SPA stays robust when talking
+// to a controller running pre-groups code (which returns null arrays when
+// no drift exists, and omits the groups bucket entirely).
 export interface CatalogIntegrityBucket {
   bucket: string
   expected_keys: number
   actual_keys: number
-  missing_in_kv: string[]
-  extra_in_kv: string[]
+  missing_in_kv: string[] | null
+  extra_in_kv: string[] | null
 }
 
 export interface CatalogIntegrityReport {
   items: CatalogIntegrityBucket
   users: CatalogIntegrityBucket
-  groups: CatalogIntegrityBucket
+  groups?: CatalogIntegrityBucket
 }
 
 // CatalogReconcileBucket / Report mirror the response from
@@ -223,7 +227,7 @@ export interface CatalogReconcileBucket {
 export interface CatalogReconcileReport {
   items: CatalogReconcileBucket
   users: CatalogReconcileBucket
-  groups: CatalogReconcileBucket
+  groups?: CatalogReconcileBucket
 }
 
 // LedgerRepublishResult mirrors POST /api/kiosk/ledger/republish.

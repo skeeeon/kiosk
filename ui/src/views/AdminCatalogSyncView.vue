@@ -58,19 +58,23 @@ async function runReconcile(deleteOrphans: boolean) {
     )
     const i = lastReconcile.value.items
     const u = lastReconcile.value.users
+    const g = lastReconcile.value.groups
     const errCount =
       (i.publish_errors?.length ?? 0) +
       (i.delete_errors?.length ?? 0) +
       (u.publish_errors?.length ?? 0) +
-      (u.delete_errors?.length ?? 0)
+      (u.delete_errors?.length ?? 0) +
+      (g?.publish_errors?.length ?? 0) +
+      (g?.delete_errors?.length ?? 0)
     if (errCount > 0) {
       toast.error(
         `Reconciled with ${errCount} error${errCount === 1 ? '' : 's'} — see details below.`,
       )
     } else {
       const action = deleteOrphans ? 'pushed + cleaned orphans' : 'pushed'
+      const groupSummary = g ? `, groups ${g.published}/${g.deleted}` : ''
       toast.success(
-        `Catalog ${action}: items ${i.published}/${i.deleted}, users ${u.published}/${u.deleted}.`,
+        `Catalog ${action}: items ${i.published}/${i.deleted}, users ${u.published}/${u.deleted}${groupSummary}.`,
       )
     }
     // Re-fetch the diff to show that drift is now resolved.
@@ -82,18 +86,35 @@ async function runReconcile(deleteOrphans: boolean) {
   }
 }
 
+// Belt-and-suspenders nil guards: older controller builds may have emitted
+// `null` for empty diff arrays. Newer builds always emit [], but coalescing
+// here makes a version-mismatched controller graceful instead of crashing.
+function missingLen(b: { missing_in_kv?: string[] | null } | undefined): number {
+  return b?.missing_in_kv?.length ?? 0
+}
+function extraLen(b: { extra_in_kv?: string[] | null } | undefined): number {
+  return b?.extra_in_kv?.length ?? 0
+}
+function safeList(arr: string[] | null | undefined): string[] {
+  return arr ?? []
+}
+
 const itemsHasDrift = computed(() => {
   const r = report.value?.items
-  return r ? r.missing_in_kv.length > 0 || r.extra_in_kv.length > 0 : false
+  return r ? missingLen(r) > 0 || extraLen(r) > 0 : false
 })
 const usersHasDrift = computed(() => {
   const r = report.value?.users
-  return r ? r.missing_in_kv.length > 0 || r.extra_in_kv.length > 0 : false
+  return r ? missingLen(r) > 0 || extraLen(r) > 0 : false
+})
+const groupsHasDrift = computed(() => {
+  const r = report.value?.groups
+  return r ? missingLen(r) > 0 || extraLen(r) > 0 : false
 })
 const totalExtra = computed(() => {
   const r = report.value
   if (!r) return 0
-  return r.items.extra_in_kv.length + r.users.extra_in_kv.length
+  return extraLen(r.items) + extraLen(r.users) + extraLen(r.groups)
 })
 </script>
 
@@ -163,11 +184,11 @@ const totalExtra = computed(() => {
               <p class="text-sm text-slate-400 mb-2">
                 Missing in KV
                 <span class="text-amber-400 font-medium tabular-nums">
-                  ({{ report.items.missing_in_kv.length }})
+                  ({{ missingLen(report.items) }})
                 </span>
               </p>
-              <ul v-if="report.items.missing_in_kv.length > 0" class="text-sm font-mono text-slate-300 space-y-1 max-h-80 overflow-auto">
-                <li v-for="k in report.items.missing_in_kv" :key="`mi-${k}`">{{ k }}</li>
+              <ul v-if="missingLen(report.items) > 0" class="text-sm font-mono text-slate-300 space-y-1 max-h-80 overflow-auto">
+                <li v-for="k in safeList(report.items.missing_in_kv)" :key="`mi-${k}`">{{ k }}</li>
               </ul>
               <p v-else class="text-xs text-slate-500">None.</p>
             </div>
@@ -175,11 +196,11 @@ const totalExtra = computed(() => {
               <p class="text-sm text-slate-400 mb-2">
                 Extra in KV (orphans)
                 <span class="text-red-400 font-medium tabular-nums">
-                  ({{ report.items.extra_in_kv.length }})
+                  ({{ extraLen(report.items) }})
                 </span>
               </p>
-              <ul v-if="report.items.extra_in_kv.length > 0" class="text-sm font-mono text-slate-300 space-y-1 max-h-80 overflow-auto">
-                <li v-for="k in report.items.extra_in_kv" :key="`ei-${k}`">{{ k }}</li>
+              <ul v-if="extraLen(report.items) > 0" class="text-sm font-mono text-slate-300 space-y-1 max-h-80 overflow-auto">
+                <li v-for="k in safeList(report.items.extra_in_kv)" :key="`ei-${k}`">{{ k }}</li>
               </ul>
               <p v-else class="text-xs text-slate-500">None.</p>
             </div>
@@ -203,11 +224,11 @@ const totalExtra = computed(() => {
               <p class="text-sm text-slate-400 mb-2">
                 Missing in KV
                 <span class="text-amber-400 font-medium tabular-nums">
-                  ({{ report.users.missing_in_kv.length }})
+                  ({{ missingLen(report.users) }})
                 </span>
               </p>
-              <ul v-if="report.users.missing_in_kv.length > 0" class="text-sm font-mono text-slate-300 space-y-1 max-h-80 overflow-auto">
-                <li v-for="k in report.users.missing_in_kv" :key="`mu-${k}`">{{ k }}</li>
+              <ul v-if="missingLen(report.users) > 0" class="text-sm font-mono text-slate-300 space-y-1 max-h-80 overflow-auto">
+                <li v-for="k in safeList(report.users.missing_in_kv)" :key="`mu-${k}`">{{ k }}</li>
               </ul>
               <p v-else class="text-xs text-slate-500">None.</p>
             </div>
@@ -215,11 +236,51 @@ const totalExtra = computed(() => {
               <p class="text-sm text-slate-400 mb-2">
                 Extra in KV (orphans)
                 <span class="text-red-400 font-medium tabular-nums">
-                  ({{ report.users.extra_in_kv.length }})
+                  ({{ extraLen(report.users) }})
                 </span>
               </p>
-              <ul v-if="report.users.extra_in_kv.length > 0" class="text-sm font-mono text-slate-300 space-y-1 max-h-80 overflow-auto">
-                <li v-for="k in report.users.extra_in_kv" :key="`eu-${k}`">{{ k }}</li>
+              <ul v-if="extraLen(report.users) > 0" class="text-sm font-mono text-slate-300 space-y-1 max-h-80 overflow-auto">
+                <li v-for="k in safeList(report.users.extra_in_kv)" :key="`eu-${k}`">{{ k }}</li>
+              </ul>
+              <p v-else class="text-xs text-slate-500">None.</p>
+            </div>
+          </div>
+        </section>
+
+        <!-- Groups bucket -->
+        <section v-if="report.groups" class="rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden">
+          <header class="px-5 py-3 border-b border-slate-800 flex items-baseline gap-3">
+            <h2 class="text-lg font-semibold">Groups bucket</h2>
+            <code class="text-xs text-slate-500 font-mono">{{ report.groups.bucket }}</code>
+            <span class="ml-auto text-sm text-slate-400 tabular-nums">
+              DB {{ report.groups.expected_keys }} · KV {{ report.groups.actual_keys }}
+            </span>
+          </header>
+          <div v-if="!groupsHasDrift" class="px-5 py-6 text-center text-emerald-400">
+            In sync — no drift detected.
+          </div>
+          <div v-else class="grid grid-cols-1 md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-slate-800">
+            <div class="p-5">
+              <p class="text-sm text-slate-400 mb-2">
+                Missing in KV
+                <span class="text-amber-400 font-medium tabular-nums">
+                  ({{ missingLen(report.groups) }})
+                </span>
+              </p>
+              <ul v-if="missingLen(report.groups) > 0" class="text-sm font-mono text-slate-300 space-y-1 max-h-80 overflow-auto">
+                <li v-for="k in safeList(report.groups.missing_in_kv)" :key="`mg-${k}`">{{ k }}</li>
+              </ul>
+              <p v-else class="text-xs text-slate-500">None.</p>
+            </div>
+            <div class="p-5">
+              <p class="text-sm text-slate-400 mb-2">
+                Extra in KV (orphans)
+                <span class="text-red-400 font-medium tabular-nums">
+                  ({{ extraLen(report.groups) }})
+                </span>
+              </p>
+              <ul v-if="extraLen(report.groups) > 0" class="text-sm font-mono text-slate-300 space-y-1 max-h-80 overflow-auto">
+                <li v-for="k in safeList(report.groups.extra_in_kv)" :key="`eg-${k}`">{{ k }}</li>
               </ul>
               <p v-else class="text-xs text-slate-500">None.</p>
             </div>
@@ -232,7 +293,9 @@ const totalExtra = computed(() => {
             (lastReconcile.items.publish_errors?.length ?? 0) +
             (lastReconcile.items.delete_errors?.length ?? 0) +
             (lastReconcile.users.publish_errors?.length ?? 0) +
-            (lastReconcile.users.delete_errors?.length ?? 0) > 0
+            (lastReconcile.users.delete_errors?.length ?? 0) +
+            (lastReconcile.groups?.publish_errors?.length ?? 0) +
+            (lastReconcile.groups?.delete_errors?.length ?? 0) > 0
           )"
           class="rounded-2xl bg-red-950/40 border border-red-800 p-5 text-sm"
         >
@@ -242,6 +305,8 @@ const totalExtra = computed(() => {
             { label: 'Items delete', errs: lastReconcile.items.delete_errors },
             { label: 'Users publish', errs: lastReconcile.users.publish_errors },
             { label: 'Users delete', errs: lastReconcile.users.delete_errors },
+            { label: 'Groups publish', errs: lastReconcile.groups?.publish_errors },
+            { label: 'Groups delete', errs: lastReconcile.groups?.delete_errors },
           ]" :key="bucket.label">
             <div v-if="bucket.errs && bucket.errs.length > 0" class="mb-2">
               <p class="text-red-300 font-medium">{{ bucket.label }}</p>

@@ -189,8 +189,11 @@ func actualKVKeys(ctx context.Context, kv jetstream.KeyValue) (map[string]struct
 
 // diffKeys produces the (missing_in_kv, extra_in_kv) lists. Expected is the
 // DB-derived authoritative set; actual is the KV snapshot. Both outputs are
-// sorted so consecutive runs are stable.
+// sorted so consecutive runs are stable. Always non-nil so JSON encoding
+// emits [] instead of null — the SPA reads .length without a guard.
 func diffKeys(expected map[string][]byte, actual map[string]struct{}) (missing, extra []string) {
+	missing = []string{}
+	extra = []string{}
 	for k := range expected {
 		if _, ok := actual[k]; !ok {
 			missing = append(missing, k)
