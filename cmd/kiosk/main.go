@@ -104,19 +104,21 @@ func main() {
 	notifier := notifications.New(app)
 	h := handlers.New(app, cfg, carts, notifier)
 
-	// Daily retention pass on the notifications send log. Runs at 03:15
-	// local time — well outside the kiosk's busy windows. PB's Cron is a
-	// process-local scheduler; if the kiosk is down at fire time, the
-	// next live tick handles the backlog on its next eligible slot.
-	app.Cron().Add("notifications_send_log_prune", "15 3 * * *", func() {
+	// Daily retention pass on the notifications send log + dedupe table.
+	// Runs at 03:15 local time — well outside the kiosk's busy windows. PB's
+	// Cron is a process-local scheduler; if the kiosk is down at fire time,
+	// the next live tick handles the backlog on its next eligible slot.
+	app.Cron().Add("notifications_retention", "15 3 * * *", func() {
 		cutoff := time.Now().UTC().AddDate(0, 0, -sendLogRetentionDays).Format("2006-01-02 15:04:05.000Z")
-		deleted, err := notifier.PruneSendLog(cutoff)
-		if err != nil {
+		if deleted, err := notifier.PruneSendLog(cutoff); err != nil {
 			log.Printf("send log prune: %v", err)
-			return
-		}
-		if deleted > 0 {
+		} else if deleted > 0 {
 			log.Printf("send log prune: removed %d rows older than %d days", deleted, sendLogRetentionDays)
+		}
+		if deleted, err := notifier.PruneDedupe(cutoff); err != nil {
+			log.Printf("dedupe prune: %v", err)
+		} else if deleted > 0 {
+			log.Printf("dedupe prune: removed %d rows older than %d days", deleted, sendLogRetentionDays)
 		}
 	})
 

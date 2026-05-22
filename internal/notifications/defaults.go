@@ -10,10 +10,13 @@
 // without a server-side reset mutation.
 package notifications
 
-// EventTypeReceiptTransaction is the only event type in v1. Future event
-// types (alert.lowstock, alert.cross_user_return) add a new constant and a
-// new case to Defaults.
-const EventTypeReceiptTransaction = "receipt.transaction"
+// Event type identifiers. Each constant corresponds to one
+// notification_templates row, one Defaults case, and (for events with a
+// non-receipt payload) one Recipients default.
+const (
+	EventTypeReceiptTransaction = "receipt.transaction"
+	EventTypeLowStock           = "alert.lowstock"
+)
 
 // DefaultReceiptSubject and DefaultReceiptBody are the v1 receipt template.
 // Field references must match notifications.ReceiptContext.
@@ -30,6 +33,20 @@ Transaction id: {{.Transaction.ID}}
 Thanks.
 `
 
+// DefaultLowStockSubject and DefaultLowStockBody render against
+// LowStockContext (see internal/notifications/context.go).
+const DefaultLowStockSubject = `Low stock at {{.Kiosk.Code}}: {{.Item.Name}} ({{.Item.Code}})`
+
+const DefaultLowStockBody = `Heads up — {{.Item.Name}} ({{.Item.Code}}) just crossed its reorder threshold at kiosk {{.Kiosk.Code}} ({{.Kiosk.LocationCode}}).
+
+Available: {{.Available}}{{if .Item.Unit}} {{.Item.Unit}}{{end}}
+Threshold: {{.Threshold}}
+Triggered by: {{.Trigger}}
+
+This alert fires once per item per day. Adjust the reorder threshold or
+deactivate the template if the dedupe window is too tight.
+`
+
 // Defaults returns the compiled-in default subject and body for the given
 // event type. ok is false when the event type is unknown — callers (the
 // migration seeder and the GET-defaults handler) treat that as "nothing
@@ -38,6 +55,8 @@ func Defaults(eventType string) (subject, body string, ok bool) {
 	switch eventType {
 	case EventTypeReceiptTransaction:
 		return DefaultReceiptSubject, DefaultReceiptBody, true
+	case EventTypeLowStock:
+		return DefaultLowStockSubject, DefaultLowStockBody, true
 	}
 	return "", "", false
 }
@@ -47,6 +66,8 @@ func DefaultName(eventType string) string {
 	switch eventType {
 	case EventTypeReceiptTransaction:
 		return "Transaction receipt"
+	case EventTypeLowStock:
+		return "Low stock alert"
 	}
 	return eventType
 }
@@ -55,7 +76,7 @@ func DefaultName(eventType string) string {
 // first run. Adding a new built-in template means appending here and to
 // Defaults / DefaultName.
 func SeededEventTypes() []string {
-	return []string{EventTypeReceiptTransaction}
+	return []string{EventTypeReceiptTransaction, EventTypeLowStock}
 }
 
 // Recipients is the editable per-template audience descriptor stored in the
@@ -84,6 +105,11 @@ func DefaultRecipients(eventType string) Recipients {
 	switch eventType {
 	case EventTypeReceiptTransaction:
 		return Recipients{WorkerEmail: true, Extras: []string{}}
+	case EventTypeLowStock:
+		// Alerts target ops, not the worker who happened to push the item
+		// across the threshold. all_admins captures every active admin;
+		// operators can add a shared mailbox via the extras textarea.
+		return Recipients{AllAdmins: true, Extras: []string{}}
 	}
 	// Conservative default for unrecognized event types: address nobody.
 	// Operators must explicitly opt in to a recipient class.

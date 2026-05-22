@@ -236,10 +236,70 @@ func (h *Handlers) CartCommit(re *core.RequestEvent) error {
 		if rc, berr := notifications.BuildReceiptContext(h.App, c, id, result, time.Now().UTC()); berr == nil {
 			h.Notifier.Send(notifications.EventTypeReceiptTransaction, rc)
 		}
+		h.fireLowStockAlerts(c, id)
 	}
 
 	_ = h.Carts.Delete(body.CartID)
 	return re.JSON(http.StatusOK, result)
+}
+
+// fireLowStockAlerts inspects the just-committed cart for consume lines
+// whose item crossed its reorder threshold and dispatches one alert per
+// item via the dedupe-gated SendIfFirst path. Quietly skips on lookup or
+// math errors — alerts must never affect the commit response.
+func (h *Handlers) fireLowStockAlerts(c *cart.Cart, id kioskctx.Identity) {
+	consumeQty := map[string]int{}
+	for _, l := range c.Lines {
+		if l.Action != "consume" {
+			continue
+		}
+		consumeQty[l.ItemID] += l.Qty
+	}
+	for itemID, qty := range consumeQty {
+		item, err := h.App.FindRecordById("items", itemID)
+		if err != nil {
+			continue
+		}
+		threshold := item.GetInt("reorder_threshold")
+		if threshold <= 0 {
+			continue
+		}
+		available, err := availableForItem(h.App, item)
+		if err != nil {
+			continue
+		}
+		if !crossedLowStock(available+qty, available, threshold) {
+			continue
+		}
+		ctx := notifications.LowStockContext{
+			Kiosk: notifications.KioskInfo{
+				Code:         id.KioskCode,
+				LocationCode: id.LocationCode,
+			},
+			Item: notifications.ItemInfo{
+				ID:       item.Id,
+				Code:     item.GetString("code"),
+				Name:     item.GetString("name"),
+				Category: item.GetString("category"),
+				Unit:     item.GetString("unit"),
+			},
+			PrevQty:   available + qty,
+			NewQty:    available,
+			Threshold: threshold,
+			Available: available,
+			Trigger:   "consume",
+		}
+		h.Notifier.SendIfFirst(notifications.EventTypeLowStock, item.Id, ctx)
+	}
+}
+
+// crossedLowStock is the pure threshold-crossing predicate split out for
+// unit tests. Fires only when "before" was strictly above threshold and
+// "after" is at-or-below — repeated consumes that all stay below threshold
+// don't keep alerting (the daily dedupe row protects this too, but the
+// edge guard keeps the alert semantically meaningful in tests).
+func crossedLowStock(prev, current, threshold int) bool {
+	return threshold > 0 && prev > threshold && current <= threshold
 }
 
 // CartCancel discards an in-progress cart without committing.

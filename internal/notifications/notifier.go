@@ -9,6 +9,7 @@ import (
 	"net/mail"
 	"strings"
 	"text/template"
+	"time"
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
@@ -22,6 +23,11 @@ const CollectionName = "notification_templates"
 // SendLogCollectionName is the audit table written one-row-per-recipient
 // by every Send call. Visible to admins in the SPA "Recent sends" view.
 const SendLogCollectionName = "notification_send_log"
+
+// DedupeCollectionName backs SendIfFirst. The unique (event_type, ref, day)
+// index is the race-free gate — an insert that violates the constraint
+// means "another caller already fired this combination today."
+const DedupeCollectionName = "notification_dedupe"
 
 // Send log status values. Kept here so the notifier and the SPA agree on
 // the strings without a separate constants file.
@@ -69,6 +75,68 @@ func (n *Notifier) Send(eventType string, data any) {
 		}
 	}()
 }
+
+// SendIfFirst is Send gated by a dedupe insert keyed on (eventType, refKey,
+// today). It is the path low-stock alerts use so an item that crosses its
+// threshold ten times in a day produces one email, not ten.
+//
+// The unique index on notification_dedupe is the source of truth — a second
+// caller racing past the existence check still hits the constraint at
+// insert time and is treated as a duplicate. No external locking.
+//
+// `day` is computed in UTC. Operators in non-UTC TZ get a deduplication
+// boundary at UTC midnight rather than local midnight; acceptable for
+// alerts and matches how the send log timestamps already render.
+func (n *Notifier) SendIfFirst(eventType, refKey string, data any) {
+	if n == nil {
+		return
+	}
+	go func() {
+		first, err := n.claimDedupe(eventType, refKey)
+		if err != nil {
+			slog.Warn("notifications dedupe insert failed; dropping to avoid double-send",
+				"event_type", eventType, "ref", refKey, "err", err)
+			return
+		}
+		if !first {
+			return
+		}
+		if err := n.deliver(eventType, data); err != nil {
+			slog.Error("notifications send failed", "event_type", eventType, "err", err)
+		}
+	}()
+}
+
+// claimDedupe attempts to insert the (event_type, ref, day) tuple. Returns
+// first=true when this insert won the race; first=false when a prior call
+// already claimed the slot (unique-constraint violation). Any other error
+// is returned to the caller and treated as a drop.
+func (n *Notifier) claimDedupe(eventType, refKey string) (bool, error) {
+	col, err := n.app.FindCollectionByNameOrId(DedupeCollectionName)
+	if err != nil {
+		return false, fmt.Errorf("find %s: %w", DedupeCollectionName, err)
+	}
+	rec := core.NewRecord(col)
+	rec.Set("event_type", eventType)
+	rec.Set("ref", refKey)
+	rec.Set("day", todayUTC())
+	if err := n.app.Save(rec); err != nil {
+		msg := strings.ToLower(err.Error())
+		if strings.Contains(msg, "unique") || strings.Contains(msg, "constraint") {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+func todayUTC() string {
+	return timeNowUTC().Format("2006-01-02")
+}
+
+// timeNowUTC is overridable for tests that need to drive the dedupe day
+// boundary deterministically. Defaults to time.Now().UTC() in production.
+var timeNowUTC = func() time.Time { return time.Now().UTC() }
 
 // deliver is the synchronous body of Send. It loads the template, resolves
 // recipients, renders, sends, and logs.
@@ -224,17 +292,28 @@ func (n *Notifier) writeLog(eventType, templateID, recipient, status, errMsg, su
 // PruneSendLog deletes rows older than the cutoff. Wired into a daily cron
 // in cmd/kiosk/main.go to keep the table bounded.
 func (n *Notifier) PruneSendLog(olderThan string) (int, error) {
+	return n.pruneCollection(SendLogCollectionName, "created < {:cutoff}", olderThan)
+}
+
+// PruneDedupe deletes dedupe rows older than the cutoff. The dedupe gate is
+// only meaningful for ~one day; keeping the same 90-day window as the send
+// log gives a generous safety margin without growing the table.
+func (n *Notifier) PruneDedupe(olderThan string) (int, error) {
+	return n.pruneCollection(DedupeCollectionName, "created < {:cutoff}", olderThan)
+}
+
+func (n *Notifier) pruneCollection(collection, filter, cutoff string) (int, error) {
 	if n == nil {
 		return 0, nil
 	}
-	rows, err := n.app.FindRecordsByFilter(SendLogCollectionName, "created < {:cutoff}", "", 0, 0, dbx.Params{"cutoff": olderThan})
+	rows, err := n.app.FindRecordsByFilter(collection, filter, "", 0, 0, dbx.Params{"cutoff": cutoff})
 	if err != nil {
-		return 0, fmt.Errorf("list aged rows: %w", err)
+		return 0, fmt.Errorf("list aged rows in %s: %w", collection, err)
 	}
 	deleted := 0
 	for _, r := range rows {
 		if err := n.app.Delete(r); err != nil {
-			slog.Warn("send log prune failed for row", "id", r.Id, "err", err)
+			slog.Warn("prune failed for row", "collection", collection, "id", r.Id, "err", err)
 			continue
 		}
 		deleted++

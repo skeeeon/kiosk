@@ -1,6 +1,7 @@
 package notifications
 
 import (
+	"strconv"
 	"time"
 
 	"github.com/pocketbase/pocketbase/core"
@@ -56,6 +57,45 @@ type LineInfo struct {
 	Action   string
 	Qty      int
 	Serial   string
+}
+
+// ItemInfo is the per-item slice referenced by non-receipt contexts
+// (low-stock, future digests). Kept minimal — only fields a notification
+// would plausibly want to render.
+type ItemInfo struct {
+	ID       string
+	Code     string
+	Name     string
+	Category string
+	Unit     string
+}
+
+// LowStockContext drives the alert.lowstock template. Built by the cart
+// commit handler after Commit succeeds. Does NOT implement
+// WorkerEmailProvider — alerts target ops, not the scanning worker.
+type LowStockContext struct {
+	Kiosk     KioskInfo
+	Item      ItemInfo
+	PrevQty   int
+	NewQty    int
+	Threshold int
+	Available int    // for tools: qty_on_hand − open_checkouts; consumables: qty_on_hand
+	Trigger   string // "consume" today; "adjust" reserved for future
+}
+
+// PayloadSummary contributes a one-line context snippet to
+// notification_send_log so admins can scan the log without expanding
+// individual rows. The shape ("item code · before → after") matches the
+// receipt summary style.
+func (c LowStockContext) PayloadSummary() string {
+	return c.Item.Code + " · " + strconv.Itoa(c.PrevQty) + " → " + strconv.Itoa(c.NewQty) +
+		" (threshold " + strconv.Itoa(c.Threshold) + ")"
+}
+
+// PayloadSummary mirrors the LowStockContext implementation for receipts.
+// Used by the send log to render compact descriptions.
+func (c ReceiptContext) PayloadSummary() string {
+	return "tx " + c.Transaction.ID + " · " + strconv.Itoa(c.Transaction.LinesCount) + " lines"
 }
 
 // BuildReceiptContext assembles the template payload from the values the
