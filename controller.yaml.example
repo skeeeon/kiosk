@@ -26,8 +26,9 @@ branding:
   tagline: "Fleet Controller"
   primary_color: ""                   # CSS color (e.g. "#0284c7")
   # Optional escape hatch — point at a .css file, served at /branding/custom.css
-  # and injected after Tailwind. See README.md → "Custom CSS overrides" for
-  # the list of stable CSS variables operators can override.
+  # and injected after Tailwind. Override any Tailwind color variable on :root
+  # to re-skin the SPA; see README.md → "Branding → Custom CSS overrides" and
+  # branding/theme.css.example for a starting point.
   custom_css_path: ""                 # e.g. "./branding/theme.css"
 
 # NATS is REQUIRED for the controller — without a broker connection the

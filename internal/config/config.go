@@ -141,9 +141,11 @@ type ControllerConfig struct {
 //     Applied to the commit button and other primary action accents.
 //   - CustomCSSPath: absolute or working-dir-relative path to a .css file
 //     the binary will stream at GET /branding/custom.css. The SPA injects a
-//     <link> for it after Tailwind so the file can override any documented
-//     CSS variable (see README) and, with caveats, any utility class. Use
-//     this for anything the typed fields above don't cover.
+//     <link> for it after Tailwind so any color utility can be re-skinned
+//     by overriding the matching `--color-<name>` variable on :root —
+//     Tailwind 4 emits every utility as a var() reference. See README's
+//     "Branding → Custom CSS overrides" section and
+//     branding/theme.css.example for working examples.
 type BrandingConfig struct {
 	LogoPath      string `yaml:"logo_path"`
 	Tagline       string `yaml:"tagline"`

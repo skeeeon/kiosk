@@ -65,8 +65,9 @@ branding:
   primary_color: ""                   # CSS color (e.g. "#059669") for primary action buttons
   # Optional escape hatch for visuals the typed fields above don't cover.
   # Point at a .css file; the binary serves it at /branding/custom.css and
-  # the SPA injects a <link> for it AFTER Tailwind so it can override any
-  # CSS variable documented in README.md → "Custom CSS overrides" (and,
-  # with the caveat that targeting raw utility classes is fragile across
-  # UI updates, anything else too).
+  # the SPA injects a <link> for it AFTER Tailwind. Tailwind 4 emits every
+  # color utility as a var(--color-<name>) reference, so overriding the
+  # variable cascades through every bg-*/text-*/border-* utility. See
+  # README.md → "Branding → Custom CSS overrides" for the full discussion,
+  # and branding/theme.css.example for a starting point.
   custom_css_path: ""                # e.g. "./branding/theme.css"

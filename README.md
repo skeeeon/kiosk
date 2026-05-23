@@ -346,8 +346,13 @@ approach as a commented-out section.
 
 #### Custom CSS overrides
 
-The cleanest target is the CSS variables. These are stable surface area —
-overriding them flows through every utility that references them:
+Tailwind 4 emits every color utility as a `var(--color-<name>)` reference,
+so overriding the variable cascades through every `bg-*`, `text-*`,
+`border-*`, `divide-*` utility — and through their `/40`, `/50`, `/70`
+alpha variants via `color-mix()` — without naming any utility class
+directly. That's the stable surface; classes themselves are not.
+
+The two slots we declare explicitly:
 
 ```css
 :root {
@@ -357,22 +362,38 @@ overriding them flows through every utility that references them:
 }
 ```
 
-You can also target Tailwind utility classes for things the variables don't
-cover yet. This works but is **fragile** — class names change as the UI
-evolves, and we don't treat them as a public API. If you find yourself
-overriding the same utility class on a lot of selectors, file an issue and
-we'll consider promoting it to a variable.
+Tailwind's full palette is also addressable the same way. The SPA's
+surface tones come from `slate`; chromatic accents come from `emerald`
+(active/success), `red` (destructive), `amber` (warning), `sky` (managed
+pill), and `indigo` (controller chip). To re-skin the whole surface
+palette:
 
 ```css
-/* Example: re-tint the dialog/sheet surface (fragile — uses raw slate-X). */
-.bg-slate-900 { background-color: #1a1530; }
-.border-slate-800 { border-color: #2d2348; }
+:root {
+  --color-slate-950: #100b21;  /* page background */
+  --color-slate-900: #1a1530;  /* cards, dialogs */
+  --color-slate-800: #2d2348;  /* buttons, table headers */
+  /* ...and so on for slate-700, -600, ..., -100 */
+}
 ```
 
+For light-mode skins, **invert** the slate scale so that `slate-950`
+(used for the page background) becomes the lightest tone and `slate-100`
+(used for primary text) becomes near-black. The SPA's existing utility
+usage then produces dark-text-on-light-background without any code
+change.
+
+You can also target Tailwind utility classes directly for things the
+color variables don't cover (border-radius, spacing, animations). That
+works but is **fragile** — class names change as the UI evolves, and we
+don't treat them as a public API. If you find yourself overriding the
+same class on a lot of selectors, file an issue and we'll consider
+promoting it to a variable.
+
 Cache-Control is 5 minutes; refresh the page after editing the file. The
-SPA only injects the `<link>` when the server reports the file is present
-on the identity payload, so removing `custom_css_path` from config and
-restarting the binary cleanly reverts to defaults.
+SPA only injects the `<link>` when the server reports the file is
+present on the identity payload, so removing `custom_css_path` from
+config and restarting the binary cleanly reverts to defaults.
 
 ## Development
 
