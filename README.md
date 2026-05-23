@@ -339,6 +339,11 @@ binaries (kiosk + controller) stream it at `GET /branding/custom.css` and
 the SPA injects a `<link rel="stylesheet">` for it **after** Tailwind, so
 your rules win the cascade at equal specificity.
 
+A starter file lives at `branding/theme.css.example` — copy it to
+`branding/theme.css` (or wherever) and edit. The example demonstrates
+both the recommended variables-only path and the fragile utility-class
+approach as a commented-out section.
+
 #### Custom CSS overrides
 
 The cleanest target is the CSS variables. These are stable surface area —

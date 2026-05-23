@@ -1,0 +1,40 @@
+/* Example branding override for the kiosk SPA.
+ *
+ * To enable: copy this file to e.g. `branding/theme.css` and set
+ *   branding.custom_css_path: "./branding/theme.css"
+ * in kiosk.yaml or controller.yaml. The binary serves the file at
+ * /branding/custom.css and the SPA injects a <link rel="stylesheet">
+ * for it after Tailwind, so the rules below win the cascade at equal
+ * specificity. Cache-Control is 5 minutes; reload the page after
+ * edits.
+ *
+ * The recommended target is the CSS variables in the :root block
+ * below. They're stable surface area — overriding here flows through
+ * every utility that references them (bg-brand-primary,
+ * hover:bg-brand-primary-hover, etc.) without naming any utility
+ * class directly. Anything past that block is "fragile" — see
+ * README → "Branding → Custom CSS overrides".
+ */
+
+:root {
+  /* Primary action accent: commit button, "New X" buttons, focus
+   * rings, any element wearing bg-brand-primary / text-brand-primary. */
+  --color-brand-primary: #6d28d9;        /* violet-700 */
+  --color-brand-primary-hover: #7c3aed;  /* violet-600 */
+}
+
+/* -------------------------------------------------------------------
+ * Utility-class overrides (fragile)
+ *
+ * These work but target Tailwind utility classes by name. Class names
+ * change as the UI evolves, so anything past the variables above is
+ * "use at your own risk and re-check after each upgrade." Uncomment
+ * and tweak if you need to retint a surface the variables don't cover.
+ * If you find yourself overriding the same class on a lot of
+ * selectors, file an issue and we'll consider promoting it to a
+ * variable.
+ *
+ * .bg-slate-900     { background-color: #1a1530; }
+ * .bg-slate-950     { background-color: #100b21; }
+ * .border-slate-800 { border-color: #2d2348; }
+ * ------------------------------------------------------------------- */
