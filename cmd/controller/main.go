@@ -21,6 +21,7 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/plugins/migratecmd"
 
+	"github.com/skeeeon/kiosk/internal/authfix"
 	"github.com/skeeeon/kiosk/internal/config"
 	"github.com/skeeeon/kiosk/internal/controller"
 	"github.com/skeeeon/kiosk/internal/events"
@@ -62,6 +63,8 @@ func main() {
 	migratecmd.MustRegister(app, app.RootCmd, migratecmd.Config{
 		Automigrate: true,
 	})
+
+	authfix.EnforceEmailVisibility(app)
 
 	controller.RegisterSeedCommand(app, cfg)
 

@@ -12,6 +12,7 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/plugins/migratecmd"
 
+	"github.com/skeeeon/kiosk/internal/authfix"
 	"github.com/skeeeon/kiosk/internal/cart"
 	"github.com/skeeeon/kiosk/internal/catalog"
 	"github.com/skeeeon/kiosk/internal/config"
@@ -50,6 +51,8 @@ func main() {
 	migratecmd.MustRegister(app, app.RootCmd, migratecmd.Config{
 		Automigrate: true,
 	})
+
+	authfix.EnforceEmailVisibility(app)
 
 	// NATS is best-effort: a misconfigured or unreachable endpoint must not
 	// block the kiosk from starting (the local ledger is authoritative).
