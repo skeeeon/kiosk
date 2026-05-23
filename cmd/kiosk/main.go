@@ -15,9 +15,11 @@ import (
 	"github.com/skeeeon/kiosk/internal/authfix"
 	"github.com/skeeeon/kiosk/internal/cart"
 	"github.com/skeeeon/kiosk/internal/catalog"
+	"github.com/skeeeon/kiosk/internal/commands"
 	"github.com/skeeeon/kiosk/internal/config"
 	"github.com/skeeeon/kiosk/internal/events"
 	"github.com/skeeeon/kiosk/internal/handlers"
+	"github.com/skeeeon/kiosk/internal/heartbeat"
 	"github.com/skeeeon/kiosk/internal/kioskctx"
 	"github.com/skeeeon/kiosk/internal/notifications"
 	"github.com/skeeeon/kiosk/internal/scheduler"
@@ -93,11 +95,49 @@ func main() {
 		}
 	}
 
+	// Command bus + heartbeat: best-effort, NATS-only. Kiosks without NATS
+	// boot and serve local checkouts normally; only remote admin from the
+	// controller and the fleet-liveness indicator depend on this wiring.
+	var commandSub interface{ Unsubscribe() error }
+	heartbeatCtx, heartbeatCancel := context.WithCancel(context.Background())
+	if pub != nil && cfg.NATS.Enabled {
+		nc, err := events.Conn(pub)
+		switch {
+		case err != nil:
+			log.Printf("commands/heartbeat: nats connection unavailable: %v", err)
+		case cfg.Kiosk.Code == "":
+			// Defense in depth — config validation already enforces this,
+			// but the dispatcher won't subscribe without a code.
+			log.Printf("commands/heartbeat: kiosk.code is empty — skipping")
+		default:
+			disp := commands.NewDispatcher(app, cfg.Kiosk.Code)
+			app.OnServe().BindFunc(func(e *core.ServeEvent) error {
+				sub, err := disp.Register(nc)
+				if err != nil {
+					log.Printf("commands: subscribe failed — %v", err)
+				} else {
+					commandSub = sub
+				}
+				return e.Next()
+			})
+			app.OnServe().BindFunc(func(e *core.ServeEvent) error {
+				// Empty version string is fine — telemetry only. ldflags-injected
+				// version can be added later without touching this signature.
+				heartbeat.Start(heartbeatCtx, nc, cfg.Kiosk.Code, "")
+				return e.Next()
+			})
+		}
+	}
+
 	app.OnTerminate().BindFunc(func(e *core.TerminateEvent) error {
 		if catalogWatcher != nil {
 			catalogWatcher.Stop()
 		}
 		watcherCancel()
+		heartbeatCancel()
+		if commandSub != nil {
+			_ = commandSub.Unsubscribe()
+		}
 		if p := events.CurrentPublisher(); p != nil {
 			p.Close()
 		}

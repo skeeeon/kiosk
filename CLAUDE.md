@@ -18,8 +18,12 @@ ledger, and PB record hooks that publish catalog changes to managed kiosks
 via JetStream KV. Item delivery is **membership-driven**: a join collection
 `kiosk_items` says which SKUs each kiosk stocks, and item KV keys are
 namespaced `<kiosk_code>.<item_code>` so each kiosk subscribes only to its
-own slice. Users remain org-wide. See the "Central controller" section in
-README.md for the operator-facing view.
+own slice. Users remain org-wide. Beyond the JetStream channels, the
+controller also drives admin commands at remote kiosks over core NATS
+request/reply (currently `inventory.adjust` + `inventory.snapshot`), and
+receives 45 s heartbeats over a plain pub/sub subject to render live
+online status. See the "Central controller" section in README.md for the
+operator-facing view.
 
 README.md has a thorough product/architecture overview; consult it for the
 business logic (action defaulting, returns policy, central controller, etc.).
@@ -62,8 +66,10 @@ Frontend dev loop: run both the Go binary and `npm run dev` — Vite proxies
 ```bash
 go test ./...                            # all Go tests
 go test ./internal/commit/...            # heart of the system
-go test ./internal/controller/...        # controller aggregator + idempotency
+go test ./internal/controller/...        # controller aggregator + heartbeats + idempotency
 go test ./internal/catalog/...           # KV payload + kiosk projector
+go test ./internal/commands/...          # kiosk-side NATS command handlers
+go test ./internal/handlers/...          # stock-adjust refactor + idempotency
 go test -run TestCommit_CrossUser ./internal/commit/...   # single test
 ```
 
@@ -81,7 +87,7 @@ controller-only migration is included.
 
 ## Architecture you can't see from one file
 
-**Two parallel API surfaces, two parallel auth models.**
+**Three parallel API surfaces, two parallel auth models.**
 
 - `/api/kiosk/*` — custom endpoints registered in `cmd/kiosk/main.go`, served
   by handlers in `internal/handlers/`. The kiosk checkout flow lives here.
@@ -89,6 +95,15 @@ controller-only migration is included.
   to 127.0.0.1); worker identity is supplied via badge scan at the application
   layer. Admin-only endpoints in this set call `h.requireAdmin(re)` which
   checks `re.Auth.Collection().Name == "admins"`.
+- `/api/controller/*` — controller-binary-only endpoints registered in
+  `cmd/controller/main.go`, served by methods on `controller.Handlers`.
+  Today: `GET /api/controller/kiosks/heartbeats`,
+  `GET /api/controller/kiosks/{code}/inventory`, and
+  `POST /api/controller/kiosks/{code}/inventory/adjust`. All admin-gated
+  via `controller.Handlers.requireAdmin` (mirrors the kiosk version —
+  the duplicate is documented at `internal/controller/handlers.go:37`).
+  The inventory endpoints proxy core NATS request/reply commands to the
+  target kiosk and pass the reply through unchanged.
 - `/api/collections/*` — PocketBase's built-in REST API. Admin SPA views use
   this through `pocketbase` JS SDK (`ui/src/lib/pb.ts`). Collection rules
   defined in the migration restrict everything to the `admins` auth collection.
@@ -118,12 +133,29 @@ Three invariants:
    `<prefix>.{kiosk_code}.transaction.complete` and
    `<prefix>.{kiosk_code}.item.{action}` from the commit hook;
    `<prefix>.{kiosk_code}.inventory.adjust` from the admin stock-adjust
-   handler; `<prefix>.{kiosk_code}.integrity.rebuild` from the
-   open_checkouts rebuild handler. The prefix is `"kiosk"` by default and
-   configurable via `nats.subject_prefix`; subjects are built through shared
-   helpers in `internal/events/subjects.go` (single source of truth for
-   both the kiosk publisher and the controller's stream/consumer filters)
-   — don't re-string-format these at callsites.
+   handler (both local HTTP and remote command paths emit the same shape
+   via `handlers.PublishInventoryAdjustEvent`);
+   `<prefix>.{kiosk_code}.integrity.rebuild` from the open_checkouts
+   rebuild handler. The prefix is `"kiosk"` by default and configurable
+   via `nats.subject_prefix`; subjects are built through shared helpers in
+   `internal/events/subjects.go` (single source of truth for both the
+   kiosk publisher and the controller's stream/consumer filters) — don't
+   re-string-format these at callsites.
+
+   Two NATS subject families ride core NATS, not JetStream, and are
+   deliberately **excluded** from the controller's consumer
+   `FilterSubjects`:
+
+   - **Heartbeats** — `<prefix>.{kiosk_code}.heartbeat`. Built via
+     `events.HeartbeatSubject` / `events.HeartbeatFilter`. Last-write-wins,
+     no persistence; durability would mask the very signal we care about.
+   - **Commands** — `<prefix>.{kiosk_code}.command.<name>` (built via
+     `events.CommandSubject` / `events.CommandSubscribePattern`). Request/
+     reply, single attempt, ≤5 s reply timeout. The kiosk's dispatcher
+     replies on `msg.Reply` with a `{success, error, data}` envelope.
+
+   Do NOT add these to `FilterSubjects` and do NOT publish them through
+   `events.Publish` — they're not events.
 
 **Kiosk identity is process-global, not request-scoped.** `internal/kioskctx`
 holds an `atomic.Pointer[Identity]` set once at startup from config. Every
@@ -191,19 +223,47 @@ from inside the same `sync.Once` body that registers the first controller
 migration — so adding a controller migration means appending to that body,
 not adding a new `init()`.
 
+The third controller-only migration (`migrations/2000200000_kiosks_last_transaction_at.go`)
+adds the `kiosks.last_transaction_at` DateField and registers via
+`RegisterKiosksLastTransactionAtMigration()`, called from the same
+`sync.Once` body. `touchKiosk` in `internal/controller/consumer.go` writes
+both `last_seen` (legacy, kept for one release) and `last_transaction_at`
+on each `transaction.complete` event; the SPA reads
+`last_transaction_at`. **Critical change in this release:** `touchKiosk`
+is no longer called from before the dispatch switch — it now fires only
+inside the `.transaction.complete` branch. Kiosks that emit only
+non-transaction events (heartbeat, inventory.adjust, integrity.rebuild)
+no longer auto-register via the aggregator; the heartbeat registry's
+first-beat auto-register path (`controller.HeartbeatRegistry.handle`)
+covers them.
+
+One kiosk-side migration also landed
+(`migrations/1787000000_stock_adjust_remote.go`) — it adds `source`,
+`controller_admin_id`, and `command_id` (with a unique-when-non-empty
+index) to `stock_adjustments`, and relaxes `admin` to nullable. Both
+binaries pick it up via the unconditional `init()` pattern. The unique
+index on `command_id` is the anchor of idempotency for the controller's
+remote inventory.adjust command — see the comment block in
+`internal/handlers/stock_adjust.go::PerformStockAdjustment` for the
+upfront-lookup + unique-violation-catch dance.
+
 **Per-kiosk catalog membership.** Controller-side `kiosk_items` is the
 source of truth for "which SKUs does kiosk X stock." A row exists →
 that kiosk gets that item; no row → it doesn't. New items don't auto-flow
-anywhere; admins assign via the `KioskItemsPanel` in the kiosk's edit
-dialog (plus a "bulk add by category" action). Categories are **not** a
-stored rule — bulk-add creates rows at that moment; new items added later
-won't auto-fill. The kiosk-side watcher uses
+anywhere; admins assign via the `KioskItemsPanel` on the kiosk detail
+page's Items tab (plus a "bulk add by category" action). Categories are
+**not** a stored rule — bulk-add creates rows at that moment; new items
+added later won't auto-fill. The kiosk-side watcher uses
 `Watch(<kiosk_code>.>)` on the shared `catalog_items` bucket, so per-kiosk
 filtering is enforced server-side and the kiosk never receives keys for
-other kiosks. Kiosks can be **pre-registered** by an admin (new "New kiosk"
-button on AdminKiosksView) before they phone home, or self-register via
-the aggregator's `touchKiosk` on first event — both paths converge on the
-same row.
+other kiosks. Three paths get a kiosk a row in `kiosks`: **(1)
+pre-registered** by an admin via the "New kiosk" button on
+AdminKiosksView before phoning home; **(2) self-registered** via the
+aggregator's `touchKiosk` on first `transaction.complete` (narrowed from
+"any event" — see the Schema-is-code section); **(3) heartbeat
+auto-register** via `HeartbeatRegistry.handle`'s first-beat callback,
+which covers kiosks that haven't transacted yet. All three converge on
+the same row.
 
 **Controller seam.** When extending the central service:
 
@@ -244,6 +304,32 @@ same row.
   source of truth — both controller publisher and kiosk projector import
   from here. Adding a field is a one-line change that flows through both
   sides; the round-trip test enforces excluded fields stay excluded.
+- **Command bus (controller → kiosk):** `internal/commands/` on the kiosk
+  side, `internal/controller/inventory.go` on the controller side. The
+  kiosk's `Dispatcher` is constructed with built-in handlers for
+  `inventory.adjust` and `inventory.snapshot`; new commands register via
+  `Dispatcher.HandleFunc(name, handler)`. Use `events.Conn(pub)` to get
+  the underlying `*nats.Conn` (do not type-assert; the exported helper
+  mirrors `events.JetStream`). The controller endpoint pattern is:
+  fast-fail on stale heartbeat via `HeartbeatRegistry.IsLikelyOnline`,
+  marshal payload, `nc.Request(subject, data, 5*time.Second)`, decode the
+  `{success, error, data}` envelope, pass `data` through as a
+  `json.RawMessage` to the SPA. **Commands must always reply** within the
+  5 s window — even on validation errors — or the controller renders
+  "kiosk offline" instead. Adding a mutating command means deciding on an
+  idempotency key (the inventory.adjust pattern is server-generated UUID
+  + unique-indexed column).
+- **Heartbeats:** `internal/heartbeat/heartbeat.go` (kiosk side) +
+  `internal/controller/heartbeats.go` (controller side). 45 s cadence on
+  the kiosk; controller subscribes plain (NOT through the JetStream
+  aggregator), keeps a mutex-guarded `map[code]time.Time`, exposes
+  `Snapshot()`, `LastBeat(code)`, `IsLikelyOnline(code, freshness)`,
+  and `StartedAt()` for restart-warmup-window suppression in the SPA.
+  First beat from a previously-unknown kiosk triggers the optional
+  `TouchFn` callback — wired to `agg.TouchKiosk` so heartbeat-only
+  kiosks still appear in the `kiosks` collection. Don't re-subscribe on
+  reconnect; `nats.go` re-establishes the sub automatically given
+  `MaxReconnects(-1)`.
 
 ## Frontend notes
 
@@ -255,12 +341,24 @@ distinct flows in one SPA:
   `/api/kiosk/*` via plain `fetch` (`lib/api.ts`).
 - **Admin views** (`views/Admin*.vue`, `stores/auth.ts`) — authed via PocketBase
   JS SDK (`lib/pb.ts`), CRUDs the `users` and `items` collections via PB's REST
-  API, plus hits `/api/kiosk/integrity` and `/api/kiosk/items/import` for the
-  custom admin operations.
+  API, plus hits `/api/kiosk/integrity`, `/api/kiosk/items/import`, and the
+  controller-only `/api/controller/*` family for fleet liveness and remote
+  inventory adjust.
 
 The scan composable skips when an `<input>`, `<textarea>`, `<select>`, or
 contenteditable has focus. If you're adding a screen where the scan flow
 should keep working, don't put a focused input in it.
+
+**Kiosk detail page.** On the controller, `/admin/kiosks` is a list view
+that polls `/api/controller/kiosks/heartbeats` every 10 s for online
+badges; clicking a row navigates to `/admin/kiosks/:code` (the
+`AdminKioskDetailView` component) which has three tabs: Overview, Items
+(the existing `KioskItemsPanel`), Inventory (new `KioskInventoryPanel`
+that fetches a live snapshot via the controller's inventory endpoint and
+drives adjust commands). The old `KioskDialog` was reduced to create-only;
+edit/items/inventory work belongs on the detail page. The 503 `kiosk_offline`
+body is detected via `ApiError.status === 503` and rendered as a banner —
+do not treat it as a generic error.
 
 ## Config
 

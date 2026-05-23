@@ -184,11 +184,60 @@ export interface KioskRecord {
   id: string
   kiosk_code: string
   location_code: string
+  // last_seen is the legacy "last event of any kind" timestamp; written
+  // alongside last_transaction_at for one release. New SPA code should
+  // prefer last_transaction_at, which means what its name says.
   last_seen?: string
+  last_transaction_at?: string
   status: 'unknown' | 'active' | 'disabled'
   notes: string
   created?: string
   updated?: string
+}
+
+// HeartbeatsResponse is the controller's GET /api/controller/kiosks/heartbeats
+// payload. SPA polls it to derive online/stale/offline status per kiosk.
+// controller_started_at is used to suppress "offline" during the warmup
+// window after a controller restart.
+export interface HeartbeatsResponse {
+  controller_started_at: string
+  kiosks: Record<string, string>
+}
+
+// InventorySnapshotItem mirrors the kiosk-side snapshot reply. Returned by
+// GET /api/controller/kiosks/:code/inventory.
+export interface InventorySnapshotItem {
+  item_code: string
+  item_name: string
+  quantity_on_hand: number
+  reorder_threshold: number
+  tracking_mode: 'quantity' | 'serialized'
+  active: boolean
+}
+
+export interface InventorySnapshotResponse {
+  items: InventorySnapshotItem[]
+}
+
+// InventoryAdjustResponse mirrors the kiosk's reply to a controller-driven
+// adjust. The controller endpoint passes the kiosk's reply through unchanged.
+export interface InventoryAdjustResponse {
+  adjustment_id: string
+  item_id: string
+  item_code: string
+  delta: number
+  new_quantity: number
+  prev_quantity: number
+}
+
+// KioskOfflineError is the SSE-style 503 body the controller returns when
+// the kiosk's heartbeat is stale or the NATS reply doesn't arrive. The SPA
+// distinguishes this from generic 5xx so the inventory panel can render a
+// "kiosk offline" banner instead of a red error box.
+export interface KioskOfflineError {
+  error: 'kiosk_offline'
+  kiosk_code: string
+  command_id?: string
 }
 
 // kiosk_items: controller-side membership row tying one item to one kiosk.
@@ -209,6 +258,11 @@ export interface StockAdjustmentRecord {
   new_quantity: number
   reason: string
   admin: string
+  // source discriminates locally-clicked adjustments from controller-driven
+  // ones. controller_admin_id and command_id only populate for source='controller'.
+  source?: 'local' | 'controller'
+  controller_admin_id?: string
+  command_id?: string
   created: string
   expand?: {
     admin?: { id: string; name: string; email: string }

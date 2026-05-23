@@ -109,8 +109,27 @@ func main() {
 			return fmt.Errorf("start aggregator: %w", err)
 		}
 
+		// Heartbeat registry: in-memory only (no JetStream). Constructed
+		// after the aggregator so its first-beat auto-register callback can
+		// point at agg.TouchKiosk — this is how kiosks that have never
+		// completed a transaction still show up in the kiosks collection.
+		nc, err := events.Conn(pub)
+		if err != nil {
+			aggCancel()
+			return fmt.Errorf("nats conn for heartbeats: %w", err)
+		}
+		hbRegistry := controller.NewHeartbeatRegistry(agg.TouchKiosk)
+		hbSub, err := hbRegistry.Subscribe(nc)
+		if err != nil {
+			aggCancel()
+			return fmt.Errorf("subscribe heartbeats: %w", err)
+		}
+
 		app.OnTerminate().BindFunc(func(te *core.TerminateEvent) error {
 			agg.Stop()
+			if hbSub != nil {
+				_ = hbSub.Unsubscribe()
+			}
 			aggCancel()
 			if p := events.CurrentPublisher(); p != nil {
 				p.Close()
@@ -131,6 +150,13 @@ func main() {
 		e.Router.GET("/api/kiosk/catalog/integrity", h.CatalogIntegrity(cp))
 		e.Router.POST("/api/kiosk/catalog/reconcile", h.CatalogReconcile(cp))
 		e.Router.GET("/api/kiosk/reports/open-checkouts", h.ReportOpenCheckouts)
+
+		// Fleet liveness + remote admin endpoints. The heartbeats endpoint is
+		// the SPA's source of truth for the online/stale/offline badge; the
+		// inventory endpoints proxy controller→kiosk commands over NATS.
+		e.Router.GET("/api/controller/kiosks/heartbeats", h.HeartbeatsEndpoint(hbRegistry))
+		e.Router.GET("/api/controller/kiosks/{code}/inventory", h.InventorySnapshot(nc, hbRegistry))
+		e.Router.POST("/api/controller/kiosks/{code}/inventory/adjust", h.InventoryAdjust(nc, hbRegistry))
 
 		// Serve the same Vue SPA the kiosk uses. The SPA detects role at
 		// boot via /api/kiosk/identity and gates its UI accordingly.

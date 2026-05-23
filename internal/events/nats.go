@@ -65,6 +65,18 @@ func (p *natsPublisher) Conn() *nats.Conn { return p.nc }
 // a non-NATS test fake. Callers that need JS during startup should treat a
 // nil err + nil JS as "JS not available, run in degraded mode."
 func JetStream(p Publisher) (jetstream.JetStream, error) {
+	nc, err := Conn(p)
+	if err != nil {
+		return nil, err
+	}
+	return jetstream.New(nc)
+}
+
+// Conn exposes the underlying *nats.Conn from the active publisher. Callers
+// that need a subscription (command bus, heartbeat sub) use this rather than
+// the JetStream context. Errors when the publisher is nil/disabled or is a
+// non-NATS test fake. Mirrors JetStream's shape so wiring code reads the same.
+func Conn(p Publisher) (*nats.Conn, error) {
 	if p == nil {
 		return nil, errors.New("nats publisher is nil — events.enabled likely false")
 	}
@@ -77,7 +89,7 @@ func JetStream(p Publisher) (jetstream.JetStream, error) {
 	if nc == nil {
 		return nil, errors.New("publisher has no NATS connection")
 	}
-	return jetstream.New(nc)
+	return nc, nil
 }
 
 // Connect dials NATS using the auth knobs the operator filled in. Returns

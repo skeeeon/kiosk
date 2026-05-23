@@ -96,3 +96,48 @@ func InventoryAdjustFilter() string {
 func IntegrityRebuildFilter() string {
 	return SubjectPrefix() + ".*.integrity.rebuild"
 }
+
+// CommandSubject builds the subject for a controller→kiosk command targeting
+// a specific kiosk: "<prefix>.<kiosk_code>.command.<name>". Commands ride
+// core NATS request/reply, not JetStream — they are synchronous, single
+// attempt, and should fail fast when the kiosk is offline rather than queue
+// indefinitely. The kiosk replies on msg.Reply with a JSON outcome.
+func CommandSubject(kioskCode, name string) string {
+	return fmt.Sprintf("%s.%s.command.%s", SubjectPrefix(), kioskCode, name)
+}
+
+// CommandSubscribePattern is the subscription pattern a kiosk uses to receive
+// all commands addressed to it. New command names are absorbed by the same
+// subscription — the kiosk's dispatcher routes on the suffix.
+func CommandSubscribePattern(kioskCode string) string {
+	return fmt.Sprintf("%s.%s.command.>", SubjectPrefix(), kioskCode)
+}
+
+// InventoryAdjustCommandSubject is the controller→kiosk command that mutates
+// the kiosk's items.quantity_on_hand. Idempotent via command_id; same
+// underlying business logic as the local /api/kiosk/items/{id}/adjust path.
+func InventoryAdjustCommandSubject(kioskCode string) string {
+	return CommandSubject(kioskCode, "inventory.adjust")
+}
+
+// InventorySnapshotCommandSubject is the controller→kiosk read-only command
+// that returns the kiosk's current on-hand quantities for one or more items.
+// Used by the controller SPA's inventory panel to display live values
+// before/after adjustments.
+func InventorySnapshotCommandSubject(kioskCode string) string {
+	return CommandSubject(kioskCode, "inventory.snapshot")
+}
+
+// HeartbeatSubject is the subject a kiosk publishes a periodic liveness
+// beacon on. Core NATS publish (no JetStream) — last-write-wins, no
+// persistence. The controller subscribes plainly and tracks the most recent
+// beat per kiosk in memory.
+func HeartbeatSubject(kioskCode string) string {
+	return fmt.Sprintf("%s.%s.heartbeat", SubjectPrefix(), kioskCode)
+}
+
+// HeartbeatFilter is the controller-side subscription pattern over every
+// kiosk's heartbeat subject.
+func HeartbeatFilter() string {
+	return SubjectPrefix() + ".*.heartbeat"
+}

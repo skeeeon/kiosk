@@ -15,6 +15,7 @@ import AdminNotificationsView from './views/AdminNotificationsView.vue'
 import AdminNotificationsLogView from './views/AdminNotificationsLogView.vue'
 import AdminScheduledReportsView from './views/AdminScheduledReportsView.vue'
 import AdminKiosksView from './views/AdminKiosksView.vue'
+import AdminKioskDetailView from './views/AdminKioskDetailView.vue'
 import AdminTransactionsView from './views/AdminTransactionsView.vue'
 import AdminCatalogSyncView from './views/AdminCatalogSyncView.vue'
 
@@ -46,6 +47,7 @@ export const router = createRouter({
         // controller binary. On the kiosk binary the views render but their
         // queries hit empty / nonexistent data.
         { path: 'kiosks', name: 'admin-kiosks', component: AdminKiosksView },
+        { path: 'kiosks/:code', name: 'admin-kiosk-detail', component: AdminKioskDetailView, props: true },
         { path: 'transactions', name: 'admin-transactions', component: AdminTransactionsView },
         { path: 'catalog-sync', name: 'admin-catalog-sync', component: AdminCatalogSyncView },
       ],

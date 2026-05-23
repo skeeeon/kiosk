@@ -49,8 +49,21 @@ See [Central controller (kiosk-controller)](#central-controller-kiosk-controller
   decides which SKUs each kiosk stocks, and item keys are namespaced
   `<kiosk_code>.<item_code>` so each kiosk only ever receives its own
   slice. Users remain org-wide. Managed kiosks become read-only on catalog
-  from the admin UI; stock adjustments and other kiosk-local actions
-  remain available.
+  from the admin UI; kiosk-local actions remain available.
+- **Controller→kiosk command bus.** Over the same NATS connection, the
+  controller can drive admin commands at a remote kiosk via core NATS
+  request/reply (not JetStream — single attempt, fail fast when the kiosk
+  is offline). v1 ships two commands: `inventory.adjust` (mutating,
+  idempotent via a server-generated `command_id`) and `inventory.snapshot`
+  (read-only). Same business logic and same `inventory.adjust` audit event
+  as a local adjust; the controller-side audit trail records `source` and
+  `controller_admin_id`.
+- **Heartbeat + online status.** Each managed kiosk publishes a
+  fire-and-forget heartbeat every 45 s on `<prefix>.<kiosk_code>.heartbeat`
+  (core NATS, no JetStream). The controller keeps an in-memory map and
+  serves it at `GET /api/controller/kiosks/heartbeats`, so the controller
+  admin SPA shows three-state online/stale/offline badges that don't depend
+  on the kiosk having actually transacted recently.
 
 ## Architecture
 
@@ -104,23 +117,28 @@ kiosk/
 ├── internal/
 │   ├── cart/                    In-memory cart store + tests
 │   ├── catalog/                 Cross-fleet payload shape; kiosk-side KV watcher + projector + tests
+│   ├── commands/                Kiosk-side NATS command dispatcher; inventory.adjust + inventory.snapshot handlers + tests
 │   ├── commit/                  Cart-to-transaction orchestrator + tests
 │   ├── config/                  YAML loader + env overrides (shared between binaries)
-│   ├── controller/              Controller-side aggregator, catalog publisher, membership helpers, seed-catalog subcommand + tests
-│   ├── events/                  Publish() + NATS publisher + JetStream accessor + tests
+│   ├── controller/              Controller-side aggregator, catalog publisher, membership helpers, heartbeat registry, inventory command endpoints, seed-catalog subcommand + tests
+│   ├── dberr/                   Tiny shared helpers: IsNotFound, IsUniqueViolation
+│   ├── events/                  Publish() + NATS publisher + JetStream/Conn accessors + tests
 │   ├── handlers/                HTTP handlers for /api/kiosk/* + tests
+│   ├── heartbeat/               Kiosk-side periodic heartbeat goroutine
 │   ├── kioskctx/                Process-global kiosk identity
 │   └── scan/                    Scan resolver + tests
 ├── migrations/                  Schema-as-code; runs on startup
-│   ├── 1779000000_init.go            Six base collections + bootstrap admin
-│   ├── 1779235200_*.go               created/updated autodate fields
-│   ├── 1779400000_*.go               items.quantity_on_hand / reorder_threshold
-│   ├── 1779500000_*.go               item_instances + FK backfill
-│   ├── 1779600000_*.go               stock_adjustments collection
-│   ├── 1779700000_*.go               transactions.lines_count denormalization
-│   ├── 1779800000_*.go               Drop vestigial items.rfid_epc / items.serial
-│   ├── 2000000000_controller_*.go    Controller-only: kiosks registry + source_* fields
-│   └── 2000100000_add_kiosk_items.go Controller-only: kiosk_items membership + open kiosks.CreateRule
+│   ├── 1779000000_init.go                       Six base collections + bootstrap admin
+│   ├── 1779235200_*.go                          created/updated autodate fields
+│   ├── 1779400000_*.go                          items.quantity_on_hand / reorder_threshold
+│   ├── 1779500000_*.go                          item_instances + FK backfill
+│   ├── 1779600000_*.go                          stock_adjustments collection
+│   ├── 1779700000_*.go                          transactions.lines_count denormalization
+│   ├── 1779800000_*.go                          Drop vestigial items.rfid_epc / items.serial
+│   ├── 1787000000_stock_adjust_remote.go        source / controller_admin_id / command_id on stock_adjustments
+│   ├── 2000000000_controller_*.go               Controller-only: kiosks registry + source_* fields
+│   ├── 2000100000_add_kiosk_items.go            Controller-only: kiosk_items membership + open kiosks.CreateRule
+│   └── 2000200000_kiosks_last_transaction_at.go Controller-only: kiosks.last_transaction_at
 ├── ui/                          Vue 3 SPA source (Vite project)
 │   └── src/
 │       ├── components/          Dialog primitives + cart UI
@@ -371,9 +389,15 @@ Tested modules:
   per-instance return targeting, and the policy flags (cross-user /
   uncorrelated rejection).
 - `internal/handlers` — stock-adjustment transaction (delta/absolute, audit
-  row written, empty reason rejected, item-not-found).
+  row written, empty reason rejected, item-not-found, controller-source
+  routes to `controller_admin_id`, idempotent replay by `command_id`
+  returns prior result without re-applying).
 - `internal/events` — `Publish()` invokes any installed publisher; nil
   publisher is a no-op (NATS path covered by manual smoke).
+- `internal/commands` — kiosk command dispatcher: inventory.adjust happy
+  path, every validation guard (missing fields, unknown item, bad mode),
+  idempotent replay; inventory.snapshot all-items + filter-by-codes;
+  subject-suffix routing.
 - `internal/catalog` — payload round-trip with banned-field assertions; the
   watcher's `upsertItem`/`upsertUser` against a real PB DB (verifies that
   kiosk-local `quantity_on_hand` survives a catalog update); soft-delete
@@ -381,9 +405,11 @@ Tested modules:
 - `internal/controller` — idempotent transaction + line projection under
   redelivery; "parent not yet here" produces a retry; unknown user/item
   skipped with ack; `TouchKiosk` auto-registers on first sight and
-  advances `last_seen` on subsequent events. `KiosksForItem` /
-  `ItemsForKiosk` membership helpers plus cascade-delete verification on
-  `kiosk_items`.
+  advances `last_transaction_at` on subsequent transaction.complete events.
+  `KiosksForItem` / `ItemsForKiosk` membership helpers plus cascade-delete
+  verification on `kiosk_items`. Heartbeat registry: record/snapshot,
+  IsLikelyOnline thresholds, auto-register on first beat (once),
+  malformed-payload tolerance.
 
 ## API reference
 
@@ -410,6 +436,9 @@ All custom endpoints serve the kiosk checkout flow or admin operations. PB's
 | `GET` | `/api/kiosk/transactions.csv` | admin | Export completed transactions as CSV (optional `from=` / `to=` ISO8601 query params) |
 | `GET` | `/api/kiosk/catalog/integrity` | admin | **Controller only.** Diff catalog DB vs JetStream KV; returns `missing_in_kv` + `extra_in_kv` per bucket |
 | `POST` | `/api/kiosk/catalog/reconcile` | admin | **Controller only.** Push DB → KV (always); delete orphaned KV keys when body `{delete_orphans: true}` |
+| `GET` | `/api/controller/kiosks/heartbeats` | admin | **Controller only.** Returns `{controller_started_at, kiosks: {code: lastSeenISO}}` — the SPA polls every 10s to render online/stale/offline badges |
+| `GET` | `/api/controller/kiosks/{code}/inventory` | admin | **Controller only.** Fires the `inventory.snapshot` command over NATS request/reply; returns the kiosk's live on-hand for every stocked item. 503 `{error: "kiosk_offline", kiosk_code}` when stale heartbeat or NATS timeout. |
+| `POST` | `/api/controller/kiosks/{code}/inventory/adjust` | admin | **Controller only.** Server-generates a `command_id`, fires `inventory.adjust` to the kiosk over NATS request/reply. Body: `{item_code, mode, value, reason}`. Idempotent via `command_id`; 503 on offline. |
 | `GET` | `/health` | none | Returns `{status: "ok"}` — for liveness probes |
 
 Admin endpoints require a token from the `admins` auth collection in the
@@ -462,6 +491,17 @@ subject space. Subscribe locally with the `nats` CLI to confirm publishing:
 nats sub "kiosk.>"
 ```
 
+Two more NATS subject families exist alongside the events above but don't
+ride JetStream:
+
+| Subject | Direction | Transport |
+|---|---|---|
+| `{prefix}.{kiosk_code}.heartbeat` | kiosk → controller | Core NATS publish, 45s cadence. No persistence — last-write-wins is the entire signal. |
+| `{prefix}.{kiosk_code}.command.<name>` | controller → kiosk | Core NATS request/reply, ≤5 s reply timeout. Today: `inventory.adjust`, `inventory.snapshot`. |
+
+The `KIOSK_EVENTS` stream's `FilterSubjects` deliberately excludes both —
+heartbeats and commands should never be replayed from a durable stream.
+
 ## Schema
 
 Nine collections, defined as code across `migrations/*.go`. The initial
@@ -479,8 +519,8 @@ and audit-log collections, and the controller-only `kiosks` registry and
 | `transactions` | Append-only ledger. `kiosk_code`, `location_code`, `user`, `started_at`, `completed_at`, `status`. |
 | `transaction_lines` | One per item action within a transaction. `action` is `checkout`, `return`, or `consume`. Carries optional `item_instance` FK for serialized lines. |
 | `open_checkouts` | Materialized view of "what's out right now." One row per unit out. Carries `item_instance` FK for serialized units. Maintained by the commit hook. |
-| `stock_adjustments` | Append-only audit log of changes to `items.quantity_on_hand` made via `/api/kiosk/items/{id}/adjust`. Stores `delta`, `new_quantity` (snapshot), `reason`, and the responsible `admin`. |
-| `kiosks` | **Controller-only.** Registry of every kiosk in the fleet. A row appears either when an admin pre-registers the kiosk via the "New kiosk" button on AdminKiosksView, or auto-populated with `status=unknown` the first time the aggregator sees an event from a new `kiosk_code`. `last_seen` advances on every event. Used for fleet visibility and as the join target when expanding aggregated transactions to "which kiosk did this come from?" |
+| `stock_adjustments` | Append-only audit log of changes to `items.quantity_on_hand` made via `/api/kiosk/items/{id}/adjust` (local) or the controller's `inventory.adjust` command bus (remote). Stores `delta`, `new_quantity` (snapshot), `reason`, the responsible `admin` (FK, populated for `source=local`), `source` ('local' \| 'controller'), `controller_admin_id` (text — controller's admin id, populated for `source=controller`), and `command_id` (UUID, unique-when-non-empty for idempotent replay of remote commands). |
+| `kiosks` | **Controller-only.** Registry of every kiosk in the fleet. A row appears either when an admin pre-registers the kiosk via the "New kiosk" button on AdminKiosksView, auto-populated with `status=unknown` the first time the aggregator sees a `transaction.complete` from a new `kiosk_code`, or auto-populated on the first heartbeat. `last_transaction_at` advances on `transaction.complete` only (its name finally matches its meaning now that heartbeat owns general liveness); `last_seen` writes alongside it for one release as a deprecation window. Used for fleet visibility and as the join target when expanding aggregated transactions to "which kiosk did this come from?" |
 | `kiosk_items` | **Controller-only.** Membership rows tying items to kiosks. One row = one (kiosk, item) pair = "this kiosk stocks that SKU." Cascade-deletes from either side. Drives per-kiosk catalog publishing; absent rows mean the kiosk never receives that item over JetStream KV. |
 
 The controller's `transactions` and `transaction_lines` collections carry
@@ -488,9 +528,11 @@ two extra fields not present on standalone kiosks:
 `source_kiosk_code` + `source_transaction_id` on transactions (unique pair
 index, idempotency key for redelivery) and `source_line_id` on
 transaction_lines (unique-when-non-empty index). These — along with the
-`kiosks` and `kiosk_items` collections — are added by two controller-only
-migrations (`2000000000_controller_collections.go` and
-`2000100000_add_kiosk_items.go`), both registered via a single
+`kiosks` and `kiosk_items` collections plus `kiosks.last_transaction_at` —
+are added by three controller-only migrations
+(`2000000000_controller_collections.go`,
+`2000100000_add_kiosk_items.go`, and
+`2000200000_kiosks_last_transaction_at.go`), all registered via a single
 `sync.Once` body in `RegisterControllerMigrations`. The plain kiosk binary
 never invokes it, so its DB never gets these.
 
@@ -666,6 +708,35 @@ quantity is at or below its `reorder_threshold`. For serialized SKUs,
 for quantity items, it's `quantity_on_hand − count(open_checkouts)`;
 for consumables, just `quantity_on_hand`.
 
+### Adjusting stock from the controller (remote)
+
+Controller admins can adjust a kiosk's stock without walking to it. From
+the controller's **Kiosks → \<kiosk\> → Inventory** tab, the SPA fetches a
+live snapshot (`inventory.snapshot` over NATS) and offers a per-row
+**Adjust** button that opens the same delta/absolute/reason dialog.
+Submitting fires the `inventory.adjust` command at the target kiosk; the
+kiosk runs the same `PerformStockAdjustment` business logic the local
+endpoint uses, writes a `stock_adjustments` row with `source='controller'`
+and the controller admin's id in `controller_admin_id`, and publishes the
+usual `inventory.adjust` event back through JetStream. The controller-side
+audit log therefore sees one event shape regardless of origin.
+
+Failure modes:
+
+- **Kiosk offline.** When the kiosk's last heartbeat is older than 90 s,
+  the controller endpoint short-circuits with **503 `{error:
+  "kiosk_offline", kiosk_code, command_id}`** before even publishing —
+  the SPA renders "kiosk offline" in ~1 s instead of waiting for a NATS
+  timeout. Same body is returned when the NATS request itself times out
+  (5 s) or hits `nats.ErrNoResponders`.
+- **Retry / duplicate submission.** If the SPA times out waiting for the
+  reply but the kiosk actually processed the command, retrying with the
+  same `command_id` is safe — the kiosk's idempotency check on
+  `stock_adjustments.command_id` returns the prior result instead of
+  re-applying. The controller currently generates one UUID per submit
+  click; the future "reconcile" tool will accept an external `command_id`
+  for explicit replay.
+
 ### Managing instances of serialized tools
 
 In the admin SPA, opening (or creating + saving) a serialized item shows
@@ -759,24 +830,52 @@ catalog plus a unified transaction ledger.
   every incoming event into its own `transactions` / `transaction_lines`
   rows. Idempotency keys (`source_kiosk_code + source_transaction_id` on
   transactions, `source_line_id` on lines) make redelivery safe.
-- **Kiosks registry.** Two ways a kiosk gets a row in the controller's
+- **Kiosks registry.** Three ways a kiosk gets a row in the controller's
   `kiosks` collection: (1) **pre-registered** by an admin via the "New
   kiosk" button on AdminKiosksView — required if you want to assign items
   before the kiosk has phoned home; (2) **self-registered** the first time
-  the aggregator sees an event from a `kiosk_code` it doesn't know — a row
-  is auto-created with `status=unknown`. Either way, `last_seen` advances
-  on every message so the controller's admin UI shows fleet liveness at a
-  glance.
+  the aggregator sees a `transaction.complete` event from a `kiosk_code`
+  it doesn't know; (3) **heartbeat auto-register** — the first heartbeat
+  from a new kiosk also creates the row, so kiosks that haven't yet
+  transacted still appear in the registry. All three converge on the same
+  row with `status=unknown`. `last_transaction_at` advances on
+  `transaction.complete` only; live online status comes from the in-memory
+  heartbeat map (see below), not from the persisted timestamp.
+- **Heartbeat + online status.** Each managed kiosk publishes a small
+  JSON beacon on `{prefix}.{kiosk_code}.heartbeat` every 45 s using core
+  NATS (not JetStream — missing a beat is the entire point of the
+  signal). The controller subscribes plainly, keeps a mutex-guarded
+  `map[code]time.Time` in memory, and serves it at
+  `GET /api/controller/kiosks/heartbeats`. The SPA polls every 10 s and
+  renders three-state badges: **online** (<90 s), **stale** (90 s–5 min),
+  **offline** (>5 min). For ~90 s after a controller restart the SPA
+  shows "unknown" to avoid painting a fleet red while beats catch up.
+- **Inventory commands** (`POST /api/controller/kiosks/{code}/inventory/adjust`,
+  `GET /api/controller/kiosks/{code}/inventory`). The controller proxies
+  admin clicks to the target kiosk over core NATS request/reply on
+  `{prefix}.{kiosk_code}.command.<name>`. The kiosk runs the same
+  `PerformStockAdjustment` business logic the local HTTP path does, then
+  publishes the same `inventory.adjust` event the aggregator already
+  knows about. Idempotency is server-side: the controller generates a UUID
+  `command_id`; the kiosk's `stock_adjustments` schema has it as a unique
+  column, so a retried command returns the prior result instead of
+  double-applying. The endpoints fast-fail with **503 `{error:
+  "kiosk_offline", kiosk_code, command_id}`** when the kiosk's heartbeat
+  is stale, so the SPA doesn't wait 5 s for a NATS timeout to render
+  "offline."
 
 What it **doesn't** do in v1 (deliberately out of scope):
 
-- Inventory adjustments upstream (`stock_adjustments` stays kiosk-local).
 - Drift detection / state-hash compare between controller and kiosk.
-- A command channel (controller → kiosk: force resync, lock kiosk, etc.).
+- Controller-side per-kiosk `quantity_on_hand` projection (the
+  `inventory.adjust` event still acks-and-logs at the aggregator; a
+  fleet-wide low-stock view would consume it).
 - Cross-fleet movement of serialized items.
 - Tightening PB collection rules on managed kiosks (the projector uses
   the DAO, so rules don't matter; UI gating handles the admin experience).
-- Low-stock reporting at the controller.
+- Other remote admin commands — only inventory adjust + snapshot ship in
+  v1. The dispatcher's `HandleFunc` registry makes adding a new command a
+  one-handler change.
 
 ### NATS provisioning
 
@@ -829,21 +928,35 @@ cp controller.yaml.example controller.yaml      # set nats.url + auth
 ```
 
 The controller binary uses the **same** `migrations/` package as the kiosk
-plus two controller-only migrations (`2000000000_controller_collections.go`
-and `2000100000_add_kiosk_items.go`) that are registered explicitly via
-`migrations.RegisterControllerMigrations()` from `cmd/controller/main.go`
-— the kiosk binary never calls it. The controller's data dir is
-`pb_data_controller/` so a kiosk and controller can co-exist in one
-working directory during development without colliding.
+plus three controller-only migrations
+(`2000000000_controller_collections.go`,
+`2000100000_add_kiosk_items.go`, and
+`2000200000_kiosks_last_transaction_at.go`) that are registered explicitly
+via `migrations.RegisterControllerMigrations()` from
+`cmd/controller/main.go` — the kiosk binary never calls it. The controller's
+data dir is `pb_data_controller/` so a kiosk and controller can co-exist in
+one working directory during development without colliding.
 
 The controller's PocketBase admin UI lives at the same paths as a kiosk's:
-`/_/` for the PB superuser, `/admin/login` for the kiosk admin. Use it to
-add/edit items and users; user edits fan out to every managed kiosk. Item
-edits fan out only to the kiosks that stock them — open a kiosk in the
-Kiosks view and use the "Stocked items" panel (or "Bulk add by category")
-to assign SKUs first. The Items view also shows a "Stocked at" chip list
-inside each item's edit dialog so you can see the inverse projection at a
-glance.
+`/_/` for the PB superuser, `/admin/login` for the kiosk admin. The Kiosks
+list view (`/admin/kiosks`) shows the fleet with online badges; clicking
+a row opens the per-kiosk detail view at `/admin/kiosks/<code>`, which has
+three tabs:
+
+- **Overview** — editable location, status, and notes; the live online
+  indicator and last-transaction timestamp.
+- **Items** — the "Stocked items" membership panel (lifted from the old
+  dialog).
+- **Inventory** — fetches a live snapshot of on-hand quantities from the
+  kiosk via the `inventory.snapshot` NATS command, with a per-row Adjust
+  button that drives the corresponding `inventory.adjust` command.
+
+Use the Items view to add/edit items globally; user edits fan out to every
+managed kiosk. Item edits fan out only to the kiosks that stock them —
+open a kiosk's detail page and use the Items tab (or "Bulk add by
+category") to assign SKUs first. The Items view shows a "Stocked at" chip
+list inside each item's edit dialog so you can see the inverse projection
+at a glance.
 
 ### Assigning items to kiosks
 
@@ -852,8 +965,9 @@ kiosk stocks. There are two paths in the admin UI:
 
 1. **New kiosk button** on AdminKiosksView pre-registers a kiosk record by
    `kiosk_code` + `location_code` before the kiosk itself has phoned home.
-   This unblocks the next step on day-one deployments.
-2. **Stocked items panel** inside each kiosk's edit dialog. From there:
+   This unblocks the next step on day-one deployments. After creation, the
+   SPA navigates straight to the new kiosk's detail page.
+2. **Items tab** on the kiosk detail page (`/admin/kiosks/<code>`). From there:
    - **Add item** — search the global catalog and click an item to add it.
    - **Bulk add by category** — pick a category, preview the matching SKUs,
      confirm. The result is just rows in `kiosk_items` — there is no stored
@@ -1029,6 +1143,28 @@ These started as deferred roadmap items and are now live in the binary:
   category" snapshot action, plus a "Stocked at" reverse view on each
   item. Kiosks can also be pre-registered by an admin before they phone
   home so memberships can be assigned ahead of time.
+- **Controller→kiosk command bus.** Core NATS request/reply (not
+  JetStream) under `{prefix}.{kiosk_code}.command.<name>`. Two commands
+  ship in v1: `inventory.adjust` (mutating, idempotent via a
+  server-generated `command_id` unique-indexed on `stock_adjustments`)
+  and `inventory.snapshot` (read-only). Controller endpoints
+  fast-fail with 503 when the kiosk's heartbeat is stale, and pass the
+  kiosk's reply through unchanged to the SPA.
+- **Heartbeat + online status.** Each kiosk publishes a 45 s heartbeat on
+  `{prefix}.{kiosk_code}.heartbeat` (core NATS, no persistence). The
+  controller keeps an in-memory map and exposes
+  `GET /api/controller/kiosks/heartbeats`; the SPA polls every 10 s and
+  renders online/stale/offline badges in the list view and on the
+  per-kiosk detail page.
+- **Kiosk detail page.** New `/admin/kiosks/<code>` route on the
+  controller SPA replaces the cramped edit dialog. Three tabs (Overview,
+  Items, Inventory) gather all per-kiosk admin work behind a single deep
+  link. The old `KioskDialog` shrank to create-only.
+- **`kiosks.last_transaction_at`.** New field that means what its name
+  says: "when did this kiosk last actually transact?" `touchKiosk` is
+  now narrowed to `transaction.complete` events only — general liveness
+  moved to the heartbeat. `last_seen` writes alongside it for one
+  release as a deprecation window.
 
 ## Roadmap
 
@@ -1036,21 +1172,31 @@ Items below are still intentionally deferred. Schema and event subjects are
 in place to make them additive rather than rewrites.
 
 - **Controller-side qty projection.** The kiosk already publishes
-  `{prefix}.{kiosk_code}.inventory.adjust` for every admin adjustment, and
-  the controller ack-and-logs it. What's still deferred is projecting those
-  adjustments (and `item.checkout` / `item.consume` qty deltas) into a
-  controller-side per-kiosk `quantity_on_hand` so the controller has a
-  fleet-wide low-stock view without polling each kiosk.
+  `{prefix}.{kiosk_code}.inventory.adjust` for every admin adjustment
+  (local or controller-driven), and the controller ack-and-logs it. What's
+  still deferred is projecting those adjustments (and `item.checkout` /
+  `item.consume` qty deltas) into a controller-side per-kiosk
+  `quantity_on_hand` so the controller has a fleet-wide low-stock view
+  without re-querying each kiosk via `inventory.snapshot`.
+- **More remote commands.** The command bus and dispatcher are in place
+  (`internal/commands/`); v1 wires inventory adjust + snapshot. Natural
+  next commands: force a catalog resync, lock a kiosk to a holding
+  screen, integrity rebuild from the controller, ledger republish.
+  Each is a single handler on the kiosk side plus a controller endpoint
+  that fires `nc.Request` at the appropriate subject.
 - **Drift detection.** Periodic state-hash compare between controller and
   each kiosk; surface discrepancies in the controller admin UI for triage.
-- **Command channel.** Controller → kiosk subjects for one-off actions
-  (force resync, lock kiosk to a holding screen, push a config nudge).
 - **Cross-fleet movement of serialized items.** Move a specific
   `item_instances` row from kiosk A to kiosk B with central as the
   arbiter — one serial belongs to one kiosk at a time.
 - **Tighten PB collection rules in managed mode.** UI gating is the v1
   story; a follow-up could lock the collection rules themselves so a
   determined admin poking PB directly can't drift the catalog.
+- **Per-subject NATS ACLs.** Today any holder of the NATS credentials can
+  publish to `{prefix}.*.command.>`. Locking the command pattern to
+  controller-only credentials (and the event subjects to kiosk-only
+  credentials) is a deployment-time tightening worth doing before any
+  multi-tenant scenario.
 - **RFID reader integration.** Impinj reader publishes scans to
   `kiosk.{kiosk_code}.scan.rfid`. The scan dispatcher already resolves
   `rfid_epc` against `item_instances` — no new dispatch logic needed.

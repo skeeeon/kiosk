@@ -191,19 +191,19 @@ func (a *Aggregator) handle(ctx context.Context, msg jetstream.Msg) {
 		return
 	}
 
-	// Touch the kiosks registry on every message — this is how operators
-	// discover newly-deployed kiosks and how liveness is surfaced.
-	if err := a.touchKiosk(payload.KioskCode, payload.LocationCode); err != nil {
-		// DB hiccup — let JetStream retry the whole event rather than
-		// half-process.
-		slog.Warn("controller.aggregator.touch_kiosk_failed",
-			"kiosk_code", payload.KioskCode, "error", err)
-		_ = msg.Nak()
-		return
-	}
-
+	// touchKiosk is now narrowed to transaction.complete only: the kiosks
+	// row's last_transaction_at reflects the field's name, and the in-memory
+	// heartbeat registry owns general liveness. Auto-registration for kiosks
+	// that haven't transacted yet happens on first heartbeat instead (see
+	// internal/controller/heartbeats.go).
 	switch {
 	case strings.HasSuffix(subject, ".transaction.complete"):
+		if err := a.touchKiosk(payload.KioskCode, payload.LocationCode); err != nil {
+			slog.Warn("controller.aggregator.touch_kiosk_failed",
+				"kiosk_code", payload.KioskCode, "error", err)
+			_ = msg.Nak()
+			return
+		}
 		a.handleTransactionComplete(msg, payload)
 	case strings.Contains(subject, ".item."):
 		a.handleItemAction(msg, payload)
@@ -400,8 +400,17 @@ func (a *Aggregator) TouchKiosk(kioskCode, locationCode string) error {
 }
 
 // touchKiosk creates the kiosk's registry row if absent (status=unknown) and
-// updates last_seen otherwise. Called on every accepted message so a kiosk's
-// liveness reflects activity, not just connect/disconnect.
+// bumps last_seen + last_transaction_at otherwise. Called from the
+// transaction.complete branch of handle() and from HeartbeatRegistry's
+// auto-register on first beat:
+//
+//   - transaction.complete path → both timestamps reflect a real transaction.
+//   - heartbeat auto-register path → both timestamps point at the first beat,
+//     which is the best signal we have until an actual transaction arrives.
+//
+// last_seen is the legacy field; new code reads last_transaction_at. We
+// write both for one release so any consumers still reading last_seen
+// don't break — a future migration drops it.
 func (a *Aggregator) touchKiosk(kioskCode, locationCode string) error {
 	now := time.Now().UTC()
 	rec, err := a.app.FindFirstRecordByFilter("kiosks",
@@ -412,6 +421,7 @@ func (a *Aggregator) touchKiosk(kioskCode, locationCode string) error {
 	}
 	if rec != nil {
 		rec.Set("last_seen", now)
+		rec.Set("last_transaction_at", now)
 		return a.app.Save(rec)
 	}
 
@@ -423,6 +433,7 @@ func (a *Aggregator) touchKiosk(kioskCode, locationCode string) error {
 	rec.Set("kiosk_code", kioskCode)
 	rec.Set("location_code", locationCode)
 	rec.Set("last_seen", now)
+	rec.Set("last_transaction_at", now)
 	rec.Set("status", "unknown")
 	return a.app.Save(rec)
 }

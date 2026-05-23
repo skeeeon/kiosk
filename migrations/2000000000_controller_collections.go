@@ -37,6 +37,10 @@ func RegisterControllerMigrations() {
 		// file but registers in the same sync.Once so a process never
 		// double-registers either migration.
 		RegisterKioskItemsMigration()
+		// last_transaction_at on the kiosks collection — replaces last_seen
+		// as the per-kiosk "when did this kiosk last actually transact"
+		// signal once heartbeat takes over liveness duty.
+		RegisterKiosksLastTransactionAtMigration()
 	})
 }
 

@@ -89,7 +89,7 @@ func TestPerformStockAdjustment_Delta(t *testing.T) {
 	app := setupApp(t)
 	s := seedItemAndAdmin(t, app, 10)
 
-	r, err := handlers.PerformStockAdjustment(app, s.ItemID, s.AdminID, "delta", 5, "restock from PO-42")
+	r, err := handlers.PerformStockAdjustment(app, s.ItemID, s.AdminID, handlers.SourceLocal, "", "delta", 5, "restock from PO-42")
 	if err != nil {
 		t.Fatalf("adjust: %v", err)
 	}
@@ -121,7 +121,7 @@ func TestPerformStockAdjustment_Absolute(t *testing.T) {
 	app := setupApp(t)
 	s := seedItemAndAdmin(t, app, 12)
 
-	r, err := handlers.PerformStockAdjustment(app, s.ItemID, s.AdminID, "absolute", 50, "physical count")
+	r, err := handlers.PerformStockAdjustment(app, s.ItemID, s.AdminID, handlers.SourceLocal, "", "absolute", 50, "physical count")
 	if err != nil {
 		t.Fatalf("adjust: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestPerformStockAdjustment_DownToNegative_Allowed(t *testing.T) {
 	app := setupApp(t)
 	s := seedItemAndAdmin(t, app, 2)
 
-	_, err := handlers.PerformStockAdjustment(app, s.ItemID, s.AdminID, "delta", -5, "found broken box")
+	_, err := handlers.PerformStockAdjustment(app, s.ItemID, s.AdminID, handlers.SourceLocal, "", "delta", -5, "found broken box")
 	if err != nil {
 		t.Fatalf("adjust: %v", err)
 	}
@@ -157,7 +157,7 @@ func TestPerformStockAdjustment_EmptyReason_Rejected(t *testing.T) {
 	app := setupApp(t)
 	s := seedItemAndAdmin(t, app, 10)
 
-	_, err := handlers.PerformStockAdjustment(app, s.ItemID, s.AdminID, "delta", 1, "")
+	_, err := handlers.PerformStockAdjustment(app, s.ItemID, s.AdminID, handlers.SourceLocal, "", "delta", 1, "")
 	if err == nil {
 		t.Fatal("expected error for empty reason")
 	}
@@ -167,8 +167,102 @@ func TestPerformStockAdjustment_ItemNotFound(t *testing.T) {
 	app := setupApp(t)
 	s := seedItemAndAdmin(t, app, 10)
 
-	_, err := handlers.PerformStockAdjustment(app, "no-such-item", s.AdminID, "delta", 1, "x")
+	_, err := handlers.PerformStockAdjustment(app, "no-such-item", s.AdminID, handlers.SourceLocal, "", "delta", 1, "x")
 	if err == nil {
 		t.Fatal("expected error for missing item")
+	}
+}
+
+// TestPerformStockAdjustment_ControllerSource verifies that a controller-driven
+// adjustment writes to controller_admin_id (not the local admin FK) and
+// records source='controller'. The actorID here is a plain string — it
+// represents a controller admin who does NOT exist in the kiosk's PB.
+func TestPerformStockAdjustment_ControllerSource(t *testing.T) {
+	app := setupApp(t)
+	s := seedItemAndAdmin(t, app, 10)
+	const ctrlAdminID = "controller-admin-xyz"
+	const cmdID = "cmd-abc-123"
+
+	r, err := handlers.PerformStockAdjustment(app, s.ItemID, ctrlAdminID,
+		handlers.SourceController, cmdID, "delta", 7, "remote restock")
+	if err != nil {
+		t.Fatalf("adjust: %v", err)
+	}
+	if r.Delta != 7 || r.NewQuantity != 17 {
+		t.Errorf("result: got %+v, want delta=7 new=17", r)
+	}
+
+	adj := latestAdjustmentFor(t, app, s.ItemID)
+	if adj.GetString("admin") != "" {
+		t.Errorf("admin FK should be empty for controller source, got %q", adj.GetString("admin"))
+	}
+	if adj.GetString("controller_admin_id") != ctrlAdminID {
+		t.Errorf("controller_admin_id: want %q, got %q", ctrlAdminID, adj.GetString("controller_admin_id"))
+	}
+	if adj.GetString("source") != handlers.SourceController {
+		t.Errorf("source: want %q, got %q", handlers.SourceController, adj.GetString("source"))
+	}
+	if adj.GetString("command_id") != cmdID {
+		t.Errorf("command_id: want %q, got %q", cmdID, adj.GetString("command_id"))
+	}
+}
+
+// TestPerformStockAdjustment_IdempotentReplay verifies that a repeated
+// command_id returns the prior result without re-applying the adjustment.
+// This is the controller-retry safety net: if the kiosk processed a
+// command but the reply didn't make it back, the controller retries with
+// the same command_id and gets the same answer.
+func TestPerformStockAdjustment_IdempotentReplay(t *testing.T) {
+	app := setupApp(t)
+	s := seedItemAndAdmin(t, app, 10)
+	const ctrlAdminID = "controller-admin-xyz"
+	const cmdID = "cmd-idempotent-1"
+
+	first, err := handlers.PerformStockAdjustment(app, s.ItemID, ctrlAdminID,
+		handlers.SourceController, cmdID, "delta", 5, "first attempt")
+	if err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+
+	// Same command_id, different mode/value/reason — the result must be
+	// the prior result, and the item must not have moved a second time.
+	second, err := handlers.PerformStockAdjustment(app, s.ItemID, ctrlAdminID,
+		handlers.SourceController, cmdID, "delta", 999, "would-be retry")
+	if err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	if second.AdjustmentID != first.AdjustmentID {
+		t.Errorf("replay returned different adjustment row: first=%s second=%s",
+			first.AdjustmentID, second.AdjustmentID)
+	}
+	if second.Delta != first.Delta || second.NewQuantity != first.NewQuantity {
+		t.Errorf("replay result diverged: first=%+v second=%+v", first, second)
+	}
+
+	item, _ := app.FindRecordById("items", s.ItemID)
+	if got := item.GetInt("quantity_on_hand"); got != 15 {
+		t.Errorf("item qty after replay: want 15 (one application of +5), got %d", got)
+	}
+
+	// Exactly one row should exist for this command_id.
+	rows, err := app.FindRecordsByFilter("stock_adjustments",
+		"command_id = {:c}", "", 0, 0, dbx.Params{"c": cmdID})
+	if err != nil {
+		t.Fatalf("count rows by command_id: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Errorf("rows for command_id %q: want 1, got %d", cmdID, len(rows))
+	}
+}
+
+// TestPerformStockAdjustment_InvalidSource rejects misuse of the new param.
+func TestPerformStockAdjustment_InvalidSource(t *testing.T) {
+	app := setupApp(t)
+	s := seedItemAndAdmin(t, app, 10)
+
+	_, err := handlers.PerformStockAdjustment(app, s.ItemID, s.AdminID, "remote", "",
+		"delta", 1, "x")
+	if err == nil {
+		t.Fatal("expected error for invalid source")
 	}
 }
