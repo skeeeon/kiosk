@@ -128,6 +128,17 @@ func (c OpenChecksDigestContext) PayloadSummary() string {
 	return c.Kiosk.Code + " · " + strconv.Itoa(c.RowsCount) + " open rows"
 }
 
+// DigestEnvelope is the wire shape published over NATS for managed-kiosk
+// scheduled digests. The kiosk computes the context locally (open_checkouts
+// is kiosk-local data the controller doesn't project) and ships it together
+// with the per-schedule recipients spec so the controller can render the
+// fleet-global template AND honor the per-schedule audience. Lives in the
+// notifications package because both sides import it.
+type DigestEnvelope struct {
+	Context    OpenChecksDigestContext `json:"context"`
+	Recipients Recipients              `json:"recipients"`
+}
+
 // BuildReceiptContext assembles the template payload from the values the
 // commit handler has in hand after a successful Commit. The user record is
 // fetched here because the cart only carries id+code+name and templates

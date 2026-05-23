@@ -96,7 +96,7 @@ const navItems = computed<NavItem[]>(() => [
   { name: 'admin-users', label: 'Workers', section: 'catalog' },
   { name: 'admin-groups', label: 'Groups', section: 'catalog' },
   { name: 'admin-reports', label: 'Reports', section: 'ops' },
-  { name: 'admin-notifications', label: 'Notifications', section: 'ops', visible: () => !isController.value },
+  { name: 'admin-notifications', label: 'Notifications', section: 'ops' },
   { name: 'admin-catalog-sync', label: 'Catalog sync', section: 'ops', visible: () => isController.value },
   { name: 'admin-import', label: 'Import', section: 'ops', visible: () => !isController.value && !managed.value },
   { name: 'admin-admins', label: 'Admins', section: 'access' },

@@ -15,6 +15,7 @@ import (
 
 	"github.com/skeeeon/kiosk/internal/config"
 	"github.com/skeeeon/kiosk/internal/exports"
+	"github.com/skeeeon/kiosk/internal/notifications"
 )
 
 // Handlers groups the controller's HTTP endpoints. The set is deliberately
@@ -22,12 +23,13 @@ import (
 // (identity, branding asset, CSV exports). All admin-write CRUD goes through
 // pb.collection('...') on the SPA.
 type Handlers struct {
-	App core.App
-	Cfg *config.Config
+	App      core.App
+	Cfg      *config.Config
+	Notifier *notifications.Notifier
 }
 
-func New(app core.App, cfg *config.Config) *Handlers {
-	return &Handlers{App: app, Cfg: cfg}
+func New(app core.App, cfg *config.Config, notifier *notifications.Notifier) *Handlers {
+	return &Handlers{App: app, Cfg: cfg, Notifier: notifier}
 }
 
 // requireAdmin gates writes/exports behind the admins auth collection — same

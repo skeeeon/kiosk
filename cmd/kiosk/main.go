@@ -151,9 +151,35 @@ func main() {
 	// Scheduled reports register their cron jobs at boot and react to
 	// record-hook changes thereafter — adding/editing/deleting a row in
 	// the SPA reflects in app.Cron() without a restart.
-	scheduler.BindRecordHooks(app, notifier)
+	//
+	// In managed mode the scheduler computes the digest locally (it needs
+	// open_checkouts state, which only the kiosk has) but publishes a
+	// notifications.DigestEnvelope over NATS so the controller does the
+	// actual SMTP send and writes its own send_log row. In standalone
+	// mode the local Notifier owns the full send path as before.
+	var send scheduler.Sender = notifier.SendTo
+	if cfg.Controller.Enabled {
+		kioskCode := cfg.Kiosk.Code
+		send = func(eventType string, data any, recipients notifications.Recipients) error {
+			digestCtx, ok := data.(notifications.OpenChecksDigestContext)
+			if !ok {
+				return fmt.Errorf("managed-mode scheduler: unsupported payload type %T for event %q",
+					data, eventType)
+			}
+			events.Publish(
+				events.OpenChecksDigestSubject(kioskCode),
+				notifications.DigestEnvelope{Context: digestCtx, Recipients: recipients},
+			)
+			// events.Publish is fire-and-forget — slogs on failure, no
+			// error return. Treat a publish as "accepted" for the schedule
+			// row's last_status; the actual send outcome lives on the
+			// controller's notification_send_log.
+			return nil
+		}
+	}
+	scheduler.BindRecordHooks(app, send)
 	app.OnServe().BindFunc(func(e *core.ServeEvent) error {
-		scheduler.RegisterEnabled(app, notifier)
+		scheduler.RegisterEnabled(app, send)
 		return e.Next()
 	})
 

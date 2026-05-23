@@ -16,6 +16,7 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 
 	"github.com/skeeeon/kiosk/internal/events"
+	"github.com/skeeeon/kiosk/internal/notifications"
 )
 
 // consumerName is the durable consumer name. Durability means restarts
@@ -79,8 +80,22 @@ type Aggregator struct {
 	js         jetstream.JetStream
 	streamName string
 
+	// notifier is optional. When set, receipt.transaction and alert.lowstock
+	// events on the stream are dispatched to it for rendering + SMTP send
+	// against the controller's centrally-edited template rows. Wired via
+	// SetNotifier from cmd/controller/main after the app is bootstrapped.
+	notifier *notifications.Notifier
+
 	cancelCtx context.CancelFunc
 	consumeCC jetstream.ConsumeContext
+}
+
+// SetNotifier installs the notifier that handles receipt.transaction and
+// alert.lowstock events. Must be called before Start. Nil disables the
+// notifier dispatch (the consumer still ack/Term's those events to keep the
+// stream draining; no email goes out).
+func (a *Aggregator) SetNotifier(n *notifications.Notifier) {
+	a.notifier = n
 }
 
 // NewAggregator wires the aggregator. Doesn't connect or subscribe yet —
@@ -180,6 +195,13 @@ func (a *Aggregator) ensureConsumer(ctx context.Context, stream jetstream.Stream
 			events.ItemActionFilter(),
 			events.InventoryAdjustFilter(),
 			events.IntegrityRebuildFilter(),
+			// Notification subjects published by managed kiosks. The
+			// controller renders + sends from its own template rows so
+			// SMTP credentials and recipient lists live centrally rather
+			// than on every kiosk.
+			events.ReceiptTransactionFilter(),
+			events.LowStockAlertFilter(),
+			events.OpenChecksDigestFilter(),
 		},
 	}
 	return stream.CreateOrUpdateConsumer(ctx, cfg)
@@ -190,6 +212,23 @@ func (a *Aggregator) ensureConsumer(ctx context.Context, stream jetstream.Stream
 // user/item) — retrying won't change the outcome.
 func (a *Aggregator) handle(ctx context.Context, msg jetstream.Msg) {
 	subject := msg.Subject()
+
+	// Notification subjects carry nested context payloads (ReceiptContext,
+	// LowStockContext) that don't fit the flat EventPayload shape used by
+	// ledger projection. Dispatch them here, before the flat decode + the
+	// KioskCode guard that would otherwise reject them.
+	switch {
+	case strings.HasSuffix(subject, ".receipt.transaction"):
+		a.handleReceiptTransaction(msg)
+		return
+	case strings.HasSuffix(subject, ".alert.lowstock"):
+		a.handleLowStockAlert(msg)
+		return
+	case strings.HasSuffix(subject, ".digest.open_checkouts"):
+		a.handleOpenChecksDigest(msg)
+		return
+	}
+
 	var payload EventPayload
 	if err := unmarshalMsg(msg, &payload); err != nil {
 		slog.Warn("controller.aggregator.bad_payload",

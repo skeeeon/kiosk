@@ -228,16 +228,28 @@ func (h *Handlers) CartCommit(re *core.RequestEvent) error {
 		return re.InternalServerError("commit failed", err)
 	}
 
-	// Fire the receipt email asynchronously. BuildReceiptContext does one
-	// extra users-table read for the email address; failures there log and
-	// drop the receipt without affecting the commit response. Notifier
-	// itself is goroutine-internal — it returns immediately.
-	if h.Notifier != nil {
-		if rc, berr := notifications.BuildReceiptContext(h.App, c, id, result, time.Now().UTC()); berr == nil {
+	// Receipt + low-stock dispatch. Two flows, mutually exclusive:
+	//
+	//   - Managed mode (controller.enabled=true): publish the
+	//     ReceiptContext over NATS on the receipt.transaction subject and
+	//     let the controller render + send via its centralized SMTP. The
+	//     local Notifier.Send is suppressed because the controller now owns
+	//     this flow; the kiosk's notification_send_log stays empty in
+	//     managed mode and all audit lives at the controller.
+	//   - Standalone mode: same behavior as v1 — render locally via the
+	//     kiosk's Notifier against its own template rows.
+	//
+	// BuildReceiptContext does one extra users-table read for the email
+	// address; failures there log and drop the receipt without affecting
+	// the commit response.
+	if rc, berr := notifications.BuildReceiptContext(h.App, c, id, result, time.Now().UTC()); berr == nil {
+		if h.Cfg.Controller.Enabled {
+			events.Publish(events.ReceiptTransactionSubject(id.KioskCode), rc)
+		} else if h.Notifier != nil {
 			h.Notifier.Send(notifications.EventTypeReceiptTransaction, rc)
 		}
-		h.fireLowStockAlerts(c, id)
 	}
+	h.fireLowStockAlerts(c, id)
 
 	_ = h.Carts.Delete(body.CartID)
 	return re.JSON(http.StatusOK, result)
@@ -245,8 +257,10 @@ func (h *Handlers) CartCommit(re *core.RequestEvent) error {
 
 // fireLowStockAlerts inspects the just-committed cart for consume lines
 // whose item crossed its reorder threshold and dispatches one alert per
-// item via the dedupe-gated SendIfFirst path. Quietly skips on lookup or
-// math errors — alerts must never affect the commit response.
+// item. Managed mode publishes the LowStockContext to the alert.lowstock
+// NATS subject for the controller to render + send; standalone mode uses
+// the local Notifier's dedupe-gated SendIfFirst path. Quietly skips on
+// lookup or math errors — alerts must never affect the commit response.
 func (h *Handlers) fireLowStockAlerts(c *cart.Cart, id kioskctx.Identity) {
 	consumeQty := map[string]int{}
 	for _, l := range c.Lines {
@@ -289,7 +303,11 @@ func (h *Handlers) fireLowStockAlerts(c *cart.Cart, id kioskctx.Identity) {
 			Available: available,
 			Trigger:   "consume",
 		}
-		h.Notifier.SendIfFirst(notifications.EventTypeLowStock, item.Id, ctx)
+		if h.Cfg.Controller.Enabled {
+			events.Publish(events.LowStockAlertSubject(id.KioskCode), ctx)
+		} else if h.Notifier != nil {
+			h.Notifier.SendIfFirst(notifications.EventTypeLowStock, item.Id, ctx)
+		}
 	}
 }
 

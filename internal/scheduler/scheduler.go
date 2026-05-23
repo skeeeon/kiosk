@@ -1,9 +1,9 @@
 // Package scheduler wires scheduled_reports rows into PocketBase's
 // app.Cron() table. Callers bind once at boot:
 //
-//	scheduler.BindRecordHooks(app, notifier)
+//	scheduler.BindRecordHooks(app, send)
 //	app.OnServe().BindFunc(func(e *core.ServeEvent) error {
-//	    scheduler.RegisterEnabled(app, notifier)
+//	    scheduler.RegisterEnabled(app, send)
 //	    return e.Next()
 //	})
 //
@@ -11,8 +11,9 @@
 // delete; RegisterEnabled handles boot-time reattachment of every enabled
 // row. Per-fire job bodies re-read the row, dispatch via a private report
 // registry, stamp last_run_at + last_status + last_error, and dispatch the
-// send through notifier.SendTo so the schedule row's recipients spec wins
-// over whatever the template stores.
+// send through the supplied Sender. cmd/kiosk supplies either notifier.SendTo
+// (standalone) or a NATS-publishing wrapper (managed mode); the scheduler
+// stays oblivious to the transport.
 package scheduler
 
 import (
@@ -28,6 +29,15 @@ import (
 	"github.com/skeeeon/kiosk/internal/ledger"
 	"github.com/skeeeon/kiosk/internal/notifications"
 )
+
+// Sender dispatches a built notification payload with an explicit recipients
+// spec (the schedule row's recipients, not the template's). Implementations
+// either SMTP-send locally or publish over NATS for the controller to send.
+// Returning nil counts as "send accepted" — managed-mode publishers stamp
+// the schedule row as "sent" on a successful publish even though the actual
+// SMTP outcome happens later on the controller; that asymmetry is documented
+// in the SPA's banner copy.
+type Sender func(eventType string, data any, recipients notifications.Recipients) error
 
 // reportRunner builds the context for one scheduled report. Returning the
 // payload separately from the send lets the scheduler share status-stamping
@@ -86,14 +96,14 @@ func runOpenCheckoutsDigest(app core.App) (string, any, error) {
 // RegisterEnabled walks scheduled_reports and registers a cron entry for
 // every enabled row. BindRecordHooks keeps the cron table in sync as rows
 // change; this function handles the boot-time reattachment.
-func RegisterEnabled(app core.App, notifier *notifications.Notifier) {
+func RegisterEnabled(app core.App, send Sender) {
 	rows, err := app.FindRecordsByFilter("scheduled_reports", "enabled = true", "", 0, 0)
 	if err != nil {
 		log.Printf("scheduled reports: list failed at boot — %v", err)
 		return
 	}
 	for _, r := range rows {
-		addCron(app, notifier, r)
+		addCron(app, send, r)
 	}
 	log.Printf("scheduled reports: registered %d enabled rows", len(rows))
 }
@@ -102,17 +112,17 @@ func RegisterEnabled(app core.App, notifier *notifications.Notifier) {
 // table never drifts from the DB. Update is the trickiest case: the row id
 // stays the same but the cron expression can change, so we always Remove +
 // maybe Add on update.
-func BindRecordHooks(app core.App, notifier *notifications.Notifier) {
+func BindRecordHooks(app core.App, send Sender) {
 	app.OnRecordAfterCreateSuccess("scheduled_reports").BindFunc(func(e *core.RecordEvent) error {
 		if e.Record.GetBool("enabled") {
-			addCron(app, notifier, e.Record)
+			addCron(app, send, e.Record)
 		}
 		return e.Next()
 	})
 	app.OnRecordAfterUpdateSuccess("scheduled_reports").BindFunc(func(e *core.RecordEvent) error {
 		app.Cron().Remove(e.Record.Id)
 		if e.Record.GetBool("enabled") {
-			addCron(app, notifier, e.Record)
+			addCron(app, send, e.Record)
 		}
 		return e.Next()
 	})
@@ -125,7 +135,7 @@ func BindRecordHooks(app core.App, notifier *notifications.Notifier) {
 // addCron registers one row with app.Cron(). Failures here are logged +
 // stamped on the row's last_error so admins see them in the SPA, but the
 // kiosk keeps running.
-func addCron(app core.App, notifier *notifications.Notifier, row *core.Record) {
+func addCron(app core.App, send Sender, row *core.Record) {
 	expr, err := notifications.CronExpressionFor(
 		row.GetString("cadence"),
 		row.GetInt("hour"),
@@ -139,7 +149,7 @@ func addCron(app core.App, notifier *notifications.Notifier, row *core.Record) {
 	}
 	rowID := row.Id
 	if err := app.Cron().Add(rowID, expr, func() {
-		runOnce(app, notifier, rowID)
+		runOnce(app, send, rowID)
 	}); err != nil {
 		log.Printf("scheduled reports: cron add failed for row %s — %v", row.Id, err)
 		markStatus(app, row.Id, "failed", err.Error())
@@ -148,8 +158,8 @@ func addCron(app core.App, notifier *notifications.Notifier, row *core.Record) {
 
 // runOnce is the per-fire job body. It re-reads the row (so edits since
 // registration apply), resolves the runner, builds the payload, and
-// dispatches the send via notifier.SendTo with the row's recipients spec.
-func runOnce(app core.App, notifier *notifications.Notifier, rowID string) {
+// dispatches via the supplied Sender with the row's recipients spec.
+func runOnce(app core.App, send Sender, rowID string) {
 	row, err := app.FindRecordById("scheduled_reports", rowID)
 	if err != nil {
 		log.Printf("scheduled reports: row %s gone at fire time — %v", rowID, err)
@@ -172,7 +182,7 @@ func runOnce(app core.App, notifier *notifications.Notifier, rowID string) {
 	}
 
 	recipients := recipientsFromRow(row)
-	if err := notifier.SendTo(eventType, data, recipients); err != nil {
+	if err := send(eventType, data, recipients); err != nil {
 		markStatus(app, rowID, "failed", err.Error())
 		return
 	}

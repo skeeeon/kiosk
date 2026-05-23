@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { pb } from '../lib/pb'
 import { useAdminToast } from '../composables/useAdminToast'
+import { useKioskIdentity } from '../composables/useKioskIdentity'
 import NotificationsTabs from '../components/NotificationsTabs.vue'
 import DataTable, { type ColumnDef } from '../components/DataTable.vue'
 import { useUrlQuerySync } from '../composables/useUrlQuerySync'
@@ -25,6 +26,8 @@ interface SendLogPage {
 }
 
 const toast = useAdminToast()
+const { identity } = useKioskIdentity()
+const managed = computed(() => identity.value?.managed ?? false)
 
 const rows = ref<SendLogRow[]>([])
 const total = ref(0)
@@ -139,6 +142,15 @@ function onPerPageChange(n: number) {
     </header>
 
     <NotificationsTabs />
+
+    <div
+      v-if="managed"
+      class="rounded-lg bg-sky-950/60 border border-sky-800 text-sky-200 px-4 py-3 mb-4 text-sm"
+    >
+      Send activity for managed kiosks is logged on the controller, not
+      here — this table will stay empty. Open the controller&rsquo;s
+      Notifications &rarr; Recent sends tab for the full audit trail.
+    </div>
 
     <p class="text-sm text-slate-400 mb-4">
       One row per attempted recipient over the last {{ lookbackDays }} days.

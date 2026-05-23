@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/apis"
@@ -25,9 +26,15 @@ import (
 	"github.com/skeeeon/kiosk/internal/config"
 	"github.com/skeeeon/kiosk/internal/controller"
 	"github.com/skeeeon/kiosk/internal/events"
+	"github.com/skeeeon/kiosk/internal/notifications"
 
 	"github.com/skeeeon/kiosk/migrations"
 )
+
+// sendLogRetentionDays bounds the notification_send_log + notification_dedupe
+// tables on the controller. Mirrors the kiosk-side window in cmd/kiosk/main.go;
+// configurable later if a fleet wants longer audit retention.
+const sendLogRetentionDays = 90
 
 func main() {
 	// Signal to the migration registry and config validator that we're the
@@ -68,12 +75,38 @@ func main() {
 
 	controller.RegisterSeedCommand(app, cfg)
 
-	h := controller.New(app, cfg)
+	// Centralized notifier for managed kiosks. Reads templates from the
+	// controller's notification_templates collection (seeded automatically
+	// via the kiosk-side migrations the controller transitively imports)
+	// and sends via the controller's configured SMTP. Kiosks publish
+	// receipt.transaction and alert.lowstock events on the JetStream stream;
+	// the aggregator dispatches them here.
+	notifier := notifications.New(app)
+
+	h := controller.New(app, cfg, notifier)
 
 	// All NATS-dependent setup goes inside OnServe so non-serve subcommands
 	// (--help, seed-catalog, migrate, etc.) don't attempt to connect to a
 	// broker and fail when none is reachable. The seed subcommand brings up
 	// its own NATS + publisher hooks before running.
+	// Daily retention pass on the controller's notification_send_log and
+	// notification_dedupe tables. Same 90-day window as the kiosk side; PB's
+	// Cron is process-local, so if the controller is down at fire time the
+	// next eligible tick handles the backlog.
+	app.Cron().Add("notifications_retention", "15 3 * * *", func() {
+		cutoff := time.Now().UTC().AddDate(0, 0, -sendLogRetentionDays).Format("2006-01-02 15:04:05.000Z")
+		if deleted, err := notifier.PruneSendLog(cutoff); err != nil {
+			log.Printf("send log prune: %v", err)
+		} else if deleted > 0 {
+			log.Printf("send log prune: removed %d rows older than %d days", deleted, sendLogRetentionDays)
+		}
+		if deleted, err := notifier.PruneDedupe(cutoff); err != nil {
+			log.Printf("dedupe prune: %v", err)
+		} else if deleted > 0 {
+			log.Printf("dedupe prune: removed %d rows older than %d days", deleted, sendLogRetentionDays)
+		}
+	})
+
 	app.OnServe().BindFunc(func(e *core.ServeEvent) error {
 		// NATS + catalog publisher + aggregator are brought up first so the
 		// catalog integrity/reconcile handlers below can close over the
@@ -104,6 +137,7 @@ func main() {
 		}
 
 		agg := controller.NewAggregator(app, js, cfg.NATS.StreamName)
+		agg.SetNotifier(notifier)
 		if err := agg.Start(aggCtx); err != nil {
 			aggCancel()
 			return fmt.Errorf("start aggregator: %w", err)
@@ -151,6 +185,14 @@ func main() {
 		e.Router.GET("/api/kiosk/catalog/integrity", h.CatalogIntegrity(cp))
 		e.Router.POST("/api/kiosk/catalog/reconcile", h.CatalogReconcile(cp))
 		e.Router.GET("/api/kiosk/reports/open-checkouts", h.ReportOpenCheckouts)
+
+		// Centralized notifications CRUD. Managed kiosks' admin SPA hits
+		// these via /api/controller/notifications/* instead of the kiosk's
+		// local /api/kiosk/notifications/* — the read-only banner on the
+		// kiosk side now reflects reality.
+		e.Router.GET("/api/controller/notifications", h.ListNotificationTemplates)
+		e.Router.PATCH("/api/controller/notifications/{event_type}", h.UpdateNotificationTemplate)
+		e.Router.GET("/api/controller/notifications/{event_type}/defaults", h.GetNotificationTemplateDefaults)
 
 		// Fleet liveness + remote admin endpoints. The heartbeats endpoint is
 		// the SPA's source of truth for the online/stale/offline badge; the

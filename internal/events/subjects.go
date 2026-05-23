@@ -68,6 +68,37 @@ func IntegrityRebuildSubject(kioskCode string) string {
 	return fmt.Sprintf("%s.%s.integrity.rebuild", SubjectPrefix(), kioskCode)
 }
 
+// ReceiptTransactionSubject builds the subject for a "render and send the
+// transaction receipt" notification event: "<prefix>.<kiosk_code>.receipt.transaction".
+// Payload is a notifications.ReceiptContext serialized as JSON. The
+// controller's notifier consumes it, looks up the template, and sends. This
+// is the managed-mode counterpart to the kiosk's local Notifier.Send call —
+// the kiosk publishes structured context, the controller does the rendering
+// and SMTP.
+func ReceiptTransactionSubject(kioskCode string) string {
+	return fmt.Sprintf("%s.%s.receipt.transaction", SubjectPrefix(), kioskCode)
+}
+
+// LowStockAlertSubject builds the subject for a low-stock alert notification:
+// "<prefix>.<kiosk_code>.alert.lowstock". Payload is a notifications.LowStockContext
+// serialized as JSON. The kiosk owns the threshold-crossing detection (it
+// has the inventory) and publishes only on a real cross; the controller
+// renders + sends.
+func LowStockAlertSubject(kioskCode string) string {
+	return fmt.Sprintf("%s.%s.alert.lowstock", SubjectPrefix(), kioskCode)
+}
+
+// OpenChecksDigestSubject builds the subject for a scheduled-digest event:
+// "<prefix>.<kiosk_code>.digest.open_checkouts". Payload is a
+// notifications.DigestEnvelope that wraps the OpenChecksDigestContext
+// computed locally on the kiosk and the per-schedule recipients spec. The
+// kiosk owns the cron timing and the open_checkouts replay (controller
+// doesn't project open_checkouts); the controller renders + SMTPs +
+// logs to its own send_log. Schedule rows themselves remain kiosk-local.
+func OpenChecksDigestSubject(kioskCode string) string {
+	return fmt.Sprintf("%s.%s.digest.open_checkouts", SubjectPrefix(), kioskCode)
+}
+
 // StreamSubjectFilter is the catch-all subject pattern the controller's
 // stream binds to ("<prefix>.>") so every per-kiosk subject lands without
 // per-kiosk wiring.
@@ -95,6 +126,24 @@ func InventoryAdjustFilter() string {
 
 func IntegrityRebuildFilter() string {
 	return SubjectPrefix() + ".*.integrity.rebuild"
+}
+
+// ReceiptTransactionFilter is the controller-side consumer filter for the
+// receipt notification subject.
+func ReceiptTransactionFilter() string {
+	return SubjectPrefix() + ".*.receipt.transaction"
+}
+
+// LowStockAlertFilter is the controller-side consumer filter for the
+// low-stock notification subject.
+func LowStockAlertFilter() string {
+	return SubjectPrefix() + ".*.alert.lowstock"
+}
+
+// OpenChecksDigestFilter is the controller-side consumer filter for the
+// scheduled open-checkouts digest subject.
+func OpenChecksDigestFilter() string {
+	return SubjectPrefix() + ".*.digest.open_checkouts"
 }
 
 // CommandSubject builds the subject for a controller→kiosk command targeting

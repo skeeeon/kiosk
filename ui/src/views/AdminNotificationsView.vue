@@ -78,6 +78,15 @@ const { identity } = useKioskIdentity()
 const managed = computed(() => identity.value?.managed ?? false)
 const isController = computed(() => identity.value?.role === 'controller')
 
+// The controller now owns notification authoring for the fleet: it has its
+// own notification_templates rows and serves the same CRUD endpoints under
+// /api/controller/notifications. Managed kiosks send context events over
+// NATS and the controller renders + SMTPs. Standalone kiosks keep the
+// pre-managed flow on /api/kiosk/notifications.
+const apiBase = computed(() =>
+  isController.value ? '/api/controller/notifications' : '/api/kiosk/notifications',
+)
+
 const templates = ref<NotificationTemplate[]>([])
 // Working drafts keyed by event_type — initialized from the loaded row and
 // mutated freely by the textareas; Save patches the server with whatever
@@ -109,18 +118,19 @@ function parseExtras(text: string): string[] {
 }
 
 async function load() {
-  // The controller binary doesn't register the notifications routes —
-  // hitting them falls through to the static SPA fallback (HTML body,
-  // 200 status), which would crash the templates parse. Short-circuit
-  // here and let the "not available on controller" banner explain.
-  if (isController.value) {
+  // Managed kiosks no longer authoritate their own templates — the
+  // controller's notification_templates rows are what the controller will
+  // actually send from. Skip the local load to avoid presenting stale
+  // rows the operator might mistake for live state; the banner below
+  // points them to the controller's admin SPA.
+  if (managed.value) {
     templates.value = []
     drafts.value = {}
     return
   }
   loading.value = true
   try {
-    const res = await api.get<TemplatesResponse>('/api/kiosk/notifications')
+    const res = await api.get<TemplatesResponse>(apiBase.value)
     const list = res?.templates ?? []
     templates.value = list
     drafts.value = Object.fromEntries(
@@ -189,7 +199,7 @@ async function save(eventType: string) {
   const extras = parseExtras(extrasText.value[eventType] ?? '')
   try {
     const updated = await api.patch<NotificationTemplate>(
-      `/api/kiosk/notifications/${encodeURIComponent(eventType)}`,
+      `${apiBase.value}/${encodeURIComponent(eventType)}`,
       {
         subject: draft.subject,
         body: draft.body,
@@ -221,7 +231,7 @@ async function save(eventType: string) {
 async function resetToDefaults(eventType: string) {
   try {
     const res = await api.get<DefaultsResponse>(
-      `/api/kiosk/notifications/${encodeURIComponent(eventType)}/defaults`,
+      `${apiBase.value}/${encodeURIComponent(eventType)}/defaults`,
     )
     const draft = drafts.value[eventType]
     if (!draft) return
@@ -274,17 +284,14 @@ onMounted(load)
     </div>
 
     <div
-      v-if="isController"
-      class="rounded-lg bg-slate-900 border border-slate-800 text-slate-300 px-4 py-3 mb-4 text-sm"
-    >
-      Notifications are sent by kiosks, not by the controller. Edit each kiosk&rsquo;s
-      templates from its own admin SPA.
-    </div>
-    <div
-      v-else-if="managed"
+      v-if="managed"
       class="rounded-lg bg-sky-950/60 border border-sky-800 text-sky-200 px-4 py-3 mb-4 text-sm"
     >
-      Notifications are managed by the controller — this view is read-only on managed kiosks.
+      Templates are edited on the controller for this managed kiosk — all
+      receipt, low-stock, and digest emails render against the controller&rsquo;s
+      template rows and send via its SMTP. The Scheduled tab below stays
+      editable here: cron timing and recipient lists are kiosk-local, but
+      the actual sends fire from the controller.
     </div>
 
     <p v-if="loading" class="text-slate-500">Loading…</p>

@@ -12,6 +12,7 @@ import type { ScheduledReportRecord } from '../types'
 const toast = useAdminToast()
 const { identity } = useKioskIdentity()
 const isController = computed(() => identity.value?.role === 'controller')
+const managed = computed(() => identity.value?.managed ?? false)
 
 const rows = ref<ScheduledReportRecord[]>([])
 const loading = ref(false)
@@ -185,6 +186,16 @@ async function onDelete() {
       class="rounded-lg bg-slate-900 border border-slate-800 text-slate-300 px-4 py-3 mb-4 text-sm"
     >
       Scheduled reports run on each kiosk, not on the controller. Configure them from the kiosk&rsquo;s admin SPA.
+    </div>
+    <div
+      v-else-if="managed"
+      class="rounded-lg bg-sky-950/60 border border-sky-800 text-sky-200 px-4 py-3 mb-4 text-sm"
+    >
+      Schedules run on this kiosk (it owns the open-checkouts data the
+      digest is built from), but the rendered email is sent from the
+      controller via centralized SMTP. The &ldquo;Last status&rdquo; column
+      below reflects local publish success — view the controller&rsquo;s
+      Recent sends tab for the actual SMTP outcome.
     </div>
 
     <DataTable
