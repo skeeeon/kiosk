@@ -41,6 +41,9 @@ func RegisterControllerMigrations() {
 		// as the per-kiosk "when did this kiosk last actually transact"
 		// signal once heartbeat takes over liveness duty.
 		RegisterKiosksLastTransactionAtMigration()
+		// inventory_audit collection — fleet-wide projection of every
+		// inventory.adjust event for the Adjustment audit Reports tab.
+		RegisterInventoryAuditMigration()
 	})
 }
 

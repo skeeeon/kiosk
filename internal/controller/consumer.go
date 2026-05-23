@@ -57,15 +57,21 @@ type EventPayload struct {
 	Serial       string `json:"serial,omitempty"`
 	Uncorrelated bool   `json:"uncorrelated,omitempty"`
 
-	// inventory.adjust fields. AdminID is shared with integrity.rebuild.
-	AdjustmentID string `json:"adjustment_id,omitempty"`
-	AdminID      string `json:"admin_id,omitempty"`
-	Mode         string `json:"mode,omitempty"`
-	Value        int    `json:"value,omitempty"`
-	Delta        int    `json:"delta,omitempty"`
-	PrevQuantity int    `json:"prev_quantity,omitempty"`
-	NewQuantity  int    `json:"new_quantity,omitempty"`
-	Reason       string `json:"reason,omitempty"`
+	// inventory.adjust fields. AdminID is shared with integrity.rebuild;
+	// ControllerAdminID is populated only when source=controller so the
+	// audit projection can record the right actor population. Source is
+	// the "local" / "controller" enum the kiosk-side publisher stamps.
+	AdjustmentID      string `json:"adjustment_id,omitempty"`
+	AdminID           string `json:"admin_id,omitempty"`
+	ControllerAdminID string `json:"controller_admin_id,omitempty"`
+	Mode              string `json:"mode,omitempty"`
+	Value             int    `json:"value,omitempty"`
+	Delta             int    `json:"delta,omitempty"`
+	PrevQuantity      int    `json:"prev_quantity,omitempty"`
+	NewQuantity       int    `json:"new_quantity,omitempty"`
+	Reason            string `json:"reason,omitempty"`
+	Source            string `json:"source,omitempty"`
+	CommandID         string `json:"command_id,omitempty"`
 
 	// integrity.rebuild fields.
 	Deleted  int `json:"deleted,omitempty"`
@@ -260,18 +266,7 @@ func (a *Aggregator) handle(ctx context.Context, msg jetstream.Msg) {
 	case strings.Contains(subject, ".item."):
 		a.handleItemAction(msg, payload)
 	case strings.HasSuffix(subject, ".inventory.adjust"):
-		// Audit-only today: log the adjustment and ack. No controller-side
-		// ledger projection yet — the qty drift it would fix is fleet-wide
-		// low-stock reporting, which is the next consumer to add here.
-		slog.Info("controller.aggregator.inventory_adjust",
-			"subject", subject,
-			"kiosk_code", payload.KioskCode,
-			"item_code", payload.ItemCode,
-			"delta", payload.Delta,
-			"new_quantity", payload.NewQuantity,
-			"reason", payload.Reason,
-			"admin_id", payload.AdminID)
-		_ = msg.Ack()
+		a.handleInventoryAdjust(msg, payload)
 	case strings.HasSuffix(subject, ".integrity.rebuild"):
 		// Audit-only today: log and ack. Surfaced here so a future ops view
 		// can list "kiosks that recently rebuilt their projection" without
@@ -289,6 +284,98 @@ func (a *Aggregator) handle(ctx context.Context, msg jetstream.Msg) {
 		slog.Info("controller.aggregator.unknown_subject", "subject", subject)
 		_ = msg.Ack()
 	}
+}
+
+// handleInventoryAdjust is the JetStream-side dispatcher for
+// inventory.adjust. Splits to ProjectInventoryAudit (pure projection +
+// outcome) so tests can drive the side effect without a real message.
+func (a *Aggregator) handleInventoryAdjust(msg jetstream.Msg, p EventPayload) {
+	switch a.ProjectInventoryAudit(p) {
+	case projectAck:
+		_ = msg.Ack()
+	case projectRetry:
+		_ = msg.Nak()
+	}
+}
+
+// ProjectInventoryAudit upserts the audit row for one inventory.adjust
+// event. Idempotent via the unique source_adjustment_id index — a
+// JetStream redelivery finds the existing row and returns projectAck
+// without writing.
+func (a *Aggregator) ProjectInventoryAudit(p EventPayload) projectOutcome {
+	if p.AdjustmentID == "" {
+		// Should never happen — the kiosk's publisher always sets it
+		// from stock_adjustments.id. Ack rather than retry; a bad
+		// payload won't improve on redelivery.
+		slog.Warn("controller.aggregator.inventory_adjust.missing_adjustment_id",
+			"kiosk_code", p.KioskCode, "item_code", p.ItemCode)
+		return projectAck
+	}
+
+	existing, err := a.findInventoryAuditByAdjustmentID(p.AdjustmentID)
+	if err != nil {
+		slog.Warn("controller.aggregator.inventory_audit.lookup_failed", "error", err)
+		return projectRetry
+	}
+	if existing != nil {
+		return projectAck
+	}
+
+	col, err := a.app.FindCollectionByNameOrId("inventory_audit")
+	if err != nil {
+		slog.Warn("controller.aggregator.inventory_audit.collection_missing", "error", err)
+		return projectRetry
+	}
+
+	rec := core.NewRecord(col)
+	rec.Set("kiosk_code", p.KioskCode)
+	rec.Set("item_code", p.ItemCode)
+	rec.Set("item_name", p.ItemName)
+	rec.Set("source_adjustment_id", p.AdjustmentID)
+	// Whichever admin field the publisher set is the actor. We collapse
+	// both into one column and disambiguate via `source` so the report
+	// table doesn't need a coalesce-on-render.
+	switch p.Source {
+	case "controller":
+		rec.Set("admin_id", p.ControllerAdminID)
+	default:
+		rec.Set("admin_id", p.AdminID)
+	}
+	rec.Set("mode", p.Mode)
+	rec.Set("delta", p.Delta)
+	rec.Set("prev_quantity", p.PrevQuantity)
+	rec.Set("new_quantity", p.NewQuantity)
+	rec.Set("reason", p.Reason)
+	if p.Source != "" {
+		rec.Set("source", p.Source)
+	}
+	rec.Set("command_id", p.CommandID)
+	if !p.CompletedAt.IsZero() {
+		rec.Set("occurred_at", p.CompletedAt)
+	}
+	if err := a.app.Save(rec); err != nil {
+		if isUniqueViolation(err) {
+			// Concurrent insert collision — vanishingly rare with one
+			// durable consumer, but be safe and treat as already-projected.
+			return projectAck
+		}
+		slog.Warn("controller.aggregator.inventory_audit.save_failed", "error", err)
+		return projectRetry
+	}
+	return projectAck
+}
+
+func (a *Aggregator) findInventoryAuditByAdjustmentID(adjustmentID string) (*core.Record, error) {
+	rec, err := a.app.FindFirstRecordByFilter("inventory_audit",
+		"source_adjustment_id = {:id}",
+		dbx.Params{"id": adjustmentID})
+	if err != nil {
+		if isNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return rec, nil
 }
 
 func (a *Aggregator) handleTransactionComplete(msg jetstream.Msg, p EventPayload) {

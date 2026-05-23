@@ -23,6 +23,7 @@ the controller-only `kiosks` registry and `kiosk_items` membership table
 | `scheduled_reports` | Admin-edited cron rows (`cadence` daily/weekly/monthly + hour + weekday/day_of_month). Per-row recipients override the template's stored recipients. Runs only on kiosks (the scheduler reads `open_checkouts`); in managed mode the kiosk publishes a `digest.open_checkouts` envelope and the controller does the SMTP send. |
 | `kiosks` | **Controller-only.** Registry of every kiosk in the fleet. A row appears either when an admin pre-registers the kiosk via the "New kiosk" button on AdminKiosksView, auto-populated with `status=unknown` the first time the aggregator sees a `transaction.complete` from a new `kiosk_code`, or auto-populated on the first heartbeat. `last_transaction_at` advances on `transaction.complete` only (its name finally matches its meaning now that heartbeat owns general liveness); `last_seen` writes alongside it for one release as a deprecation window. Used for fleet visibility and as the join target when expanding aggregated transactions to "which kiosk did this come from?" |
 | `kiosk_items` | **Controller-only.** Membership rows tying items to kiosks. One row = one (kiosk, item) pair = "this kiosk stocks that SKU." Cascade-deletes from either side. Drives per-kiosk catalog publishing; absent rows mean the kiosk never receives that item over JetStream KV. |
+| `inventory_audit` | **Controller-only.** Fleet-wide append-only projection of every `inventory.adjust` event the aggregator sees. One row per adjustment, denormalized (`kiosk_code`, `item_code`, `item_name`, `delta`, `prev_quantity`, `new_quantity`, `reason`, `source`, `admin_id`). `source_adjustment_id` carries the originating kiosk's `stock_adjustments.id` and is unique-when-non-empty so JetStream redelivery never duplicates a row. Drives the Reports → Adjustment audit tab on the controller. |
 
 ## Controller-only fields
 
@@ -31,11 +32,12 @@ two extra fields not present on standalone kiosks:
 `source_kiosk_code` + `source_transaction_id` on transactions (unique
 pair index, idempotency key for redelivery) and `source_line_id` on
 transaction_lines (unique-when-non-empty index). These — along with the
-`kiosks` and `kiosk_items` collections plus
-`kiosks.last_transaction_at` — are added by three controller-only
+`kiosks`, `kiosk_items`, and `inventory_audit` collections plus
+`kiosks.last_transaction_at` — are added by four controller-only
 migrations (`2000000000_controller_collections.go`,
-`2000100000_add_kiosk_items.go`, and
-`2000200000_kiosks_last_transaction_at.go`), all registered via a single
+`2000100000_add_kiosk_items.go`,
+`2000200000_kiosks_last_transaction_at.go`, and
+`2000300000_inventory_audit.go`), all registered via a single
 `sync.Once` body in `RegisterControllerMigrations`. The plain kiosk
 binary never invokes it, so its DB never gets these.
 

@@ -69,20 +69,38 @@ These started as deferred roadmap items and are now live in the binary:
   boot and points its CRUD at `/api/controller/notifications` when
   running on the controller. One set of SMTP credentials, one audit
   trail.
+- **Fleet-wide low-stock report.**
+  `GET /api/controller/reports/low-stock` fans `inventory.snapshot`
+  out to every online managed kiosk in parallel and joins each
+  reply with `out` counts computed locally from the controller's
+  projected ledger. Offline kiosks surface in an `errors` block so
+  the SPA can render "partial result" transparently. SPA's Low-stock
+  tab on the controller drops its "on the roadmap" banner for a real
+  fleet table.
+- **Inventory adjustment audit.** Every `inventory.adjust` event the
+  controller receives is now projected into `inventory_audit`
+  (denormalized: kiosk, item, delta, prev/new, reason, source,
+  actor), idempotent via a unique `source_adjustment_id`. A new
+  Reports → Adjustment audit tab on the controller exposes
+  filterable, paginated history of every stock change anywhere in
+  the fleet.
+- **Notifications deliverability tab.** A Reports tab on both
+  binaries summarizes the local `notification_send_log` (totals,
+  per-event success-rate table, recent failures) so deliverability
+  regressions surface without clicking through individual rows.
 
 ## Roadmap
 
 Items below are still intentionally deferred. Schema and event
 subjects are in place to make them additive rather than rewrites.
 
-- **Controller-side qty projection.** The kiosk already publishes
-  `{prefix}.{kiosk_code}.inventory.adjust` for every admin adjustment
-  (local or controller-driven), and the controller ack-and-logs it.
-  What's still deferred is projecting those adjustments (and
-  `item.checkout` / `item.consume` qty deltas) into a controller-side
-  per-kiosk `quantity_on_hand` so the controller has a fleet-wide
-  low-stock view without re-querying each kiosk via
-  `inventory.snapshot`.
+- **Controller-side qty projection.** The low-stock report above
+  uses live snapshot fan-out — one NATS round-trip per online kiosk
+  per page load. Fine into the dozens of kiosks; not free. Projecting
+  `inventory.adjust` plus the `item.checkout` / `item.consume` qty
+  deltas into a controller-side `kiosk_inventory` rollup would make
+  the report query O(1) and survive offline kiosks. Deferred until
+  fan-out RTT actually hurts.
 - **More remote commands.** The command bus and dispatcher are in
   place (`internal/commands/`); v1 wires inventory adjust + snapshot.
   Natural next commands: force a catalog resync, lock a kiosk to a

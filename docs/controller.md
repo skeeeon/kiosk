@@ -76,13 +76,34 @@ of truth for catalog plus a unified transaction ledger.
   (`/api/controller/notifications`) mirror the kiosk's; the SPA
   detects role at boot and points the Templates tab at the right base
   URL. See [Notifications](notifications.md) for the full picture.
+- **Inventory adjustment audit.** Every `inventory.adjust` event the
+  aggregator receives is projected into the controller's
+  `inventory_audit` collection — denormalized
+  (`kiosk_code`, `item_code`, `item_name`, `delta`, `prev_quantity`,
+  `new_quantity`, `reason`, `source`, `admin_id`). Idempotent via a
+  unique-when-non-empty `source_adjustment_id` index, so JetStream
+  redelivery is a no-op. Drives the Reports → Adjustment audit tab so
+  operators can answer "every stock change, every kiosk, who did it
+  and when" without hopping kiosks.
+- **Fleet-wide low-stock report.**
+  `GET /api/controller/reports/low-stock` fans `inventory.snapshot` to
+  every currently-online managed kiosk in parallel, joins each kiosk's
+  reply with `out` counts computed locally from the controller's
+  projected ledger via `ledger.ReplayOpenRows`, and returns rows whose
+  `available ≤ reorder_threshold`. Offline kiosks surface under
+  `errors` so the SPA can show "partial result — N kiosks excluded"
+  instead of hiding the limitation. Honors `?kiosk_code=` so the
+  page-level kiosk filter scopes the fan-out to a single target.
 
 What it **doesn't** do in v1 (deliberately out of scope):
 
 - Drift detection / state-hash compare between controller and kiosk.
-- Controller-side per-kiosk `quantity_on_hand` projection (the
-  `inventory.adjust` event still acks-and-logs at the aggregator; a
-  fleet-wide low-stock view would consume it).
+- Controller-side per-kiosk `quantity_on_hand` projection. The
+  snapshot fan-out used for the low-stock report is live-per-request;
+  a persistent projection (consuming `inventory.adjust` deltas plus
+  `item.checkout` / `item.consume` qty deltas to maintain a
+  `kiosk_inventory` rollup) is on the roadmap for when fan-out RTT
+  becomes the bottleneck.
 - Cross-fleet movement of serialized items.
 - Tightening PB collection rules on managed kiosks (the projector uses
   the DAO, so rules don't matter; UI gating handles the admin
@@ -90,6 +111,22 @@ What it **doesn't** do in v1 (deliberately out of scope):
 - Other remote admin commands — only inventory adjust + snapshot ship
   in v1. The dispatcher's `HandleFunc` registry makes adding a new
   command a one-handler change.
+
+## Reports surface
+
+The controller's Reports view exposes seven tabs. Five of them work on
+the projected ledger (`transactions` + `transaction_lines` populated by
+the aggregator); two are new with the audit + fan-out work:
+
+| Tab | Source | Notes |
+|---|---|---|
+| Currently out | `GET /api/kiosk/reports/open-checkouts` (controller impl reconstructs via `ledger.ReplayOpenRows`) | Honors `?kiosk_code=` |
+| Aging | Same source as Currently out, bucketed by user with oldest-out-first sort | Per-user rollup; threshold is a display hint, not a filter |
+| Low stock | `GET /api/controller/reports/low-stock` (snapshot fan-out) | Offline kiosks listed under `errors` for partial-result transparency |
+| Group activity | `transactions` + `transaction_lines` + `groups` via pb-sdk, rolled up client-side | Date range filter |
+| Recent transactions | `transactions` via pb-sdk, paginated | Click to drill into a transaction |
+| Adjustment audit | `inventory_audit` via pb-sdk, paginated | Filters: from / to / source (local vs controller); kiosk filter from the page header |
+| Notifications | `notification_send_log` via pb-sdk, rolled up client-side | Per-event success-rate table, recent-failures panel; same tab works on standalone kiosks against their own send log |
 
 ## NATS provisioning
 

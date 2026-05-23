@@ -201,6 +201,11 @@ func main() {
 		e.Router.GET("/api/controller/kiosks/{code}/inventory", h.InventorySnapshot(nc, hbRegistry))
 		e.Router.POST("/api/controller/kiosks/{code}/inventory/adjust", h.InventoryAdjust(nc, hbRegistry))
 
+		// Fleet-wide reports. Low-stock fans out inventory.snapshot to
+		// every online kiosk in parallel and joins with the controller's
+		// projected ledger to compute available quantities.
+		e.Router.GET("/api/controller/reports/low-stock", h.ReportLowStock(nc, hbRegistry))
+
 		// Serve the same Vue SPA the kiosk uses. The SPA detects role at
 		// boot via /api/kiosk/identity and gates its UI accordingly.
 		e.Router.GET("/{path...}", apis.Static(os.DirFS("./pb_public"), true))

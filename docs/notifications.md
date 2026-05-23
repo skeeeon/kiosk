@@ -46,3 +46,18 @@ kiosk's `scheduled_reports.last_status` reflects the *publish* outcome
 collection the notifier is bound to — controller admins on the
 controller, kiosk admins on standalone. Worker recipients work as long
 as `users.email` is populated.
+
+## Operator visibility
+
+Two SPA surfaces watch the send log:
+
+- **Notifications → Recent sends** (`/admin/notifications/log`) — every
+  attempted recipient in chronological order, filterable by event type
+  and status. Read each row in detail.
+- **Reports → Notifications** — aggregated tally over a selectable
+  window (24h / 7d / 30d / 90d) plus a "Recent failures" panel showing
+  the last 10 failed sends with their error strings. The success rate
+  per event type is color-coded so a regression jumps out at a glance.
+  Same tab works on standalone kiosks against their local
+  `notification_send_log` and on the controller against the fleet-wide
+  log.

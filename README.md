@@ -52,6 +52,13 @@ it via config. See [docs/controller.md](docs/controller.md).
   against a single SMTP + audit trail. See
   [docs/controller.md](docs/controller.md) and
   [docs/notifications.md](docs/notifications.md).
+- **Fleet-wide reporting.** On the controller, the Reports view
+  exposes seven tabs: currently-out, aging, low-stock (live snapshot
+  fan-out — one NATS round-trip per online kiosk), group activity,
+  recent transactions, adjustment audit (projected from
+  `inventory.adjust` events), and notifications deliverability.
+  Standalone kiosks share the same Reports surface against their
+  local data minus the controller-only tabs.
 
 ## Architecture
 

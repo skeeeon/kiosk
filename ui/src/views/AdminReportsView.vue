@@ -13,7 +13,7 @@ import type { ItemRecord, KioskRecord } from '../types'
 const { identity } = useKioskIdentity()
 const isController = computed(() => identity.value?.role === 'controller')
 
-type Tab = 'currently-out' | 'aging' | 'low-stock' | 'group-activity' | 'recent'
+type Tab = 'currently-out' | 'aging' | 'low-stock' | 'group-activity' | 'recent' | 'audit' | 'notifications'
 const tab = ref<Tab>('currently-out')
 const toast = useAdminToast()
 
@@ -46,6 +46,69 @@ interface LowStockRow {
   deficit: number // threshold - available; positive means low
 }
 
+// FleetLowStockRow is one (kiosk, item) row from the controller's
+// /api/controller/reports/low-stock endpoint. The flat shape matches the
+// server-side fan-out + reduce; the SPA groups by item visually but the
+// row itself stays atomic so kiosk filtering is a plain v-show filter.
+interface FleetLowStockRow {
+  kiosk_code: string
+  item_code: string
+  item_name: string
+  tracking_mode: string
+  quantity_on_hand: number
+  out: number
+  available: number
+  reorder_threshold: number
+}
+
+interface FleetLowStockResponse {
+  rows: FleetLowStockRow[]
+  errors?: { kiosk_code: string; error: string }[]
+}
+
+// AdjustmentAuditRow is one inventory_audit collection row. The shape
+// mirrors the migration's columns; the SPA loads them via pb-sdk so this
+// is the wire JSON.
+interface AdjustmentAuditRow {
+  id: string
+  kiosk_code: string
+  item_code: string
+  item_name: string
+  source_adjustment_id: string
+  admin_id: string
+  mode: string
+  delta: number
+  prev_quantity: number
+  new_quantity: number
+  reason: string
+  source: 'local' | 'controller' | ''
+  command_id: string
+  occurred_at: string
+  created: string
+}
+
+// SendLogRow is one notification_send_log row, used by both the
+// totals tally and the "Recent failures" panel.
+interface SendLogRow {
+  id: string
+  event_type: string
+  recipient: string
+  status: 'sent' | 'failed' | 'skipped'
+  error: string
+  created: string
+}
+
+// SendLogByEvent groups send log counts by event_type. Computed
+// client-side because PB's filter language doesn't support GROUP BY —
+// the data volume is tiny (one row per recipient, capped at 90 days)
+// so a single getList covers it.
+interface SendLogByEvent {
+  event_type: string
+  sent: number
+  failed: number
+  skipped: number
+}
+
 // AgingGroup buckets all of one worker's overdue rows together so the table
 // can show "Alice has 4 tools out >7 days, oldest is 23 days ago" rather than
 // a flat list that hides repeat offenders.
@@ -73,6 +136,18 @@ const txRows = ref<TxRow[]>([])
 const txPage = ref(1)
 const txTotalPages = ref(1)
 const lowStockRows = ref<LowStockRow[]>([])
+const fleetLowStockRows = ref<FleetLowStockRow[]>([])
+const fleetLowStockErrors = ref<{ kiosk_code: string; error: string }[]>([])
+const auditRows = ref<AdjustmentAuditRow[]>([])
+const auditPage = ref(1)
+const auditTotalPages = ref(1)
+const auditSourceFilter = ref<'' | 'local' | 'controller'>('')
+const auditFrom = ref<string>(defaultFromDate())
+const auditTo = ref<string>(defaultToDate())
+const notificationsLookback = ref<number>(7)
+const notificationsTotals = ref({ sent: 0, failed: 0, skipped: 0 })
+const notificationsByEvent = ref<SendLogByEvent[]>([])
+const notificationsRecentFailures = ref<SendLogRow[]>([])
 const agingThresholdDays = ref(7)
 const agingGroups = ref<AgingGroup[]>([])
 const groupActivityFrom = ref<string>(defaultFromDate())
@@ -271,6 +346,118 @@ function buildGroupActivityLinesFilter(): string {
   return parts.join(' && ')
 }
 
+// loadFleetLowStock fans inventory.snapshot to every online managed kiosk
+// via the controller's reports endpoint and renders the aggregated result.
+// Offline kiosks are excluded server-side and surfaced under fleetLowStockErrors
+// so the operator sees that the view is partial.
+async function loadFleetLowStock() {
+  loading.value = true
+  error.value = null
+  try {
+    const qs = kioskFilter.value
+      ? `?kiosk_code=${encodeURIComponent(kioskFilter.value)}`
+      : ''
+    const res = await api.get<FleetLowStockResponse>(`/api/controller/reports/low-stock${qs}`)
+    fleetLowStockRows.value = res.rows ?? []
+    fleetLowStockErrors.value = res.errors ?? []
+  } catch (e) {
+    error.value = (e as Error).message
+  } finally {
+    loading.value = false
+  }
+}
+
+async function loadAudit(page = 1) {
+  loading.value = true
+  error.value = null
+  try {
+    // inventory_audit lives only on the controller; the kiosk binary's PB
+    // never sees the migration. Page-level pb-sdk query — kiosk + source +
+    // date are stacked into the filter so paging stays correct.
+    const parts: string[] = []
+    if (kioskFilter.value) {
+      parts.push(`kiosk_code = "${kioskFilter.value.replace(/"/g, '\\"')}"`)
+    }
+    if (auditSourceFilter.value) {
+      parts.push(`source = "${auditSourceFilter.value}"`)
+    }
+    if (auditFrom.value) parts.push(`created >= "${auditFrom.value} 00:00:00.000Z"`)
+    if (auditTo.value) parts.push(`created <= "${auditTo.value} 23:59:59.999Z"`)
+    const res = await pb.collection('inventory_audit').getList<AdjustmentAuditRow>(page, 50, {
+      filter: parts.join(' && '),
+      sort: '-created',
+    })
+    auditRows.value = res.items
+    auditPage.value = res.page
+    auditTotalPages.value = res.totalPages
+  } catch (e) {
+    error.value = (e as Error).message
+  } finally {
+    loading.value = false
+  }
+}
+
+// loadNotificationsSummary aggregates notification_send_log over the
+// selected lookback window. Cheap because the table is pruned at 90d
+// retention; we pull every row in window and roll up client-side rather
+// than spinning up dedicated server endpoints. Works identically on
+// standalone kiosks (their own log) and the controller (fleet-wide log).
+async function loadNotificationsSummary() {
+  loading.value = true
+  error.value = null
+  try {
+    const cutoff = new Date(Date.now() - notificationsLookback.value * 24 * 60 * 60 * 1000)
+    const cutoffISO = cutoff.toISOString().replace('T', ' ').replace('Z', 'Z')
+    const filter = `created >= "${cutoffISO}"`
+    const rows = await pb.collection('notification_send_log').getFullList<SendLogRow>({
+      filter,
+      sort: '-created',
+    })
+
+    const totals = { sent: 0, failed: 0, skipped: 0 }
+    const byEvent = new Map<string, SendLogByEvent>()
+    for (const r of rows) {
+      if (r.status === 'sent') totals.sent++
+      else if (r.status === 'failed') totals.failed++
+      else if (r.status === 'skipped') totals.skipped++
+
+      let bucket = byEvent.get(r.event_type)
+      if (!bucket) {
+        bucket = { event_type: r.event_type, sent: 0, failed: 0, skipped: 0 }
+        byEvent.set(r.event_type, bucket)
+      }
+      if (r.status === 'sent') bucket.sent++
+      else if (r.status === 'failed') bucket.failed++
+      else if (r.status === 'skipped') bucket.skipped++
+    }
+
+    notificationsTotals.value = totals
+    notificationsByEvent.value = Array.from(byEvent.values()).sort((a, b) =>
+      a.event_type.localeCompare(b.event_type),
+    )
+    notificationsRecentFailures.value = rows.filter((r) => r.status === 'failed').slice(0, 10)
+  } catch (e) {
+    error.value = (e as Error).message
+  } finally {
+    loading.value = false
+  }
+}
+
+function successRateLabel(r: SendLogByEvent): string {
+  const denom = r.sent + r.failed
+  if (denom === 0) return '—'
+  return `${Math.round((r.sent / denom) * 100)}%`
+}
+
+function successRateClass(r: SendLogByEvent): string {
+  const denom = r.sent + r.failed
+  if (denom === 0) return 'text-slate-500'
+  const rate = r.sent / denom
+  if (rate >= 0.99) return 'text-emerald-300'
+  if (rate >= 0.9) return 'text-amber-300'
+  return 'text-red-400 font-semibold'
+}
+
 async function loadLowStock() {
   loading.value = true
   error.value = null
@@ -336,9 +523,18 @@ async function exportCsv() {
 function loadCurrentTab() {
   if (tab.value === 'currently-out') loadCurrentlyOut()
   else if (tab.value === 'aging') loadAging()
-  else if (tab.value === 'low-stock') loadLowStock()
+  else if (tab.value === 'low-stock') {
+    // Controller fans out inventory.snapshot fleet-wide; kiosks compute
+    // their local view from items + open_checkouts. Same tab, two code
+    // paths because the data sources are fundamentally different (one
+    // is centralized, one is local).
+    if (isController.value) loadFleetLowStock()
+    else loadLowStock()
+  }
   else if (tab.value === 'group-activity') loadGroupActivity()
   else if (tab.value === 'recent') loadTransactions(1)
+  else if (tab.value === 'audit') loadAudit(1)
+  else if (tab.value === 'notifications') loadNotificationsSummary()
 }
 
 loadKiosks()
@@ -453,6 +649,23 @@ function openTxDetail(t: TxRow) {
         @click="tab = 'recent'"
       >
         Recent transactions
+      </button>
+      <button
+        v-if="isController"
+        type="button"
+        class="px-4 py-2 border-b-2 transition-colors"
+        :class="tabClasses('audit')"
+        @click="tab = 'audit'"
+      >
+        Adjustment audit
+      </button>
+      <button
+        type="button"
+        class="px-4 py-2 border-b-2 transition-colors"
+        :class="tabClasses('notifications')"
+        @click="tab = 'notifications'"
+      >
+        Notifications
       </button>
     </nav>
 
@@ -597,18 +810,60 @@ function openTxDetail(t: TxRow) {
       </div>
     </div>
 
-    <!-- Low stock (kiosk-local data, not projected to controller in v1) -->
-    <div
-      v-else-if="tab === 'low-stock' && isController"
-      class="rounded-2xl bg-amber-950/30 border border-amber-800/60 p-6 text-amber-200 text-sm"
-    >
-      Low-stock reporting reads each kiosk's local <code class="font-mono text-xs">quantity_on_hand</code>
-      and <code class="font-mono text-xs">reorder_threshold</code>, which the controller doesn't project
-      in v1. Check the Reports view on the kiosk itself for now — controller-side fleet rollup is on
-      the roadmap.
+    <!-- Low stock (fleet-wide, snapshot fan-out) -->
+    <div v-else-if="tab === 'low-stock' && isController" class="flex flex-col gap-3">
+      <p
+        v-if="fleetLowStockErrors.length > 0"
+        class="rounded-lg bg-amber-950/40 border border-amber-800/60 text-amber-200 text-sm px-4 py-2"
+      >
+        Partial result — {{ fleetLowStockErrors.length }}
+        {{ fleetLowStockErrors.length === 1 ? 'kiosk' : 'kiosks' }} excluded
+        ({{ fleetLowStockErrors.map((e) => e.kiosk_code).join(', ') }}). Offline
+        kiosks don&rsquo;t respond to the live snapshot.
+      </p>
+      <div class="rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden">
+        <table class="w-full text-left text-sm">
+          <thead class="bg-slate-950/70 text-slate-400">
+            <tr>
+              <th class="px-4 py-3 font-medium">Kiosk</th>
+              <th class="px-4 py-3 font-medium">Item</th>
+              <th class="px-4 py-3 font-medium text-right">On hand</th>
+              <th class="px-4 py-3 font-medium text-right">Out</th>
+              <th class="px-4 py-3 font-medium text-right">Available</th>
+              <th class="px-4 py-3 font-medium text-right">Threshold</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-800">
+            <tr v-if="loading">
+              <td colspan="6" class="text-center text-slate-500 py-8">Loading…</td>
+            </tr>
+            <tr v-else-if="fleetLowStockRows.length === 0">
+              <td colspan="6" class="text-center text-slate-500 py-8">
+                Nothing is low across the fleet. Set a reorder threshold on items to enable alerts.
+              </td>
+            </tr>
+            <tr v-for="r in fleetLowStockRows" :key="`${r.kiosk_code}::${r.item_code}`" class="hover:bg-slate-800/40">
+              <td class="px-4 py-3 font-mono text-slate-300">{{ r.kiosk_code }}</td>
+              <td class="px-4 py-3">
+                <div class="font-medium">{{ r.item_name }}</div>
+                <div class="text-xs text-slate-500 font-mono">{{ r.item_code }}</div>
+              </td>
+              <td class="px-4 py-3 text-right tabular-nums text-slate-300">{{ r.quantity_on_hand }}</td>
+              <td class="px-4 py-3 text-right tabular-nums text-slate-400">{{ r.out }}</td>
+              <td
+                class="px-4 py-3 text-right tabular-nums font-semibold"
+                :class="r.available <= 0 ? 'text-red-400' : 'text-amber-400'"
+              >
+                {{ r.available }}
+              </td>
+              <td class="px-4 py-3 text-right tabular-nums text-slate-400">{{ r.reorder_threshold }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </div>
 
-    <!-- Low stock -->
+    <!-- Low stock (standalone kiosk, computed locally) -->
     <div v-else-if="tab === 'low-stock'" class="rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden">
       <table class="w-full text-left text-sm">
         <thead class="bg-slate-950/70 text-slate-400">
@@ -797,6 +1052,229 @@ function openTxDetail(t: TxRow) {
           Next
         </button>
       </div>
+      </div>
+    </div>
+
+    <!-- Adjustment audit (controller-only) -->
+    <div v-else-if="tab === 'audit'" class="flex flex-col gap-3">
+      <div class="flex items-end gap-3 text-sm flex-wrap">
+        <label class="flex flex-col gap-1">
+          <span class="text-slate-400 text-xs">From</span>
+          <input
+            v-model="auditFrom"
+            type="date"
+            class="rounded-lg bg-slate-900 border border-slate-700 px-2 py-1 text-slate-100"
+          />
+        </label>
+        <label class="flex flex-col gap-1">
+          <span class="text-slate-400 text-xs">To</span>
+          <input
+            v-model="auditTo"
+            type="date"
+            class="rounded-lg bg-slate-900 border border-slate-700 px-2 py-1 text-slate-100"
+          />
+        </label>
+        <label class="flex flex-col gap-1">
+          <span class="text-slate-400 text-xs">Source</span>
+          <select
+            v-model="auditSourceFilter"
+            class="rounded-lg bg-slate-900 border border-slate-700 px-2 py-1 text-slate-100"
+          >
+            <option value="">All sources</option>
+            <option value="local">Local (at kiosk)</option>
+            <option value="controller">Controller (remote)</option>
+          </select>
+        </label>
+        <button
+          type="button"
+          class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200"
+          :disabled="loading"
+          @click="loadAudit(1)"
+        >
+          Apply
+        </button>
+        <span class="text-slate-500 text-xs ml-auto">
+          Every stock adjustment fan-out, every kiosk. Append-only audit projected from
+          <code class="font-mono text-xs">inventory.adjust</code> events.
+        </span>
+      </div>
+
+      <div class="rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden">
+        <table class="w-full text-left text-sm">
+          <thead class="bg-slate-950/70 text-slate-400">
+            <tr>
+              <th class="px-4 py-3 font-medium">When</th>
+              <th class="px-4 py-3 font-medium">Kiosk</th>
+              <th class="px-4 py-3 font-medium">Item</th>
+              <th class="px-4 py-3 font-medium">Source</th>
+              <th class="px-4 py-3 font-medium text-right">Δ</th>
+              <th class="px-4 py-3 font-medium text-right">Prev → New</th>
+              <th class="px-4 py-3 font-medium">Reason</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-800">
+            <tr v-if="loading">
+              <td colspan="7" class="text-center text-slate-500 py-8">Loading…</td>
+            </tr>
+            <tr v-else-if="auditRows.length === 0">
+              <td colspan="7" class="text-center text-slate-500 py-8">
+                No adjustments in the selected window.
+              </td>
+            </tr>
+            <tr v-for="r in auditRows" :key="r.id" class="hover:bg-slate-800/40">
+              <td class="px-4 py-3 text-slate-300">{{ formatDateTime(r.created) }}</td>
+              <td class="px-4 py-3 font-mono text-slate-400">{{ r.kiosk_code }}</td>
+              <td class="px-4 py-3">
+                <div class="font-medium">{{ r.item_name || '—' }}</div>
+                <div class="text-xs text-slate-500 font-mono">{{ r.item_code }}</div>
+              </td>
+              <td class="px-4 py-3">
+                <span
+                  class="inline-block px-2 py-0.5 rounded text-xs"
+                  :class="r.source === 'controller'
+                    ? 'bg-sky-900/60 text-sky-200'
+                    : 'bg-slate-800/80 text-slate-300'"
+                >
+                  {{ r.source || 'local' }}
+                </span>
+              </td>
+              <td
+                class="px-4 py-3 text-right tabular-nums font-semibold"
+                :class="r.delta < 0 ? 'text-red-400' : r.delta > 0 ? 'text-emerald-400' : 'text-slate-400'"
+              >
+                {{ r.delta > 0 ? '+' : '' }}{{ r.delta }}
+              </td>
+              <td class="px-4 py-3 text-right tabular-nums text-slate-300">
+                {{ r.prev_quantity }} → {{ r.new_quantity }}
+              </td>
+              <td class="px-4 py-3 text-slate-400">{{ r.reason || '—' }}</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div
+          v-if="auditTotalPages > 1"
+          class="flex items-center justify-between px-4 py-3 border-t border-slate-800 text-sm"
+        >
+          <button
+            type="button"
+            class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40"
+            :disabled="auditPage <= 1 || loading"
+            @click="loadAudit(auditPage - 1)"
+          >
+            Previous
+          </button>
+          <span class="text-slate-400">Page {{ auditPage }} of {{ auditTotalPages }}</span>
+          <button
+            type="button"
+            class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40"
+            :disabled="auditPage >= auditTotalPages || loading"
+            @click="loadAudit(auditPage + 1)"
+          >
+            Next
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Notifications deliverability -->
+    <div v-else-if="tab === 'notifications'" class="flex flex-col gap-3">
+      <div class="flex items-end gap-3 text-sm flex-wrap">
+        <label class="flex flex-col gap-1">
+          <span class="text-slate-400 text-xs">Lookback</span>
+          <select
+            v-model="notificationsLookback"
+            class="rounded-lg bg-slate-900 border border-slate-700 px-2 py-1 text-slate-100"
+            @change="loadNotificationsSummary"
+          >
+            <option :value="1">Last 24 hours</option>
+            <option :value="7">Last 7 days</option>
+            <option :value="30">Last 30 days</option>
+            <option :value="90">Last 90 days</option>
+          </select>
+        </label>
+        <span class="text-slate-500 text-xs ml-auto">
+          Aggregated from <code class="font-mono text-xs">notification_send_log</code>; see
+          <RouterLink :to="{ name: 'admin-notifications-log' }" class="underline">Recent sends</RouterLink>
+          for the per-recipient list.
+        </span>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div class="rounded-2xl bg-slate-900 border border-slate-800 p-4">
+          <div class="text-xs text-slate-400 uppercase tracking-wider mb-1">Sent</div>
+          <div class="text-2xl font-semibold text-emerald-400 tabular-nums">{{ notificationsTotals.sent }}</div>
+        </div>
+        <div class="rounded-2xl bg-slate-900 border border-slate-800 p-4">
+          <div class="text-xs text-slate-400 uppercase tracking-wider mb-1">Failed</div>
+          <div
+            class="text-2xl font-semibold tabular-nums"
+            :class="notificationsTotals.failed > 0 ? 'text-red-400' : 'text-slate-500'"
+          >
+            {{ notificationsTotals.failed }}
+          </div>
+        </div>
+        <div class="rounded-2xl bg-slate-900 border border-slate-800 p-4">
+          <div class="text-xs text-slate-400 uppercase tracking-wider mb-1">Skipped</div>
+          <div class="text-2xl font-semibold text-slate-400 tabular-nums">{{ notificationsTotals.skipped }}</div>
+        </div>
+      </div>
+
+      <div class="rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden">
+        <table class="w-full text-left text-sm">
+          <thead class="bg-slate-950/70 text-slate-400">
+            <tr>
+              <th class="px-4 py-3 font-medium">Event</th>
+              <th class="px-4 py-3 font-medium text-right">Sent</th>
+              <th class="px-4 py-3 font-medium text-right">Failed</th>
+              <th class="px-4 py-3 font-medium text-right">Skipped</th>
+              <th class="px-4 py-3 font-medium text-right">Success rate</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-800">
+            <tr v-if="loading">
+              <td colspan="5" class="text-center text-slate-500 py-8">Loading…</td>
+            </tr>
+            <tr v-else-if="notificationsByEvent.length === 0">
+              <td colspan="5" class="text-center text-slate-500 py-8">
+                Nothing sent in the selected window.
+              </td>
+            </tr>
+            <tr v-for="r in notificationsByEvent" :key="r.event_type" class="hover:bg-slate-800/40">
+              <td class="px-4 py-3 font-mono text-slate-200">{{ r.event_type }}</td>
+              <td class="px-4 py-3 text-right tabular-nums text-emerald-300">{{ r.sent }}</td>
+              <td
+                class="px-4 py-3 text-right tabular-nums"
+                :class="r.failed > 0 ? 'text-red-400 font-semibold' : 'text-slate-500'"
+              >
+                {{ r.failed }}
+              </td>
+              <td class="px-4 py-3 text-right tabular-nums text-slate-400">{{ r.skipped }}</td>
+              <td
+                class="px-4 py-3 text-right tabular-nums"
+                :class="successRateClass(r)"
+              >
+                {{ successRateLabel(r) }}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div v-if="notificationsRecentFailures.length > 0" class="rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden">
+        <div class="px-4 py-3 bg-slate-950/70 text-slate-400 text-xs uppercase tracking-wider">
+          Recent failures
+        </div>
+        <ul class="divide-y divide-slate-800">
+          <li v-for="f in notificationsRecentFailures" :key="f.id" class="px-4 py-3 text-sm">
+            <div class="flex items-baseline gap-3">
+              <span class="font-mono text-slate-300">{{ f.event_type }}</span>
+              <span class="text-slate-400">→ {{ f.recipient || '(no recipient)' }}</span>
+              <span class="text-slate-500 text-xs ml-auto">{{ formatDateTime(f.created) }}</span>
+            </div>
+            <div v-if="f.error" class="text-xs text-red-300 mt-1 font-mono">{{ f.error }}</div>
+          </li>
+        </ul>
       </div>
     </div>
 
