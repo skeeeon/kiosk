@@ -25,7 +25,7 @@ const TONE: Record<'success' | 'error', string> = {
       v-if="current"
       :key="current.seq"
       type="button"
-      class="fixed bottom-6 right-6 z-30 px-5 py-3 rounded-xl border shadow-lg text-sm cursor-pointer"
+      class="fixed bottom-6 right-6 z-[60] px-5 py-3 rounded-xl border shadow-lg text-sm cursor-pointer"
       :class="TONE[current.kind]"
       @click="dismiss"
     >
