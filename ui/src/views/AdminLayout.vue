@@ -156,7 +156,7 @@ function closeDrawer() {
           v-if="logoUrl"
           :src="logoUrl"
           alt="Logo"
-          class="h-8 w-8 object-contain shrink-0"
+          class="h-10 w-10 object-contain shrink-0"
           @error="logoBroken = true"
         />
       </div>
@@ -166,7 +166,7 @@ function closeDrawer() {
             v-if="logoUrl"
             :src="logoUrl"
             alt="Logo"
-            class="h-8 w-auto shrink-0"
+            class="h-10 w-auto shrink-0"
             @error="logoBroken = true"
           />
           <span v-else class="text-sm font-semibold text-slate-200">Admin</span>
@@ -320,7 +320,7 @@ function closeDrawer() {
               v-if="logoUrl"
               :src="logoUrl"
               alt="Logo"
-              class="h-8 w-auto"
+              class="h-10 w-auto"
               @error="logoBroken = true"
             />
             <span

@@ -241,6 +241,8 @@ branding:                      # Optional. Customize visual identity.
   logo_path: "./branding/logo.svg"   # Served by the binary at /branding/logo.
   tagline: "Tool & Consumable Checkout"  # Shown under the logo on the idle screen.
   primary_color: ""            # CSS color (e.g. "#059669"); empty = built-in default.
+  custom_css_path: ""          # Optional .css file served at /branding/custom.css.
+                               # See "Branding → Custom CSS overrides" below.
 
 nats:                          # Optional. Off by default.
   enabled: false               # When true, events also publish to NATS.
@@ -308,6 +310,7 @@ KIOSK_RETURNS_ALLOW_CROSS_USER=false
 KIOSK_BRANDING_LOGO_PATH=/etc/kiosk/yard-03.svg
 KIOSK_BRANDING_TAGLINE=Yard 03 Crib
 KIOSK_BRANDING_PRIMARY_COLOR=#1d4ed8
+KIOSK_BRANDING_CUSTOM_CSS_PATH=/etc/kiosk/yard-03-theme.css
 KIOSK_NATS_ENABLED=true
 KIOSK_NATS_URL=nats://central.example.com:4222
 KIOSK_NATS_CREDENTIALS_FILE=/etc/kiosk/nats.creds
@@ -326,6 +329,45 @@ Other env vars:
 
 Deployment pattern: one `kiosk.yaml` checked into config management with
 sensible defaults; per-kiosk env vars set in the host's service definition.
+
+### Branding
+
+`logo_path`, `tagline`, and `primary_color` cover the common case. For
+anything else — a different accent for secondary actions, surface tint,
+typography tweaks — point `branding.custom_css_path` at a `.css` file. Both
+binaries (kiosk + controller) stream it at `GET /branding/custom.css` and
+the SPA injects a `<link rel="stylesheet">` for it **after** Tailwind, so
+your rules win the cascade at equal specificity.
+
+#### Custom CSS overrides
+
+The cleanest target is the CSS variables. These are stable surface area —
+overriding them flows through every utility that references them:
+
+```css
+:root {
+  /* Primary action color (commit button, "New X" buttons, focus rings) */
+  --color-brand-primary: #6d28d9;
+  --color-brand-primary-hover: #7c3aed;
+}
+```
+
+You can also target Tailwind utility classes for things the variables don't
+cover yet. This works but is **fragile** — class names change as the UI
+evolves, and we don't treat them as a public API. If you find yourself
+overriding the same utility class on a lot of selectors, file an issue and
+we'll consider promoting it to a variable.
+
+```css
+/* Example: re-tint the dialog/sheet surface (fragile — uses raw slate-X). */
+.bg-slate-900 { background-color: #1a1530; }
+.border-slate-800 { border-color: #2d2348; }
+```
+
+Cache-Control is 5 minutes; refresh the page after editing the file. The
+SPA only injects the `<link>` when the server reports the file is present
+on the identity payload, so removing `custom_css_path` from config and
+restarting the binary cleanly reverts to defaults.
 
 ## Development
 

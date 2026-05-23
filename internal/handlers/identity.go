@@ -17,6 +17,11 @@ type brandingPayload struct {
 	LogoURL      string `json:"logo_url,omitempty"`
 	Tagline      string `json:"tagline,omitempty"`
 	PrimaryColor string `json:"primary_color,omitempty"`
+	// CustomCSSURL is set to "/branding/custom.css" when a custom CSS file
+	// is configured. The SPA injects a <link rel="stylesheet"> for it after
+	// Tailwind so any documented CSS variables (and, with caveats, any
+	// utility class) can be overridden.
+	CustomCSSURL string `json:"custom_css_url,omitempty"`
 }
 
 type identityPayload struct {
@@ -49,6 +54,9 @@ func (h *Handlers) Identity(re *core.RequestEvent) error {
 	}
 	if strings.TrimSpace(h.Cfg.Branding.LogoPath) != "" {
 		out.Branding.LogoURL = "/branding/logo"
+	}
+	if strings.TrimSpace(h.Cfg.Branding.CustomCSSPath) != "" {
+		out.Branding.CustomCSSURL = "/branding/custom.css"
 	}
 	out.Branding.Tagline = h.Cfg.Branding.Tagline
 	out.Branding.PrimaryColor = h.Cfg.Branding.PrimaryColor

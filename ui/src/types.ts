@@ -2,6 +2,10 @@ export interface KioskBranding {
   logo_url?: string
   tagline?: string
   primary_color?: string
+  // Set when the operator configured branding.custom_css_path. The SPA
+  // injects a <link rel="stylesheet"> for this URL after Tailwind so the
+  // file can override CSS variables and utility classes.
+  custom_css_url?: string
 }
 
 // Identity payload returned by /api/kiosk/identity on both binaries.

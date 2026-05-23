@@ -6,10 +6,17 @@ import type { KioskIdentity } from '../types'
 const identity = ref<KioskIdentity | null>(null)
 let loadPromise: Promise<KioskIdentity | null> | null = null
 
+// CUSTOM_CSS_LINK_ID identifies our injected <link> so re-applying branding
+// (in tests, on a forced reload, etc.) doesn't stack multiple stylesheets
+// for the same custom CSS file.
+const CUSTOM_CSS_LINK_ID = 'kiosk-branding-custom-css'
+
 // applyBranding writes the runtime overrides from the kiosk's config into
-// CSS variables on :root. Tailwind's @theme block in style.css declares the
-// default values; writing here at runtime overrides them everywhere the
-// theme variable is referenced. No-op when a field is empty.
+// CSS variables on :root and, when configured, injects the operator's
+// custom CSS file as a <link rel="stylesheet"> after Tailwind. Tailwind's
+// @theme block in style.css declares the default variables; the runtime
+// overrides cascade through every utility that references them.
+// No-op when a field is empty.
 function applyBranding(id: KioskIdentity) {
   const root = document.documentElement
   const primary = id.branding?.primary_color?.trim()
@@ -19,6 +26,25 @@ function applyBranding(id: KioskIdentity) {
     // hover so themed buttons stay visually consistent rather than briefly
     // jumping back to emerald.
     root.style.setProperty('--color-brand-primary-hover', primary)
+  }
+
+  // Custom CSS escape hatch. The server reports the URL only when a file is
+  // configured, so absence here means the operator didn't opt in. We append
+  // at the end of <head> so the link lands AFTER Vite's Tailwind stylesheet
+  // in source order — equal-specificity rules in the custom file then win
+  // the cascade. The link is idempotent via id.
+  const customURL = id.branding?.custom_css_url?.trim()
+  if (customURL) {
+    const existing = document.getElementById(CUSTOM_CSS_LINK_ID) as HTMLLinkElement | null
+    if (existing) {
+      if (existing.href !== customURL) existing.href = customURL
+    } else {
+      const link = document.createElement('link')
+      link.id = CUSTOM_CSS_LINK_ID
+      link.rel = 'stylesheet'
+      link.href = customURL
+      document.head.appendChild(link)
+    }
   }
 }
 

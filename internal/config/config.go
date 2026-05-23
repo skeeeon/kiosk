@@ -139,10 +139,16 @@ type ControllerConfig struct {
 //   - Tagline: shown under the logo on the idle "Scan your badge" screen.
 //   - PrimaryColor: CSS color string ("#10b981", "rgb(...)", named color).
 //     Applied to the commit button and other primary action accents.
+//   - CustomCSSPath: absolute or working-dir-relative path to a .css file
+//     the binary will stream at GET /branding/custom.css. The SPA injects a
+//     <link> for it after Tailwind so the file can override any documented
+//     CSS variable (see README) and, with caveats, any utility class. Use
+//     this for anything the typed fields above don't cover.
 type BrandingConfig struct {
-	LogoPath     string `yaml:"logo_path"`
-	Tagline      string `yaml:"tagline"`
-	PrimaryColor string `yaml:"primary_color"`
+	LogoPath      string `yaml:"logo_path"`
+	Tagline       string `yaml:"tagline"`
+	PrimaryColor  string `yaml:"primary_color"`
+	CustomCSSPath string `yaml:"custom_css_path"`
 }
 
 // Duration wraps time.Duration so YAML can parse "5m", "30s", etc.

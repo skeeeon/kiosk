@@ -55,6 +55,7 @@ type brandingPayload struct {
 	LogoURL      string `json:"logo_url,omitempty"`
 	Tagline      string `json:"tagline,omitempty"`
 	PrimaryColor string `json:"primary_color,omitempty"`
+	CustomCSSURL string `json:"custom_css_url,omitempty"`
 }
 
 // Identity returns {role: "controller"} plus branding. The SPA fetches this
@@ -64,9 +65,45 @@ func (h *Handlers) Identity(re *core.RequestEvent) error {
 	if strings.TrimSpace(h.Cfg.Branding.LogoPath) != "" {
 		out.Branding.LogoURL = "/branding/logo"
 	}
+	if strings.TrimSpace(h.Cfg.Branding.CustomCSSPath) != "" {
+		out.Branding.CustomCSSURL = "/branding/custom.css"
+	}
 	out.Branding.Tagline = h.Cfg.Branding.Tagline
 	out.Branding.PrimaryColor = h.Cfg.Branding.PrimaryColor
 	return re.JSON(http.StatusOK, out)
+}
+
+// CustomCSS streams the configured branding.custom_css_path. Mirrors the
+// kiosk-side handler (handlers/branding.go); same caveats apply. The SPA
+// looks for the URL on the identity payload and only injects a <link> when
+// the server reports a file is present.
+func (h *Handlers) CustomCSS(re *core.RequestEvent) error {
+	path := strings.TrimSpace(h.Cfg.Branding.CustomCSSPath)
+	if path == "" {
+		return re.NotFoundError("no custom css configured", nil)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return re.NotFoundError("custom css file not found", nil)
+		}
+		return err
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		return re.NotFoundError("custom css path is a directory", nil)
+	}
+
+	re.Response.Header().Set("Content-Type", "text/css; charset=utf-8")
+	re.Response.Header().Set("Cache-Control", "public, max-age=300")
+	re.Response.WriteHeader(http.StatusOK)
+	_, err = io.Copy(re.Response, f)
+	return err
 }
 
 // Logo streams the configured branding.logo_path. Same behavior and 404

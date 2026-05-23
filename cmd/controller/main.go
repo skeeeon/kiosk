@@ -145,6 +145,7 @@ func main() {
 		})
 		e.Router.GET("/api/kiosk/identity", h.Identity)
 		e.Router.GET("/branding/logo", h.Logo)
+		e.Router.GET("/branding/custom.css", h.CustomCSS)
 		e.Router.GET("/api/kiosk/items.csv", h.ItemsExportCSV)
 		e.Router.GET("/api/kiosk/transactions.csv", h.TransactionsExportCSV)
 		e.Router.GET("/api/kiosk/catalog/integrity", h.CatalogIntegrity(cp))

@@ -367,7 +367,7 @@ const flashClasses = {
       v-if="splashLogoUrl"
       :src="splashLogoUrl"
       alt="logo"
-      class="h-28 md:h-36 w-auto object-contain shrink-0"
+      class="h-20 md:h-24 w-auto object-contain shrink-0"
       @error="splashLogoBroken = true"
     />
     <span v-else class="text-3xl md:text-5xl font-semibold tracking-wide shrink-0">Kiosk</span>
@@ -482,7 +482,7 @@ const flashClasses = {
           v-if="splashLogoUrl"
           :src="splashLogoUrl"
           alt="logo"
-          class="h-28 md:h-36 w-auto object-contain"
+          class="h-24 md:h-32 w-auto object-contain"
           @error="splashLogoBroken = true"
         />
         <p v-if="splashTagline" class="text-xl text-slate-400 max-w-2xl">

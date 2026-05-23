@@ -63,3 +63,10 @@ branding:
   logo_path: "./branding/logo.svg"   # served at /branding/logo (PNG or SVG)
   tagline: "Tool & Consumable Checkout"
   primary_color: ""                   # CSS color (e.g. "#059669") for primary action buttons
+  # Optional escape hatch for visuals the typed fields above don't cover.
+  # Point at a .css file; the binary serves it at /branding/custom.css and
+  # the SPA injects a <link> for it AFTER Tailwind so it can override any
+  # CSS variable documented in README.md → "Custom CSS overrides" (and,
+  # with the caveat that targeting raw utility classes is fragile across
+  # UI updates, anything else too).
+  custom_css_path: ""                # e.g. "./branding/theme.css"
