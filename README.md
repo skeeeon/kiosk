@@ -64,6 +64,14 @@ See [Central controller (kiosk-controller)](#central-controller-kiosk-controller
   serves it at `GET /api/controller/kiosks/heartbeats`, so the controller
   admin SPA shows three-state online/stale/offline badges that don't depend
   on the kiosk having actually transacted recently.
+- **Email notifications, centralized in managed mode.** Standalone kiosks
+  render and SMTP transaction receipts, low-stock alerts, and scheduled
+  open-checkouts digests locally against admin-edited templates. In
+  managed mode the kiosk instead publishes structured contexts over NATS
+  (`receipt.transaction`, `alert.lowstock`, `digest.open_checkouts`) and
+  the controller renders + sends + logs against its own fleet-global
+  template rows — one set of SMTP credentials, one audit trail, regardless
+  of fleet size. See [Notifications](#notifications).
 
 ## Architecture
 
@@ -236,6 +244,7 @@ controller:                    # Optional. Opt-in to central catalog sync.
   enabled: false               # When true, watches KV buckets below and projects updates locally.
   catalog_items_bucket: "catalog_items"   # JetStream KV bucket published by kiosk-controller
   catalog_users_bucket: "catalog_users"
+  catalog_groups_bucket: "catalog_groups"
 
 branding:                      # Optional. Customize visual identity.
   logo_path: "./branding/logo.svg"   # Served by the binary at /branding/logo.
@@ -295,7 +304,10 @@ kiosk-controller. When enabled, the kiosk's admin SPA hides Add/Edit/Delete
 on items and workers and shows a "Catalog managed by controller" banner;
 catalog changes flow in over JetStream KV instead. Requires `nats.enabled=true`
 pointing at the same broker the controller publishes to. Stock adjustments
-remain available at each kiosk regardless.
+remain available at each kiosk regardless. Email notifications also flip
+to the controller in this mode — see [Notifications](#notifications) for
+the split between locally-edited schedule rows and the controller-owned
+templates / SMTP / send log.
 
 ### Environment overrides
 
@@ -549,6 +561,9 @@ logged at warn level; commit paths are never blocked or failed by them.
 | Consume line | `{prefix}.{kiosk_code}.item.consume` |
 | Admin stock adjustment | `{prefix}.{kiosk_code}.inventory.adjust` |
 | Open-checkouts rebuild | `{prefix}.{kiosk_code}.integrity.rebuild` |
+| Receipt context (managed mode only) | `{prefix}.{kiosk_code}.receipt.transaction` |
+| Low-stock alert (managed mode only) | `{prefix}.{kiosk_code}.alert.lowstock` |
+| Scheduled digest (managed mode only) | `{prefix}.{kiosk_code}.digest.open_checkouts` |
 
 `{prefix}` is `"kiosk"` by default and configurable via `nats.subject_prefix`
 (both kiosk and controller must agree). Override only to avoid collisions on
@@ -588,6 +603,10 @@ and audit-log collections, and the controller-only `kiosks` registry and
 | `transaction_lines` | One per item action within a transaction. `action` is `checkout`, `return`, or `consume`. Carries optional `item_instance` FK for serialized lines. |
 | `open_checkouts` | Materialized view of "what's out right now." One row per unit out. Carries `item_instance` FK for serialized units. Maintained by the commit hook. |
 | `stock_adjustments` | Append-only audit log of changes to `items.quantity_on_hand` made via `/api/kiosk/items/{id}/adjust` (local) or the controller's `inventory.adjust` command bus (remote). Stores `delta`, `new_quantity` (snapshot), `reason`, the responsible `admin` (FK, populated for `source=local`), `source` ('local' \| 'controller'), `controller_admin_id` (text — controller's admin id, populated for `source=controller`), and `command_id` (UUID, unique-when-non-empty for idempotent replay of remote commands). |
+| `notification_templates` | One row per event type (`receipt.transaction`, `alert.lowstock`, `digest.open_checkouts`). Admin-editable subject/body Go templates plus a `recipients` JSON column (`{worker_email, all_admins, extras}`). Seeded from compiled-in defaults; rows are append-only — editable, not deletable. Both binaries get the schema; on managed kiosks the local rows are dormant (sends fire from the controller's rows instead). |
+| `notification_send_log` | One row per attempted recipient. `status` is `sent` / `failed` / `skipped`. Pruned daily at 90 days. The controller's table holds the fleet-wide audit in managed mode; standalone kiosks log to their own. |
+| `notification_dedupe` | Race-free dedup gate for `SendIfFirst`. Unique on `(event_type, ref, day)`. Receipts use `ref = transaction_id`; low-stock uses `ref = item_id`. Scheduled digests intentionally skip this — repeating cadence is the feature. |
+| `scheduled_reports` | Admin-edited cron rows (`cadence` daily/weekly/monthly + hour + weekday/day_of_month). Per-row recipients override the template's stored recipients. Runs only on kiosks (the scheduler reads `open_checkouts`); in managed mode the kiosk publishes a `digest.open_checkouts` envelope and the controller does the SMTP send. |
 | `kiosks` | **Controller-only.** Registry of every kiosk in the fleet. A row appears either when an admin pre-registers the kiosk via the "New kiosk" button on AdminKiosksView, auto-populated with `status=unknown` the first time the aggregator sees a `transaction.complete` from a new `kiosk_code`, or auto-populated on the first heartbeat. `last_transaction_at` advances on `transaction.complete` only (its name finally matches its meaning now that heartbeat owns general liveness); `last_seen` writes alongside it for one release as a deprecation window. Used for fleet visibility and as the join target when expanding aggregated transactions to "which kiosk did this come from?" |
 | `kiosk_items` | **Controller-only.** Membership rows tying items to kiosks. One row = one (kiosk, item) pair = "this kiosk stocks that SKU." Cascade-deletes from either side. Drives per-kiosk catalog publishing; absent rows mean the kiosk never receives that item over JetStream KV. |
 
@@ -632,6 +651,54 @@ zero. Items are matched by `code` (upsert). Items not in the CSV are left
 alone. Per-unit serials and RFID EPCs live on `item_instances`, not on the
 SKU row — serialized SKUs created via CSV still need their instances
 added through the admin UI's instances panel.
+
+## Notifications
+
+The admin SPA's **Notifications** tab manages three event types out of the
+box: transaction receipts, low-stock alerts, and scheduled open-checkouts
+digests. Each event has an editable subject + body (Go `text/template`
+syntax) and an editable recipients spec (`worker_email`, `all_admins`,
+`extras: []`). Sends are logged one row per recipient with `status` =
+`sent` / `failed` / `skipped`.
+
+Where templates are authored, where SMTP credentials live, and where the
+audit trail lands depends on whether the kiosk is managed:
+
+| | Standalone kiosk | Managed kiosk |
+|---|---|---|
+| Template authoring | `/admin/notifications` on this kiosk | `/admin/notifications` on the **controller** |
+| SMTP credentials | this kiosk's PocketBase superuser UI (`/_/` → Settings → Mail) | controller's PocketBase superuser UI |
+| Send log | this kiosk's `notification_send_log` | controller's `notification_send_log` |
+| Schedule rows | kiosk-local | **kiosk-local** (because `open_checkouts` is kiosk-local) |
+| Cron timing + digest computation | kiosk | kiosk |
+| Render + SMTP dispatch | kiosk | **controller** (over NATS) |
+
+In managed mode the kiosk's local `notification_templates` rows still
+exist (they're seeded by the same migrations) but are dormant — the
+commit hook publishes a structured context over NATS instead of calling
+the local notifier. The aggregator subscribes to:
+
+- `{prefix}.{kiosk_code}.receipt.transaction` — full `ReceiptContext`
+  (kiosk, user, transaction, lines). Controller dedupes on `transaction_id`
+  via `notification_dedupe` so JetStream redelivery never double-sends.
+- `{prefix}.{kiosk_code}.alert.lowstock` — `LowStockContext`. Day-scoped
+  dedup is the intended semantics: "tell me once per item per day," not
+  just a redelivery guard.
+- `{prefix}.{kiosk_code}.digest.open_checkouts` — a `DigestEnvelope`
+  (`{context, recipients}`) carrying the per-schedule recipients
+  override. No dedup: digests are meant to fire each cadence.
+
+Schedule rows stay on each kiosk because the controller doesn't project
+`open_checkouts`. The kiosk's scheduler computes the digest locally and
+ships the envelope; the controller renders against its own template, sends
+to the embedded recipients, and writes its own send-log row. The kiosk's
+`scheduled_reports.last_status` reflects the *publish* outcome — view the
+controller's "Recent sends" tab for the SMTP outcome.
+
+`recipients.all_admins` resolves against whichever app's `admins`
+collection the notifier is bound to — controller admins on the
+controller, kiosk admins on standalone. Worker recipients work as long
+as `users.email` is populated.
 
 ## Operations
 
@@ -931,6 +998,17 @@ catalog plus a unified transaction ledger.
   "kiosk_offline", kiosk_code, command_id}`** when the kiosk's heartbeat
   is stale, so the SPA doesn't wait 5 s for a NATS timeout to render
   "offline."
+- **Notifications, centralized.** Managed kiosks publish three new
+  notification subjects on the same JetStream stream — `receipt.transaction`
+  (one per commit), `alert.lowstock` (one per threshold cross), and
+  `digest.open_checkouts` (one per scheduled fire). The aggregator
+  dispatches each to the controller's `notifications.Notifier`, which
+  renders against the controller's fleet-global `notification_templates`
+  rows, sends via the controller's PocketBase SMTP, and writes to the
+  controller's `notification_send_log`. The CRUD endpoints
+  (`/api/controller/notifications`) mirror the kiosk's; the SPA detects
+  role at boot and points the Templates tab at the right base URL. See
+  [Notifications](#notifications) for the full picture.
 
 What it **doesn't** do in v1 (deliberately out of scope):
 
@@ -1253,6 +1331,21 @@ These started as deferred roadmap items and are now live in the binary:
   now narrowed to `transaction.complete` events only — general liveness
   moved to the heartbeat. `last_seen` writes alongside it for one
   release as a deprecation window.
+- **Notifications system.** Admin-edited templates for transaction
+  receipts, low-stock alerts, and scheduled open-checkouts digests
+  (`notification_templates`), with per-event recipients specs, a daily
+  dedup gate (`notification_dedupe`), and a one-row-per-recipient
+  send log (`notification_send_log`) pruned at 90 days. Scheduled rows
+  (`scheduled_reports`) drive the digest cron with per-row recipients
+  overrides.
+- **Centralized notifications in managed mode.** Three new JetStream
+  subjects (`receipt.transaction`, `alert.lowstock`, `digest.open_checkouts`)
+  let managed kiosks publish structured context payloads; the
+  controller's aggregator dispatches each through its own notifier
+  against fleet-global templates and the controller's SMTP. The SPA's
+  Notifications view detects role at boot and points its CRUD at
+  `/api/controller/notifications` when running on the controller. One
+  set of SMTP credentials, one audit trail.
 
 ## Roadmap
 
