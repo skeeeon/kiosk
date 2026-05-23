@@ -20,6 +20,7 @@ import (
 	"github.com/skeeeon/kiosk/internal/handlers"
 	"github.com/skeeeon/kiosk/internal/kioskctx"
 	"github.com/skeeeon/kiosk/internal/notifications"
+	"github.com/skeeeon/kiosk/internal/scheduler"
 
 	// Register schema migrations via init() side effects.
 	_ "github.com/skeeeon/kiosk/migrations"
@@ -110,9 +111,9 @@ func main() {
 	// Scheduled reports register their cron jobs at boot and react to
 	// record-hook changes thereafter — adding/editing/deleting a row in
 	// the SPA reflects in app.Cron() without a restart.
-	bindScheduledReportsHooks(app, notifier)
+	scheduler.BindRecordHooks(app, notifier)
 	app.OnServe().BindFunc(func(e *core.ServeEvent) error {
-		registerScheduledReports(app, notifier)
+		scheduler.RegisterEnabled(app, notifier)
 		return e.Next()
 	})
 
