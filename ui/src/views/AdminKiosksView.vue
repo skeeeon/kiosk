@@ -4,8 +4,10 @@ import { useRouter } from 'vue-router'
 import { pb } from '../lib/pb'
 import { api } from '../lib/api'
 import KioskDialog from '../components/KioskDialog.vue'
+import DataTable, { type ColumnDef } from '../components/DataTable.vue'
 import { useAdminToast } from '../composables/useAdminToast'
 import { useKioskIdentity } from '../composables/useKioskIdentity'
+import { useUrlQuerySync } from '../composables/useUrlQuerySync'
 import type { HeartbeatsResponse, KioskRecord } from '../types'
 
 const toast = useAdminToast()
@@ -19,6 +21,10 @@ const error = ref<string | null>(null)
 const search = ref('')
 
 const editing = ref<Partial<KioskRecord> | null>(null)
+
+useUrlQuerySync({
+  q: { ref: search, default: '' },
+})
 
 // Heartbeat polling state. The controller's in-memory map is authoritative
 // for "is this kiosk online right now"; we poll every 10s while the page is
@@ -140,6 +146,21 @@ function statusBadgeClass(status: string): string {
   }
 }
 
+const columns: ColumnDef[] = [
+  { key: 'kiosk_code', label: 'Kiosk code' },
+  { key: 'location_code', label: 'Location' },
+  { key: 'online', label: 'Online' },
+  { key: 'status', label: 'Status' },
+  { key: 'last_transaction', label: 'Last transaction' },
+  { key: 'notes', label: 'Notes' },
+]
+
+const emptyText = computed(() =>
+  kiosks.value.length === 0
+    ? 'No kiosks yet. A kiosk auto-registers the first time it publishes a transaction event or heartbeat.'
+    : 'No kiosks match your filter.',
+)
+
 async function onSave(data: Partial<KioskRecord>) {
   error.value = null
   // KioskDialog is now create-only — editing lives on AdminKioskDetailView.
@@ -187,61 +208,45 @@ async function onSave(data: Partial<KioskRecord>) {
       {{ error }}
     </p>
 
-    <div class="rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden">
-      <table class="w-full text-left text-sm">
-        <thead class="bg-slate-950/70 text-slate-400">
-          <tr>
-            <th class="px-4 py-3 font-medium">Kiosk code</th>
-            <th class="px-4 py-3 font-medium">Location</th>
-            <th class="px-4 py-3 font-medium">Online</th>
-            <th class="px-4 py-3 font-medium">Status</th>
-            <th class="px-4 py-3 font-medium">Last transaction</th>
-            <th class="px-4 py-3 font-medium">Notes</th>
-          </tr>
-        </thead>
-        <tbody class="divide-y divide-slate-800">
-          <tr v-if="loading">
-            <td colspan="6" class="text-center text-slate-500 py-8">Loading…</td>
-          </tr>
-          <tr v-else-if="filtered.length === 0">
-            <td colspan="6" class="text-center text-slate-500 py-8">
-              {{ kiosks.length === 0
-                ? 'No kiosks yet. A kiosk auto-registers the first time it publishes a transaction event or heartbeat.'
-                : 'No kiosks match your filter.' }}
-            </td>
-          </tr>
-          <tr
-            v-for="kiosk in filtered"
-            :key="kiosk.id"
-            class="hover:bg-slate-800/50 cursor-pointer"
-            @click="openDetail(kiosk)"
-          >
-            <td class="px-4 py-3 font-mono text-slate-200">{{ kiosk.kiosk_code }}</td>
-            <td class="px-4 py-3 text-slate-300">{{ kiosk.location_code || '—' }}</td>
-            <td class="px-4 py-3">
-              <span
-                class="inline-block px-2 py-0.5 rounded text-xs capitalize"
-                :class="onlineBadgeClass(onlineStatusFor(kiosk.kiosk_code))"
-              >
-                {{ onlineStatusFor(kiosk.kiosk_code) }}
-              </span>
-            </td>
-            <td class="px-4 py-3">
-              <span
-                class="inline-block px-2 py-0.5 rounded text-xs"
-                :class="statusBadgeClass(kiosk.status)"
-              >
-                {{ kiosk.status }}
-              </span>
-            </td>
-            <td class="px-4 py-3 text-slate-400">
-              {{ lastSeenDisplay(kiosk.last_transaction_at ?? kiosk.last_seen) }}
-            </td>
-            <td class="px-4 py-3 text-slate-400 truncate max-w-xs">{{ kiosk.notes || '—' }}</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
+    <DataTable
+      :columns="columns"
+      :rows="filtered"
+      :row-key="(k) => k.id"
+      :loading="loading"
+      :empty-text="emptyText"
+      row-clickable
+      @row-click="openDetail"
+    >
+      <template #cell-kiosk_code="{ row }">
+        <span class="font-mono text-slate-200">{{ row.kiosk_code }}</span>
+      </template>
+      <template #cell-location_code="{ row }">
+        <span class="text-slate-300">{{ row.location_code || '—' }}</span>
+      </template>
+      <template #cell-online="{ row }">
+        <span
+          class="inline-block px-2 py-0.5 rounded text-xs capitalize"
+          :class="onlineBadgeClass(onlineStatusFor(row.kiosk_code))"
+        >
+          {{ onlineStatusFor(row.kiosk_code) }}
+        </span>
+      </template>
+      <template #cell-status="{ row }">
+        <span class="inline-block px-2 py-0.5 rounded text-xs" :class="statusBadgeClass(row.status)">
+          {{ row.status }}
+        </span>
+      </template>
+      <template #cell-last_transaction="{ row }">
+        <span class="text-slate-400">
+          {{ lastSeenDisplay(row.last_transaction_at ?? row.last_seen) }}
+        </span>
+      </template>
+      <template #cell-notes="{ row }">
+        <span class="text-slate-400 truncate inline-block max-w-xs align-bottom">
+          {{ row.notes || '—' }}
+        </span>
+      </template>
+    </DataTable>
 
     <KioskDialog
       :open="editing !== null"

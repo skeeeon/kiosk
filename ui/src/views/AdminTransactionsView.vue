@@ -6,6 +6,8 @@ import { useAdminToast } from '../composables/useAdminToast'
 import TransactionDetailDialog, {
   type TxSummary,
 } from '../components/TransactionDetailDialog.vue'
+import DataTable, { type ColumnDef } from '../components/DataTable.vue'
+import { useUrlQuerySync } from '../composables/useUrlQuerySync'
 import type { KioskRecord } from '../types'
 
 const toast = useAdminToast()
@@ -26,9 +28,17 @@ interface TxRow {
 const kiosks = ref<KioskRecord[]>([])
 const rows = ref<TxRow[]>([])
 const page = ref(1)
-const totalPages = ref(1)
+const perPage = ref(50)
+const total = ref(0)
 const loading = ref(false)
 const error = ref<string | null>(null)
+
+const columns: ColumnDef[] = [
+  { key: 'completed', label: 'Completed' },
+  { key: 'kiosk', label: 'Kiosk' },
+  { key: 'worker', label: 'Worker' },
+  { key: 'lines', label: 'Lines', align: 'right' },
+]
 
 // Filters
 const kioskFilter = ref('') // empty = all kiosks
@@ -37,6 +47,13 @@ const toFilter = ref('')
 
 const selectedTx = ref<TxSummary | null>(null)
 const detailOpen = ref(false)
+
+useUrlQuerySync({
+  page: { ref: page, default: 1, parse: (v) => Number(v) || 1 },
+  kiosk: { ref: kioskFilter, default: '' },
+  from: { ref: fromFilter, default: '' },
+  to: { ref: toFilter, default: '' },
+})
 
 async function loadKiosks() {
   try {
@@ -69,14 +86,14 @@ async function loadTransactions(toPage = 1) {
     if (toFilter.value) {
       filters.push(`completed_at <= "${dateBoundary(toFilter.value, true)}"`)
     }
-    const res = await pb.collection('transactions').getList<TxRow>(toPage, 50, {
+    const res = await pb.collection('transactions').getList<TxRow>(toPage, perPage.value, {
       filter: filters.join(' && '),
       sort: '-completed_at',
       expand: 'user',
     })
     rows.value = res.items
     page.value = res.page
-    totalPages.value = res.totalPages
+    total.value = res.totalItems
   } catch (e) {
     error.value = (e as Error).message
   } finally {
@@ -176,66 +193,34 @@ const filteredCountLabel = computed(() => {
       {{ error }}
     </p>
 
-    <div class="rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden">
-      <table class="w-full text-left text-sm">
-        <thead class="bg-slate-950/70 text-slate-400">
-          <tr>
-            <th class="px-4 py-3 font-medium">Completed</th>
-            <th class="px-4 py-3 font-medium">Kiosk</th>
-            <th class="px-4 py-3 font-medium">Worker</th>
-            <th class="px-4 py-3 font-medium text-right">Lines</th>
-          </tr>
-        </thead>
-        <tbody class="divide-y divide-slate-800">
-          <tr v-if="loading">
-            <td colspan="4" class="text-center text-slate-500 py-8">Loading…</td>
-          </tr>
-          <tr v-else-if="rows.length === 0">
-            <td colspan="4" class="text-center text-slate-500 py-8">
-              No transactions match the filters.
-            </td>
-          </tr>
-          <tr
-            v-for="t in rows"
-            :key="t.id"
-            class="hover:bg-slate-800/50 cursor-pointer"
-            @click="openTxDetail(t)"
-          >
-            <td class="px-4 py-3 text-slate-300 tabular-nums">
-              {{ new Date(t.completed_at).toLocaleString() }}
-            </td>
-            <td class="px-4 py-3 font-mono text-slate-200">
-              {{ t.source_kiosk_code || t.kiosk_code }}
-            </td>
-            <td class="px-4 py-3 text-slate-300">
-              <span class="font-mono text-slate-400">{{ t.expand?.user?.code || '—' }}</span>
-              <span v-if="t.expand?.user?.name" class="ml-2">{{ t.expand.user.name }}</span>
-            </td>
-            <td class="px-4 py-3 text-right tabular-nums text-slate-300">{{ t.lines_count }}</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-
-    <div v-if="totalPages > 1" class="flex justify-between items-center mt-4 text-sm text-slate-400">
-      <button
-        type="button"
-        class="px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 disabled:opacity-50 disabled:cursor-not-allowed"
-        :disabled="page <= 1"
-        @click="loadTransactions(page - 1)"
-      >
-        Previous
-      </button>
-      <span>Page {{ page }} of {{ totalPages }}</span>
-      <button
-        type="button"
-        class="px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 disabled:opacity-50 disabled:cursor-not-allowed"
-        :disabled="page >= totalPages"
-        @click="loadTransactions(page + 1)"
-      >
-        Next
-      </button>
-    </div>
+    <DataTable
+      :columns="columns"
+      :rows="rows"
+      :row-key="(t) => t.id"
+      :loading="loading"
+      empty-text="No transactions match the filters."
+      row-clickable
+      :page="page"
+      :per-page="perPage"
+      :total="total"
+      @row-click="openTxDetail"
+      @update:page="(p) => loadTransactions(p)"
+      @update:per-page="(n) => { perPage = n; loadTransactions(1) }"
+    >
+      <template #cell-completed="{ row }">
+        <span class="text-slate-300 tabular-nums">{{ new Date(row.completed_at).toLocaleString() }}</span>
+      </template>
+      <template #cell-kiosk="{ row }">
+        <span class="font-mono text-slate-200">{{ row.source_kiosk_code || row.kiosk_code }}</span>
+      </template>
+      <template #cell-worker="{ row }">
+        <span class="font-mono text-slate-400">{{ row.expand?.user?.code || '—' }}</span>
+        <span v-if="row.expand?.user?.name" class="ml-2 text-slate-300">{{ row.expand.user.name }}</span>
+      </template>
+      <template #cell-lines="{ row }">
+        <span class="tabular-nums text-slate-300">{{ row.lines_count }}</span>
+      </template>
+    </DataTable>
 
     <TransactionDetailDialog
       :open="detailOpen"

@@ -149,6 +149,7 @@ function onAdjusted(result: StockAdjustmentResult) {
 <template>
   <AppDialog
     :open="open"
+    variant="sheet"
     :title="isEdit ? 'Edit item' : 'New item'"
     :size="isSerialized && isEdit ? 'lg' : 'md'"
     @update:open="emit('update:open', $event)"

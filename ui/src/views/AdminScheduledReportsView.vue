@@ -4,6 +4,7 @@ import { pb } from '../lib/pb'
 import ScheduledReportDialog from '../components/ScheduledReportDialog.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import NotificationsTabs from '../components/NotificationsTabs.vue'
+import DataTable, { type ColumnDef } from '../components/DataTable.vue'
 import { useAdminToast } from '../composables/useAdminToast'
 import { useKioskIdentity } from '../composables/useKioskIdentity'
 import type { ScheduledReportRecord } from '../types'
@@ -96,6 +97,19 @@ function openEdit(r: ScheduledReportRecord) {
   editing.value = { ...r }
 }
 
+const columns: ColumnDef[] = [
+  { key: 'report_key', label: 'Report' },
+  { key: 'schedule', label: 'Schedule' },
+  { key: 'recipients', label: 'Recipients' },
+  { key: 'last_run', label: 'Last run' },
+  { key: 'enabled', label: 'Enabled' },
+  { key: '__actions', align: 'right' },
+]
+
+const emptyText = computed(() =>
+  isController.value ? '' : 'No scheduled reports yet. Click "New schedule" to create one.',
+)
+
 async function onSave(data: Partial<ScheduledReportRecord>) {
   try {
     if (data.id) {
@@ -158,63 +172,48 @@ async function onDelete() {
       Scheduled reports run on each kiosk, not on the controller. Configure them from the kiosk&rsquo;s admin SPA.
     </div>
 
-    <div class="rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden">
-      <table class="w-full text-left text-sm">
-        <thead class="bg-slate-950/70 text-slate-400">
-          <tr>
-            <th class="px-4 py-3 font-medium">Report</th>
-            <th class="px-4 py-3 font-medium">Schedule</th>
-            <th class="px-4 py-3 font-medium">Recipients</th>
-            <th class="px-4 py-3 font-medium">Last run</th>
-            <th class="px-4 py-3 font-medium">Enabled</th>
-            <th class="px-4 py-3"></th>
-          </tr>
-        </thead>
-        <tbody class="divide-y divide-slate-800">
-          <tr v-if="loading">
-            <td colspan="6" class="text-center text-slate-500 py-8">Loading…</td>
-          </tr>
-          <tr v-else-if="rows.length === 0">
-            <td colspan="6" class="text-center text-slate-500 py-8">
-              {{ isController ? '' : 'No scheduled reports yet. Click "New schedule" to create one.' }}
-            </td>
-          </tr>
-          <tr
-            v-for="r in rows"
-            :key="r.id"
-            class="hover:bg-slate-800/50 cursor-pointer"
-            @click="openEdit(r)"
-          >
-            <td class="px-4 py-3 text-slate-200">{{ reportLabel(r.report_key) }}</td>
-            <td class="px-4 py-3 text-slate-300">{{ cadenceLabel(r) }}</td>
-            <td class="px-4 py-3 text-slate-400">{{ recipientsLabel(r) }}</td>
-            <td class="px-4 py-3 text-xs text-slate-400">
-              <div v-if="r.last_run_at" class="flex flex-col gap-1">
-                <span class="font-mono">{{ r.last_run_at }}</span>
-                <span :class="['inline-block px-2 py-0.5 rounded text-[10px] w-fit', statusClass(r.last_status)]">
-                  {{ r.last_status || 'unknown' }}
-                </span>
-                <span v-if="r.last_error" class="text-red-300 break-words">{{ r.last_error }}</span>
-              </div>
-              <span v-else class="text-slate-500">Never</span>
-            </td>
-            <td class="px-4 py-3">
-              <span v-if="r.enabled" class="text-emerald-400">●</span>
-              <span v-else class="text-slate-600">●</span>
-            </td>
-            <td class="px-4 py-3 text-right whitespace-nowrap">
-              <button
-                type="button"
-                class="text-red-400 hover:text-red-300 px-2 py-1"
-                @click.stop="deleting = r"
-              >
-                Delete
-              </button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
+    <DataTable
+      :columns="columns"
+      :rows="rows"
+      :row-key="(r) => r.id"
+      :loading="loading"
+      :empty-text="emptyText"
+      row-clickable
+      @row-click="openEdit"
+    >
+      <template #cell-report_key="{ row }">
+        <span class="text-slate-200">{{ reportLabel(row.report_key) }}</span>
+      </template>
+      <template #cell-schedule="{ row }">
+        <span class="text-slate-300">{{ cadenceLabel(row) }}</span>
+      </template>
+      <template #cell-recipients="{ row }">
+        <span class="text-slate-400">{{ recipientsLabel(row) }}</span>
+      </template>
+      <template #cell-last_run="{ row }">
+        <div v-if="row.last_run_at" class="flex flex-col gap-1 text-xs text-slate-400">
+          <span class="font-mono">{{ row.last_run_at }}</span>
+          <span :class="['inline-block px-2 py-0.5 rounded text-[10px] w-fit', statusClass(row.last_status)]">
+            {{ row.last_status || 'unknown' }}
+          </span>
+          <span v-if="row.last_error" class="text-red-300 break-words">{{ row.last_error }}</span>
+        </div>
+        <span v-else class="text-slate-500 text-xs">Never</span>
+      </template>
+      <template #cell-enabled="{ row }">
+        <span v-if="row.enabled" class="text-emerald-400">●</span>
+        <span v-else class="text-slate-600">●</span>
+      </template>
+      <template #cell-__actions="{ row }">
+        <button
+          type="button"
+          class="text-red-400 hover:text-red-300 px-2 py-1 whitespace-nowrap"
+          @click.stop="deleting = row"
+        >
+          Delete
+        </button>
+      </template>
+    </DataTable>
 
     <ScheduledReportDialog
       :open="editing !== null"

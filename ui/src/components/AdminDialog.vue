@@ -44,6 +44,7 @@ function onSubmit() {
 <template>
   <AppDialog
     :open="open"
+    variant="sheet"
     :title="isEdit ? 'Edit admin' : 'New admin'"
     :description="isEdit
       ? 'Password changes go through the &quot;Forgot password&quot; flow on the admin login screen.'

@@ -3,8 +3,10 @@ import { computed, onMounted, ref } from 'vue'
 import { pb } from '../lib/pb'
 import GroupDialog from '../components/GroupDialog.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
+import DataTable, { type ColumnDef } from '../components/DataTable.vue'
 import { useAdminToast } from '../composables/useAdminToast'
 import { useKioskIdentity } from '../composables/useKioskIdentity'
+import { useUrlQuerySync } from '../composables/useUrlQuerySync'
 import type { GroupRecord } from '../types'
 
 const toast = useAdminToast()
@@ -18,6 +20,10 @@ const search = ref('')
 
 const editing = ref<Partial<GroupRecord> | null>(null)
 const deleting = ref<GroupRecord | null>(null)
+
+useUrlQuerySync({
+  q: { ref: search, default: '' },
+})
 
 async function load() {
   loading.value = true
@@ -53,6 +59,21 @@ function openNew() {
 function openEdit(group: GroupRecord) {
   editing.value = { ...group }
 }
+
+const columns: ColumnDef[] = [
+  { key: 'code', label: 'Code' },
+  { key: 'name', label: 'Name' },
+  { key: 'contact_email', label: 'Contact email' },
+  { key: 'contact_phone', label: 'Phone' },
+  { key: 'active', label: 'Active' },
+  { key: '__actions', align: 'right' },
+]
+
+const emptyText = computed(() =>
+  groups.value.length === 0
+    ? 'No groups yet. Click "New group" to add one.'
+    : 'No groups match your filter.',
+)
 
 async function onSave(data: Partial<GroupRecord>) {
   error.value = null
@@ -121,55 +142,39 @@ async function onDelete() {
       {{ error }}
     </p>
 
-    <div class="rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden">
-      <table class="w-full text-left text-sm">
-        <thead class="bg-slate-950/70 text-slate-400">
-          <tr>
-            <th class="px-4 py-3 font-medium">Code</th>
-            <th class="px-4 py-3 font-medium">Name</th>
-            <th class="px-4 py-3 font-medium">Contact email</th>
-            <th class="px-4 py-3 font-medium">Phone</th>
-            <th class="px-4 py-3 font-medium">Active</th>
-            <th class="px-4 py-3"></th>
-          </tr>
-        </thead>
-        <tbody class="divide-y divide-slate-800">
-          <tr v-if="loading">
-            <td colspan="6" class="text-center text-slate-500 py-8">Loading…</td>
-          </tr>
-          <tr v-else-if="filtered.length === 0">
-            <td colspan="6" class="text-center text-slate-500 py-8">
-              {{ groups.length === 0 ? 'No groups yet. Click "New group" to add one.' : 'No groups match your filter.' }}
-            </td>
-          </tr>
-          <tr
-            v-for="group in filtered"
-            :key="group.id"
-            class="hover:bg-slate-800/50 cursor-pointer"
-            @click="openEdit(group)"
-          >
-            <td class="px-4 py-3 font-mono text-slate-200">{{ group.code }}</td>
-            <td class="px-4 py-3">{{ group.name }}</td>
-            <td class="px-4 py-3 text-slate-400">{{ group.contact_email || '—' }}</td>
-            <td class="px-4 py-3 text-slate-400">{{ group.contact_phone || '—' }}</td>
-            <td class="px-4 py-3">
-              <span v-if="group.active" class="text-emerald-400">●</span>
-              <span v-else class="text-slate-600">●</span>
-            </td>
-            <td class="px-4 py-3 text-right">
-              <button
-                v-if="!managed"
-                type="button"
-                class="text-red-400 hover:text-red-300 px-2 py-1"
-                @click.stop="deleting = group"
-              >
-                Delete
-              </button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
+    <DataTable
+      :columns="columns"
+      :rows="filtered"
+      :row-key="(g) => g.id"
+      :loading="loading"
+      :empty-text="emptyText"
+      row-clickable
+      @row-click="openEdit"
+    >
+      <template #cell-code="{ row }">
+        <span class="font-mono text-slate-200">{{ row.code }}</span>
+      </template>
+      <template #cell-contact_email="{ row }">
+        <span class="text-slate-400">{{ row.contact_email || '—' }}</span>
+      </template>
+      <template #cell-contact_phone="{ row }">
+        <span class="text-slate-400">{{ row.contact_phone || '—' }}</span>
+      </template>
+      <template #cell-active="{ row }">
+        <span v-if="row.active" class="text-emerald-400">●</span>
+        <span v-else class="text-slate-600">●</span>
+      </template>
+      <template #cell-__actions="{ row }">
+        <button
+          v-if="!managed"
+          type="button"
+          class="text-red-400 hover:text-red-300 px-2 py-1"
+          @click.stop="deleting = row"
+        >
+          Delete
+        </button>
+      </template>
+    </DataTable>
 
     <GroupDialog
       :open="editing !== null"

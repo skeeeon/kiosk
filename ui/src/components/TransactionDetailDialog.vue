@@ -79,6 +79,7 @@ function formatDateTime(iso: string): string {
 <template>
   <AppDialog
     :open="open"
+    variant="sheet"
     title="Transaction detail"
     size="lg"
     @update:open="emit('update:open', $event)"

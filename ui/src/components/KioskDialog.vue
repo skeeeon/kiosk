@@ -55,6 +55,7 @@ function onSubmit() {
 <template>
   <AppDialog
     :open="open"
+    variant="sheet"
     title="New kiosk"
     size="md"
     description="Pre-register a kiosk so you can assign items to it before it phones home. Kiosks also self-register on first event; that path is a no-op when the row already exists."

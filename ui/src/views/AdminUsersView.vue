@@ -1,12 +1,14 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { pb } from '../lib/pb'
 import UserDialog from '../components/UserDialog.vue'
 import GroupDialog from '../components/GroupDialog.vue'
 import WorkerHistoryDialog from '../components/WorkerHistoryDialog.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
+import DataTable, { type ColumnDef } from '../components/DataTable.vue'
 import { useAdminToast } from '../composables/useAdminToast'
 import { useKioskIdentity } from '../composables/useKioskIdentity'
+import { useUrlQuerySync } from '../composables/useUrlQuerySync'
 import type { GroupRecord, WorkerRecord } from '../types'
 
 const toast = useAdminToast()
@@ -18,26 +20,52 @@ const groups = ref<GroupRecord[]>([])
 const loading = ref(false)
 const error = ref<string | null>(null)
 const search = ref('')
+const page = ref(1)
+const perPage = ref(50)
+const total = ref(0)
 
 const editing = ref<Partial<WorkerRecord> | null>(null)
 const deleting = ref<WorkerRecord | null>(null)
 const creatingGroup = ref<Partial<GroupRecord> | null>(null)
 const viewingHistory = ref<WorkerRecord | null>(null)
 
+useUrlQuerySync({
+  page: { ref: page, default: 1, parse: (v) => Number(v) || 1 },
+  q: { ref: search, default: '' },
+})
+
+// PB filter literal escaping: backslash first, then double-quotes.
+function pbEscape(s: string): string {
+  return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+}
+
+function buildFilter(): string {
+  const q = search.value.trim()
+  if (!q) return ''
+  const safe = pbEscape(q)
+  return `(code ~ "${safe}" || name ~ "${safe}" || email ~ "${safe}" || group.code ~ "${safe}")`
+}
+
+async function loadGroups() {
+  try {
+    groups.value = await pb.collection('groups').getFullList<GroupRecord>({ sort: '+code' })
+  } catch (e) {
+    error.value = (e as Error).message
+  }
+}
+
 async function load() {
   loading.value = true
   error.value = null
   try {
-    // getFullList paginates internally so a roster larger than one page
-    // doesn't silently truncate the list. Groups are fetched separately
-    // (rather than via expand on each user) because the select needs the
-    // full catalog regardless of which workers are loaded.
-    const [u, g] = await Promise.all([
-      pb.collection('users').getFullList<WorkerRecord>({ sort: '+code' }),
-      pb.collection('groups').getFullList<GroupRecord>({ sort: '+code' }),
-    ])
-    users.value = u
-    groups.value = g
+    const filter = buildFilter()
+    const res = await pb.collection('users').getList<WorkerRecord>(page.value, perPage.value, {
+      filter,
+      sort: '+code',
+    })
+    users.value = res.items
+    total.value = res.totalItems
+    page.value = res.page
   } catch (e) {
     error.value = (e as Error).message
   } finally {
@@ -45,7 +73,22 @@ async function load() {
   }
 }
 
-onMounted(load)
+onMounted(async () => {
+  await Promise.all([loadGroups(), load()])
+})
+
+// Debounce search by 250ms so typing doesn't fire a request per keystroke.
+let searchTimer: ReturnType<typeof setTimeout> | null = null
+watch(search, () => {
+  if (searchTimer) clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => {
+    page.value = 1
+    void load()
+  }, 250)
+})
+onUnmounted(() => {
+  if (searchTimer) clearTimeout(searchTimer)
+})
 
 const groupByID = computed(() => {
   const m = new Map<string, GroupRecord>()
@@ -58,19 +101,31 @@ function groupLabel(id: string | undefined): string {
   return groupByID.value.get(id)?.code ?? ''
 }
 
-const filtered = computed(() => {
-  const q = search.value.trim().toLowerCase()
-  if (!q) return users.value
-  return users.value.filter((u) => {
-    const groupCode = groupLabel(u.group).toLowerCase()
-    return (
-      u.code.toLowerCase().includes(q) ||
-      u.name.toLowerCase().includes(q) ||
-      u.email.toLowerCase().includes(q) ||
-      groupCode.includes(q)
-    )
-  })
-})
+const columns: ColumnDef[] = [
+  { key: 'code', label: 'Code' },
+  { key: 'name', label: 'Name' },
+  { key: 'email', label: 'Email' },
+  { key: 'role', label: 'Role' },
+  { key: 'group', label: 'Group' },
+  { key: 'active', label: 'Active' },
+  { key: '__actions', align: 'right' },
+]
+
+const emptyText = computed(() =>
+  search.value.trim() === ''
+    ? 'No workers yet. Click "New worker" to add one.'
+    : 'No workers match your filter.',
+)
+
+function onPageChange(p: number) {
+  page.value = p
+  void load()
+}
+function onPerPageChange(n: number) {
+  perPage.value = n
+  page.value = 1
+  void load()
+}
 
 function openNew() {
   editing.value = {}
@@ -158,7 +213,7 @@ async function onCreateGroupFromUser(data: Partial<GroupRecord>) {
     <header class="flex items-baseline justify-between mb-4">
       <div>
         <h1 class="text-2xl font-semibold">Workers</h1>
-        <p class="text-sm text-slate-400">{{ users.length }} total</p>
+        <p class="text-sm text-slate-400">{{ total }} total</p>
       </div>
       <button
         v-if="!managed"
@@ -181,64 +236,56 @@ async function onCreateGroupFromUser(data: Partial<GroupRecord>) {
       {{ error }}
     </p>
 
-    <div class="rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden">
-      <table class="w-full text-left text-sm">
-        <thead class="bg-slate-950/70 text-slate-400">
-          <tr>
-            <th class="px-4 py-3 font-medium">Code</th>
-            <th class="px-4 py-3 font-medium">Name</th>
-            <th class="px-4 py-3 font-medium">Email</th>
-            <th class="px-4 py-3 font-medium">Role</th>
-            <th class="px-4 py-3 font-medium">Group</th>
-            <th class="px-4 py-3 font-medium">Active</th>
-            <th class="px-4 py-3"></th>
-          </tr>
-        </thead>
-        <tbody class="divide-y divide-slate-800">
-          <tr v-if="loading">
-            <td colspan="7" class="text-center text-slate-500 py-8">Loading…</td>
-          </tr>
-          <tr v-else-if="filtered.length === 0">
-            <td colspan="7" class="text-center text-slate-500 py-8">
-              {{ users.length === 0 ? 'No workers yet. Click "New worker" to add one.' : 'No workers match your filter.' }}
-            </td>
-          </tr>
-          <tr
-            v-for="user in filtered"
-            :key="user.id"
-            class="hover:bg-slate-800/50 cursor-pointer"
-            @click="openEdit(user)"
+    <DataTable
+      :columns="columns"
+      :rows="users"
+      :row-key="(u) => u.id"
+      :loading="loading"
+      :empty-text="emptyText"
+      row-clickable
+      :page="page"
+      :per-page="perPage"
+      :total="total"
+      @row-click="openEdit"
+      @update:page="onPageChange"
+      @update:per-page="onPerPageChange"
+    >
+      <template #cell-code="{ row }">
+        <span class="font-mono text-slate-200">{{ row.code }}</span>
+      </template>
+      <template #cell-email="{ row }">
+        <span class="text-slate-400">{{ row.email }}</span>
+      </template>
+      <template #cell-role="{ row }">
+        <span class="text-slate-400">{{ row.role }}</span>
+      </template>
+      <template #cell-group="{ row }">
+        <span class="text-slate-400">{{ groupLabel(row.group) || '—' }}</span>
+      </template>
+      <template #cell-active="{ row }">
+        <span v-if="row.active" class="text-emerald-400">●</span>
+        <span v-else class="text-slate-600">●</span>
+      </template>
+      <template #cell-__actions="{ row }">
+        <span class="whitespace-nowrap">
+          <button
+            type="button"
+            class="text-slate-400 hover:text-slate-200 px-2 py-1"
+            @click.stop="viewingHistory = row"
           >
-            <td class="px-4 py-3 font-mono text-slate-200">{{ user.code }}</td>
-            <td class="px-4 py-3">{{ user.name }}</td>
-            <td class="px-4 py-3 text-slate-400">{{ user.email }}</td>
-            <td class="px-4 py-3 text-slate-400">{{ user.role }}</td>
-            <td class="px-4 py-3 text-slate-400">{{ groupLabel(user.group) || '—' }}</td>
-            <td class="px-4 py-3">
-              <span v-if="user.active" class="text-emerald-400">●</span>
-              <span v-else class="text-slate-600">●</span>
-            </td>
-            <td class="px-4 py-3 text-right whitespace-nowrap">
-              <button
-                type="button"
-                class="text-slate-400 hover:text-slate-200 px-2 py-1"
-                @click.stop="viewingHistory = user"
-              >
-                History
-              </button>
-              <button
-                v-if="!managed"
-                type="button"
-                class="text-red-400 hover:text-red-300 px-2 py-1 ml-2"
-                @click.stop="deleting = user"
-              >
-                Delete
-              </button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
+            History
+          </button>
+          <button
+            v-if="!managed"
+            type="button"
+            class="text-red-400 hover:text-red-300 px-2 py-1 ml-2"
+            @click.stop="deleting = row"
+          >
+            Delete
+          </button>
+        </span>
+      </template>
+    </DataTable>
 
     <UserDialog
       :open="editing !== null"

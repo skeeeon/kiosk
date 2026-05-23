@@ -4,8 +4,10 @@ import { pb } from '../lib/pb'
 import AdminDialog from '../components/AdminDialog.vue'
 import AppDialog from '../components/AppDialog.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
+import DataTable, { type ColumnDef } from '../components/DataTable.vue'
 import { useAdminToast } from '../composables/useAdminToast'
 import { useAuthStore } from '../stores/auth'
+import { useUrlQuerySync } from '../composables/useUrlQuerySync'
 import type { AdminRecord } from '../types'
 
 const toast = useAdminToast()
@@ -18,6 +20,10 @@ const search = ref('')
 
 const editing = ref<Partial<AdminRecord> | null>(null)
 const deleting = ref<AdminRecord | null>(null)
+
+useUrlQuerySync({
+  q: { ref: search, default: '' },
+})
 
 // One-shot password display after a successful create. Held outside the
 // dialog so even if AdminDialog has already closed and re-opened we keep
@@ -52,6 +58,13 @@ const currentAdminId = computed(() => auth.admin?.id ?? '')
 function isSelf(a: { id?: string } | null | undefined): boolean {
   return !!a?.id && a.id === currentAdminId.value
 }
+
+const columns: ColumnDef[] = [
+  { key: 'email', label: 'Email' },
+  { key: 'name', label: 'Name' },
+  { key: 'active', label: 'Active' },
+  { key: '__actions', align: 'right' },
+]
 
 function openNew() {
   editing.value = {}
@@ -167,54 +180,37 @@ async function onDelete() {
       {{ error }}
     </p>
 
-    <div class="rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden">
-      <table class="w-full text-left text-sm">
-        <thead class="bg-slate-950/70 text-slate-400">
-          <tr>
-            <th class="px-4 py-3 font-medium">Email</th>
-            <th class="px-4 py-3 font-medium">Name</th>
-            <th class="px-4 py-3 font-medium">Active</th>
-            <th class="px-4 py-3"></th>
-          </tr>
-        </thead>
-        <tbody class="divide-y divide-slate-800">
-          <tr v-if="loading">
-            <td colspan="4" class="text-center text-slate-500 py-8">Loading…</td>
-          </tr>
-          <tr v-else-if="filtered.length === 0">
-            <td colspan="4" class="text-center text-slate-500 py-8">
-              {{ admins.length === 0 ? 'No admins yet.' : 'No admins match your filter.' }}
-            </td>
-          </tr>
-          <tr
-            v-for="a in filtered"
-            :key="a.id"
-            class="hover:bg-slate-800/50 cursor-pointer"
-            @click="openEdit(a)"
-          >
-            <td class="px-4 py-3">
-              <span class="font-mono text-slate-200">{{ a.email }}</span>
-              <span v-if="isSelf(a)" class="ml-2 text-xs text-slate-500">(you)</span>
-            </td>
-            <td class="px-4 py-3 text-slate-300">{{ a.name }}</td>
-            <td class="px-4 py-3">
-              <span v-if="a.active" class="text-emerald-400">●</span>
-              <span v-else class="text-slate-600">●</span>
-            </td>
-            <td class="px-4 py-3 text-right whitespace-nowrap">
-              <button
-                v-if="!isSelf(a)"
-                type="button"
-                class="text-red-400 hover:text-red-300 px-2 py-1"
-                @click.stop="deleting = a"
-              >
-                Delete
-              </button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
+    <DataTable
+      :columns="columns"
+      :rows="filtered"
+      :row-key="(a) => a.id"
+      :loading="loading"
+      :empty-text="admins.length === 0 ? 'No admins yet.' : 'No admins match your filter.'"
+      row-clickable
+      @row-click="openEdit"
+    >
+      <template #cell-email="{ row }">
+        <span class="font-mono text-slate-200">{{ row.email }}</span>
+        <span v-if="isSelf(row)" class="ml-2 text-xs text-slate-500">(you)</span>
+      </template>
+      <template #cell-name="{ row }">
+        <span class="text-slate-300">{{ row.name }}</span>
+      </template>
+      <template #cell-active="{ row }">
+        <span v-if="row.active" class="text-emerald-400">●</span>
+        <span v-else class="text-slate-600">●</span>
+      </template>
+      <template #cell-__actions="{ row }">
+        <button
+          v-if="!isSelf(row)"
+          type="button"
+          class="text-red-400 hover:text-red-300 px-2 py-1 whitespace-nowrap"
+          @click.stop="deleting = row"
+        >
+          Delete
+        </button>
+      </template>
+    </DataTable>
 
     <AdminDialog
       :open="editing !== null"

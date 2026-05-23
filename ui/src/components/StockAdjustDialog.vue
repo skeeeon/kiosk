@@ -95,6 +95,7 @@ async function submit() {
 <template>
   <AppDialog
     :open="open"
+    variant="sheet"
     title="Adjust stock"
     :description="`${itemName} (${itemCode}) — currently ${currentQty}`"
     @update:open="emit('update:open', $event)"

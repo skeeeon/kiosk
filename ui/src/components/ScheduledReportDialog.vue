@@ -116,6 +116,7 @@ function onSubmit() {
 <template>
   <AppDialog
     :open="open"
+    variant="sheet"
     :title="isEdit ? 'Edit scheduled report' : 'New scheduled report'"
     description="Reports email a digest of the named query on the schedule you pick. Add or remove rows here at any time — the scheduler updates without a kiosk restart."
     size="lg"

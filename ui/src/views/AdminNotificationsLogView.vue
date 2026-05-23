@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import { pb } from '../lib/pb'
 import { useAdminToast } from '../composables/useAdminToast'
 import NotificationsTabs from '../components/NotificationsTabs.vue'
+import DataTable, { type ColumnDef } from '../components/DataTable.vue'
+import { useUrlQuerySync } from '../composables/useUrlQuerySync'
 
 interface SendLogRow {
   id: string
@@ -27,8 +29,16 @@ const toast = useAdminToast()
 const rows = ref<SendLogRow[]>([])
 const total = ref(0)
 const page = ref(1)
-const perPage = 50
+const perPage = ref(50)
 const loading = ref(false)
+
+const columns: ColumnDef[] = [
+  { key: 'created', label: 'When' },
+  { key: 'event_type', label: 'Event' },
+  { key: 'recipient', label: 'Recipient' },
+  { key: 'status', label: 'Status' },
+  { key: 'detail', label: 'Detail' },
+]
 
 const eventTypeFilter = ref('')
 const statusFilter = ref<'' | 'sent' | 'failed' | 'skipped'>('')
@@ -38,6 +48,12 @@ const statusFilter = ref<'' | 'sent' | 'failed' | 'skipped'>('')
 const lookbackDays = 30
 
 const eventTypes = ref<string[]>([])
+
+useUrlQuerySync({
+  page: { ref: page, default: 1, parse: (v) => Number(v) || 1 },
+  event: { ref: eventTypeFilter, default: '' },
+  status: { ref: statusFilter, default: '' },
+})
 
 async function loadEventTypes() {
   try {
@@ -66,7 +82,7 @@ async function load() {
     if (eventTypeFilter.value) clauses.push(`event_type = "${eventTypeFilter.value}"`)
     if (statusFilter.value) clauses.push(`status = "${statusFilter.value}"`)
     const filter = clauses.join(' && ')
-    const res = await pb.collection('notification_send_log').getList<SendLogRow>(page.value, perPage, {
+    const res = await pb.collection('notification_send_log').getList<SendLogRow>(page.value, perPage.value, {
       filter,
       sort: '-created',
     })
@@ -90,10 +106,6 @@ onMounted(async () => {
   await load()
 })
 
-const totalPages = computed(() => Math.max(1, Math.ceil(total.value / perPage)))
-const showingFrom = computed(() => (total.value === 0 ? 0 : (page.value - 1) * perPage + 1))
-const showingTo = computed(() => Math.min(page.value * perPage, total.value))
-
 function statusClass(status: SendLogRow['status']): string {
   switch (status) {
     case 'sent':
@@ -105,17 +117,15 @@ function statusClass(status: SendLogRow['status']): string {
   }
 }
 
-function nextPage() {
-  if (page.value < totalPages.value) {
-    page.value++
-    void load()
-  }
+function onPageChange(p: number) {
+  page.value = p
+  void load()
 }
-function prevPage() {
-  if (page.value > 1) {
-    page.value--
-    void load()
-  }
+
+function onPerPageChange(n: number) {
+  perPage.value = n
+  page.value = 1
+  void load()
 }
 </script>
 
@@ -154,63 +164,38 @@ function prevPage() {
       </select>
     </div>
 
-    <div class="rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden">
-      <table class="w-full text-left text-sm">
-        <thead class="bg-slate-950/70 text-slate-400">
-          <tr>
-            <th class="px-4 py-3 font-medium">When</th>
-            <th class="px-4 py-3 font-medium">Event</th>
-            <th class="px-4 py-3 font-medium">Recipient</th>
-            <th class="px-4 py-3 font-medium">Status</th>
-            <th class="px-4 py-3 font-medium">Detail</th>
-          </tr>
-        </thead>
-        <tbody class="divide-y divide-slate-800">
-          <tr v-if="loading">
-            <td colspan="5" class="text-center text-slate-500 py-8">Loading…</td>
-          </tr>
-          <tr v-else-if="rows.length === 0">
-            <td colspan="5" class="text-center text-slate-500 py-8">No send log entries in the selected window.</td>
-          </tr>
-          <tr v-for="r in rows" :key="r.id" class="align-top">
-            <td class="px-4 py-3 text-slate-300 whitespace-nowrap font-mono text-xs">{{ r.created }}</td>
-            <td class="px-4 py-3 text-slate-300 font-mono text-xs">{{ r.event_type }}</td>
-            <td class="px-4 py-3 text-slate-200 break-all">{{ r.recipient || '—' }}</td>
-            <td class="px-4 py-3">
-              <span :class="['inline-block px-2 py-0.5 rounded text-xs', statusClass(r.status)]">
-                {{ r.status }}
-              </span>
-            </td>
-            <td class="px-4 py-3 text-slate-400 text-xs">
-              <p v-if="r.error" class="text-red-300 break-words">{{ r.error }}</p>
-              <p v-else class="break-words">{{ r.payload_summary || '—' }}</p>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-
-    <footer class="flex items-center justify-between mt-3 text-sm text-slate-400">
-      <span>{{ showingFrom }}–{{ showingTo }} of {{ total }}</span>
-      <div class="flex items-center gap-2">
-        <button
-          type="button"
-          class="px-3 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 disabled:opacity-40"
-          :disabled="page <= 1 || loading"
-          @click="prevPage"
-        >
-          Prev
-        </button>
-        <span>Page {{ page }} of {{ totalPages }}</span>
-        <button
-          type="button"
-          class="px-3 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 disabled:opacity-40"
-          :disabled="page >= totalPages || loading"
-          @click="nextPage"
-        >
-          Next
-        </button>
-      </div>
-    </footer>
+    <DataTable
+      :columns="columns"
+      :rows="rows"
+      :row-key="(r) => r.id"
+      :loading="loading"
+      empty-text="No send log entries in the selected window."
+      :page="page"
+      :per-page="perPage"
+      :total="total"
+      @update:page="onPageChange"
+      @update:per-page="onPerPageChange"
+    >
+      <template #cell-created="{ row }">
+        <span class="text-slate-300 whitespace-nowrap font-mono text-xs">{{ row.created }}</span>
+      </template>
+      <template #cell-event_type="{ row }">
+        <span class="text-slate-300 font-mono text-xs">{{ row.event_type }}</span>
+      </template>
+      <template #cell-recipient="{ row }">
+        <span class="text-slate-200 break-all">{{ row.recipient || '—' }}</span>
+      </template>
+      <template #cell-status="{ row }">
+        <span :class="['inline-block px-2 py-0.5 rounded text-xs', statusClass(row.status)]">
+          {{ row.status }}
+        </span>
+      </template>
+      <template #cell-detail="{ row }">
+        <div class="text-slate-400 text-xs">
+          <p v-if="row.error" class="text-red-300 break-words">{{ row.error }}</p>
+          <p v-else class="break-words">{{ row.payload_summary || '—' }}</p>
+        </div>
+      </template>
+    </DataTable>
   </main>
 </template>

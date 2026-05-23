@@ -45,6 +45,7 @@ function fmtDate(iso: string): string {
 <template>
   <AppDialog
     :open="open"
+    variant="sheet"
     title="Adjustment history"
     :description="`${itemCode}`"
     size="lg"

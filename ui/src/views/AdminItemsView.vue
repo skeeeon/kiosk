@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { pb } from '../lib/pb'
 import { download } from '../lib/api'
 import ItemDialog from '../components/ItemDialog.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
+import DataTable, { type ColumnDef } from '../components/DataTable.vue'
 import { useAdminToast } from '../composables/useAdminToast'
 import { useKioskIdentity } from '../composables/useKioskIdentity'
+import { useUrlQuerySync } from '../composables/useUrlQuerySync'
 import type { ItemRecord } from '../types'
 
 const toast = useAdminToast()
@@ -17,43 +19,80 @@ const items = ref<ItemRecord[]>([])
 const instanceCounts = ref<Record<string, number>>({})
 // Open-checkout count keyed by item id. Drives the "Out" column and the
 // low-stock row highlight; consumables stay at zero since they don't track
-// open_checkouts.
+// open_checkouts. These aggregates cover the whole catalog (not just the
+// visible page) — their cardinality is bounded by what's currently out and
+// total serialized stock, not by the items collection itself.
 const outCounts = ref<Record<string, number>>({})
 const loading = ref(false)
 const error = ref<string | null>(null)
 const search = ref('')
 const typeFilter = ref<'all' | 'tool' | 'consumable'>('all')
+const page = ref(1)
+const perPage = ref(50)
+const total = ref(0)
 
 const editing = ref<Partial<ItemRecord> | null>(null)
 const deleting = ref<ItemRecord | null>(null)
+
+useUrlQuerySync({
+  page: { ref: page, default: 1, parse: (v) => Number(v) || 1 },
+  q: { ref: search, default: '' },
+  type: { ref: typeFilter, default: 'all' },
+})
+
+function pbEscape(s: string): string {
+  return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+}
+
+function buildFilter(): string {
+  const clauses: string[] = []
+  const q = search.value.trim()
+  if (q) {
+    const safe = pbEscape(q)
+    clauses.push(`(code ~ "${safe}" || name ~ "${safe}" || category ~ "${safe}")`)
+  }
+  if (typeFilter.value !== 'all') {
+    clauses.push(`type = "${typeFilter.value}"`)
+  }
+  return clauses.join(' && ')
+}
+
+async function loadAggregates() {
+  // Controller has no open_checkouts or item_instances rows of its own.
+  if (isController.value) {
+    instanceCounts.value = {}
+    outCounts.value = {}
+    return
+  }
+  try {
+    const [instances, opens] = await Promise.all([
+      pb.collection('item_instances').getFullList<{ item: string }>({ fields: 'item' }),
+      pb.collection('open_checkouts').getFullList<{ item: string }>({ fields: 'item' }),
+    ])
+    const inst: Record<string, number> = {}
+    for (const i of instances) inst[i.item] = (inst[i.item] ?? 0) + 1
+    instanceCounts.value = inst
+    const oc: Record<string, number> = {}
+    for (const o of opens) oc[o.item] = (oc[o.item] ?? 0) + 1
+    outCounts.value = oc
+  } catch {
+    // Aggregates are best-effort — keep the row data rendering even if these
+    // queries fail. The Out / Available columns will just show 0s.
+  }
+}
 
 async function load() {
   loading.value = true
   error.value = null
   try {
-    // Skip the open_checkouts + item_instances queries on the controller
-    // — both are kiosk-local concepts and would just be empty here.
-    const queries: Promise<unknown>[] = [
-      pb.collection('items').getFullList<ItemRecord>({ sort: '+code' }),
-    ]
-    if (!isController.value) {
-      queries.push(
-        pb.collection('item_instances').getFullList<{ item: string }>({ fields: 'item' }),
-        pb.collection('open_checkouts').getFullList<{ item: string }>({ fields: 'item' }),
-      )
-    }
-    const [itemsRes, instancesRes, opensRes] = (await Promise.all(queries)) as [
-      ItemRecord[],
-      { item: string }[] | undefined,
-      { item: string }[] | undefined,
-    ]
-    items.value = itemsRes
-    const instCounts: Record<string, number> = {}
-    for (const i of instancesRes ?? []) instCounts[i.item] = (instCounts[i.item] ?? 0) + 1
-    instanceCounts.value = instCounts
-    const oc: Record<string, number> = {}
-    for (const o of opensRes ?? []) oc[o.item] = (oc[o.item] ?? 0) + 1
-    outCounts.value = oc
+    const filter = buildFilter()
+    const res = await pb.collection('items').getList<ItemRecord>(page.value, perPage.value, {
+      filter,
+      sort: '+code',
+    })
+    items.value = res.items
+    total.value = res.totalItems
+    page.value = res.page
   } catch (e) {
     error.value = (e as Error).message
   } finally {
@@ -77,20 +116,67 @@ function isLowStock(item: ItemRecord): boolean {
   return t > 0 && availableFor(item) <= t
 }
 
-onMounted(load)
-
-const filtered = computed(() => {
-  const q = search.value.trim().toLowerCase()
-  return items.value.filter((i) => {
-    if (typeFilter.value !== 'all' && i.type !== typeFilter.value) return false
-    if (!q) return true
-    return (
-      i.code.toLowerCase().includes(q) ||
-      i.name.toLowerCase().includes(q) ||
-      i.category.toLowerCase().includes(q)
-    )
-  })
+onMounted(async () => {
+  await Promise.all([load(), loadAggregates()])
 })
+
+// Debounce search; type-filter changes fire immediately since they're a single
+// click and the user has no expectation of further input.
+let searchTimer: ReturnType<typeof setTimeout> | null = null
+watch(search, () => {
+  if (searchTimer) clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => {
+    page.value = 1
+    void load()
+  }, 250)
+})
+watch(typeFilter, () => {
+  page.value = 1
+  void load()
+})
+onUnmounted(() => {
+  if (searchTimer) clearTimeout(searchTimer)
+})
+
+const visibleColumns = computed<ColumnDef[]>(() => {
+  const cols: ColumnDef[] = [
+    { key: 'code', label: 'Code' },
+    { key: 'name', label: 'Name' },
+    { key: 'type', label: 'Type' },
+    { key: 'tracking_mode', label: 'Tracking' },
+  ]
+  if (!isController.value) {
+    cols.push(
+      { key: 'on_hand', label: 'On hand', align: 'right' },
+      { key: 'out', label: 'Out', align: 'right' },
+      { key: 'available', label: 'Available', align: 'right' },
+      { key: 'threshold', label: 'Threshold', align: 'right' },
+    )
+  }
+  cols.push(
+    { key: 'category', label: 'Category' },
+    { key: 'active', label: 'Active' },
+    { key: '__actions', align: 'right' },
+  )
+  return cols
+})
+
+const emptyText = computed(() => {
+  const hasFilter = search.value.trim() !== '' || typeFilter.value !== 'all'
+  return hasFilter
+    ? 'No items match your filter.'
+    : 'No items yet. Click "New item" to add one.'
+})
+
+function onPageChange(p: number) {
+  page.value = p
+  void load()
+}
+function onPerPageChange(n: number) {
+  perPage.value = n
+  page.value = 1
+  void load()
+}
 
 function openNew() {
   editing.value = {}
@@ -110,7 +196,7 @@ async function onSave(data: Partial<ItemRecord>) {
       await pb.collection('items').create<ItemRecord>(data)
     }
     editing.value = null
-    await load()
+    await Promise.all([load(), loadAggregates()])
     toast.success(isEdit ? `Saved ${data.code ?? 'item'}` : `Created ${data.code ?? 'item'}`)
   } catch (e) {
     const msg = (e as Error).message
@@ -141,7 +227,7 @@ async function onDelete() {
   try {
     await pb.collection('items').delete(target.id)
     deleting.value = null
-    await load()
+    await Promise.all([load(), loadAggregates()])
     toast.success(`Deleted ${target.code}`)
   } catch (e) {
     const raw = (e as Error).message
@@ -159,7 +245,7 @@ async function onDelete() {
     <header class="flex items-baseline justify-between mb-4">
       <div>
         <h1 class="text-2xl font-semibold">Items</h1>
-        <p class="text-sm text-slate-400">{{ items.length }} total</p>
+        <p class="text-sm text-slate-400">{{ total }} total</p>
       </div>
       <div class="flex items-center gap-3">
         <button
@@ -201,88 +287,75 @@ async function onDelete() {
       {{ error }}
     </p>
 
-    <div class="rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden">
-      <table class="w-full text-left text-sm">
-        <thead class="bg-slate-950/70 text-slate-400">
-          <tr>
-            <th class="px-4 py-3 font-medium">Code</th>
-            <th class="px-4 py-3 font-medium">Name</th>
-            <th class="px-4 py-3 font-medium">Type</th>
-            <th class="px-4 py-3 font-medium">Tracking</th>
-            <th v-if="!isController" class="px-4 py-3 font-medium text-right">On hand</th>
-            <th v-if="!isController" class="px-4 py-3 font-medium text-right" title="Open checkouts (tools only)">Out</th>
-            <th v-if="!isController" class="px-4 py-3 font-medium text-right">Available</th>
-            <th v-if="!isController" class="px-4 py-3 font-medium text-right" title="Low-stock threshold; 0 disables the alert">Threshold</th>
-            <th class="px-4 py-3 font-medium">Category</th>
-            <th class="px-4 py-3 font-medium">Active</th>
-            <th class="px-4 py-3"></th>
-          </tr>
-        </thead>
-        <tbody class="divide-y divide-slate-800">
-          <tr v-if="loading">
-            <td :colspan="isController ? 7 : 11" class="text-center text-slate-500 py-8">Loading…</td>
-          </tr>
-          <tr v-else-if="filtered.length === 0">
-            <td :colspan="isController ? 7 : 11" class="text-center text-slate-500 py-8">
-              {{ items.length === 0 ? 'No items yet. Click "New item" to add one.' : 'No items match your filter.' }}
-            </td>
-          </tr>
-          <tr
-            v-for="item in filtered"
-            :key="item.id"
-            class="hover:bg-slate-800/50 cursor-pointer"
-            :class="!isController && isLowStock(item) ? 'bg-red-950/30' : ''"
-            @click="openEdit(item)"
-          >
-            <td class="px-4 py-3 font-mono text-slate-200">{{ item.code }}</td>
-            <td class="px-4 py-3">{{ item.name }}</td>
-            <td class="px-4 py-3">
-              <span
-                class="inline-block px-2 py-0.5 rounded text-xs"
-                :class="item.type === 'tool' ? 'bg-amber-900/60 text-amber-200' : 'bg-sky-900/60 text-sky-200'"
-              >
-                {{ item.type }}
-              </span>
-            </td>
-            <td class="px-4 py-3 text-slate-400">
-              {{ item.tracking_mode }}
-              <span
-                v-if="item.tracking_mode === 'serialized'"
-                class="ml-1 inline-block px-1.5 rounded text-[10px] bg-slate-800 text-slate-300"
-                :title="`${instanceCounts[item.id] ?? 0} instance(s)`"
-              >{{ instanceCounts[item.id] ?? 0 }} inst</span>
-            </td>
-            <td v-if="!isController" class="px-4 py-3 text-right tabular-nums text-slate-300">{{ item.quantity_on_hand ?? 0 }}</td>
-            <td v-if="!isController" class="px-4 py-3 text-right tabular-nums text-slate-400">
-              {{ item.type === 'tool' ? outFor(item) : '—' }}
-            </td>
-            <td
-              v-if="!isController"
-              class="px-4 py-3 text-right tabular-nums font-semibold"
-              :class="isLowStock(item) ? 'text-red-400' : 'text-slate-300'"
-            >
-              {{ availableFor(item) }}
-            </td>
-            <td v-if="!isController" class="px-4 py-3 text-right tabular-nums text-slate-400">{{ item.reorder_threshold ?? 0 }}</td>
-            <td class="px-4 py-3 text-slate-400">{{ item.category || '—' }}</td>
-            <td class="px-4 py-3">
-              <span v-if="item.active" class="text-emerald-400">●</span>
-              <span v-else class="text-slate-600">●</span>
-            </td>
-            <td class="px-4 py-3 text-right">
-              <button
-                v-if="!managed"
-                type="button"
-                class="text-red-400 hover:text-red-300 px-2 py-1"
-                @click.stop="deleting = item"
-              >
-                Delete
-              </button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
+    <DataTable
+      :columns="visibleColumns"
+      :rows="items"
+      :row-key="(i) => i.id"
+      :loading="loading"
+      :empty-text="emptyText"
+      row-clickable
+      :row-class="(i) => (!isController && isLowStock(i) ? 'bg-red-950/30' : undefined)"
+      :page="page"
+      :per-page="perPage"
+      :total="total"
+      @row-click="openEdit"
+      @update:page="onPageChange"
+      @update:per-page="onPerPageChange"
+    >
+      <template #cell-code="{ row }">
+        <span class="font-mono text-slate-200">{{ row.code }}</span>
+      </template>
+      <template #cell-type="{ row }">
+        <span
+          class="inline-block px-2 py-0.5 rounded text-xs"
+          :class="row.type === 'tool' ? 'bg-amber-900/60 text-amber-200' : 'bg-sky-900/60 text-sky-200'"
+        >
+          {{ row.type }}
+        </span>
+      </template>
+      <template #cell-tracking_mode="{ row }">
+        <span class="text-slate-400">{{ row.tracking_mode }}</span>
+        <span
+          v-if="row.tracking_mode === 'serialized'"
+          class="ml-1 inline-block px-1.5 rounded text-[10px] bg-slate-800 text-slate-300"
+          :title="`${instanceCounts[row.id] ?? 0} instance(s)`"
+        >{{ instanceCounts[row.id] ?? 0 }} inst</span>
+      </template>
+      <template #cell-on_hand="{ row }">
+        <span class="tabular-nums text-slate-300">{{ row.quantity_on_hand ?? 0 }}</span>
+      </template>
+      <template #cell-out="{ row }">
+        <span class="tabular-nums text-slate-400">{{ row.type === 'tool' ? outFor(row) : '—' }}</span>
+      </template>
+      <template #cell-available="{ row }">
+        <span
+          class="tabular-nums font-semibold"
+          :class="isLowStock(row) ? 'text-red-400' : 'text-slate-300'"
+        >
+          {{ availableFor(row) }}
+        </span>
+      </template>
+      <template #cell-threshold="{ row }">
+        <span class="tabular-nums text-slate-400">{{ row.reorder_threshold ?? 0 }}</span>
+      </template>
+      <template #cell-category="{ row }">
+        <span class="text-slate-400">{{ row.category || '—' }}</span>
+      </template>
+      <template #cell-active="{ row }">
+        <span v-if="row.active" class="text-emerald-400">●</span>
+        <span v-else class="text-slate-600">●</span>
+      </template>
+      <template #cell-__actions="{ row }">
+        <button
+          v-if="!managed"
+          type="button"
+          class="text-red-400 hover:text-red-300 px-2 py-1"
+          @click.stop="deleting = row"
+        >
+          Delete
+        </button>
+      </template>
+    </DataTable>
 
     <ItemDialog
       :open="editing !== null"

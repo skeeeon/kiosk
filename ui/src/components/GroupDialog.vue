@@ -53,6 +53,7 @@ function onSubmit() {
 <template>
   <AppDialog
     :open="open"
+    variant="sheet"
     :title="isEdit ? 'Edit group' : 'New group'"
     description="Groups associate workers with a sub-contractor or trade. The contact email receives copies of receipts and (later) digest emails for all workers in the group."
     @update:open="emit('update:open', $event)"

@@ -55,6 +55,7 @@ function onSubmit() {
 <template>
   <AppDialog
     :open="open"
+    variant="sheet"
     :title="isEdit ? 'Edit worker' : 'New worker'"
     :description="isEdit ? undefined : 'Workers identify by badge scan; passwords are auto-generated and unused in v1.'"
     @update:open="emit('update:open', $event)"

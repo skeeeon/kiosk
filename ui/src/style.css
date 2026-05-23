@@ -50,3 +50,18 @@ html {
 .cart-scroll {
   scrollbar-gutter: stable;
 }
+
+/* iOS Safari auto-zooms any form control whose computed font-size is below
+   16px when it receives focus, and ignores `user-scalable=no` for that
+   behavior (intentionally — it's an accessibility carve-out). Bumping inputs
+   to 16px on touch devices stops the admin SPA from zooming each time an
+   operator taps a search box, filter, or form field on a phone or tablet.
+   `pointer: coarse` scopes this so desktop pointer devices keep the existing
+   text-sm density on selects/filters where designs use it intentionally. */
+@media (pointer: coarse) {
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+}
