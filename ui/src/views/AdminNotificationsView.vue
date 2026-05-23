@@ -5,6 +5,7 @@ import { pb } from '../lib/pb'
 import { useAdminToast } from '../composables/useAdminToast'
 import { useKioskIdentity } from '../composables/useKioskIdentity'
 import AppDialog from '../components/AppDialog.vue'
+import NotificationsTabs from '../components/NotificationsTabs.vue'
 
 interface Recipients {
   worker_email: boolean
@@ -249,31 +250,28 @@ onMounted(load)
 
 <template>
   <main class="p-6 max-w-4xl mx-auto w-full">
-    <header class="mb-4 flex items-start justify-between gap-4">
-      <div>
-        <h1 class="text-2xl font-semibold">Notifications</h1>
-        <p class="text-sm text-slate-400 mt-1">
-          Customize the email sent for each kiosk event. SMTP credentials live in
-          PocketBase&rsquo;s superuser UI (<code class="text-slate-300">/_/</code> &rarr; Settings &rarr; Mail).
-        </p>
-      </div>
-      <div class="shrink-0 flex items-center gap-2">
-        <RouterLink
-          v-if="!isController"
-          :to="{ name: 'admin-notifications-log' }"
-          class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm"
-        >
-          Recent sends
-        </RouterLink>
-        <button
-          type="button"
-          class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm"
-          @click="showHelp = true"
-        >
-          Template syntax & variables
-        </button>
-      </div>
+    <header class="mb-4">
+      <h1 class="text-2xl font-semibold">Notifications</h1>
+      <p class="text-sm text-slate-400 mt-1">
+        Email events the kiosk sends. SMTP credentials live in PocketBase&rsquo;s
+        superuser UI (<code class="text-slate-300">/_/</code> &rarr; Settings &rarr; Mail).
+      </p>
     </header>
+
+    <NotificationsTabs />
+
+    <div class="mb-4 flex items-center justify-between gap-4">
+      <p class="text-sm text-slate-400">
+        Customize the email sent for each kiosk event.
+      </p>
+      <button
+        type="button"
+        class="shrink-0 px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm"
+        @click="showHelp = true"
+      >
+        Template syntax & variables
+      </button>
+    </div>
 
     <div
       v-if="isController"

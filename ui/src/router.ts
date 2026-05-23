@@ -28,7 +28,10 @@ export const router = createRouter({
       component: AdminLayout,
       meta: { requiresAdmin: true },
       children: [
-        { path: '', redirect: { name: 'admin-items' } },
+        // Resolved by the role-aware redirect in beforeEach. The empty
+        // component is a placeholder vue-router needs for the route to
+        // register; the guard always redirects before render.
+        { path: '', name: 'admin-root', component: { render: () => null } },
         { path: 'items', name: 'admin-items', component: AdminItemsView },
         { path: 'users', name: 'admin-users', component: AdminUsersView },
         { path: 'admins', name: 'admin-admins', component: AdminAdminsView },
@@ -36,8 +39,8 @@ export const router = createRouter({
         { path: 'import', name: 'admin-import', component: AdminImportView },
         { path: 'reports', name: 'admin-reports', component: AdminReportsView },
         { path: 'notifications', name: 'admin-notifications', component: AdminNotificationsView },
+        { path: 'notifications/scheduled', name: 'admin-notifications-scheduled', component: AdminScheduledReportsView },
         { path: 'notifications/log', name: 'admin-notifications-log', component: AdminNotificationsLogView },
-        { path: 'scheduled-reports', name: 'admin-scheduled-reports', component: AdminScheduledReportsView },
         // Controller-only views. Nav links only render when role=controller,
         // but the routes are always registered so deep-links work on the
         // controller binary. On the kiosk binary the views render but their
@@ -50,20 +53,32 @@ export const router = createRouter({
   ],
 })
 
+// landingRoute is the admin's home tab once authenticated. On the
+// controller the operator's job is fleet management, so they land on
+// Kiosks; on the kiosk the catalog is what they're there to maintain.
+async function landingRoute(): Promise<string> {
+  const id = await loadKioskIdentity()
+  return id?.role === 'controller' ? 'admin-kiosks' : 'admin-items'
+}
+
 router.beforeEach(async (to) => {
   const auth = useAuthStore()
   if (to.meta.requiresAdmin && !auth.isAuthenticated) {
     return { name: 'admin-login', query: { redirect: to.fullPath } }
   }
   if (to.name === 'admin-login' && auth.isAuthenticated) {
-    return { name: 'admin-items' }
+    return { name: await landingRoute() }
+  }
+  // /admin/ with no child route — redirect to the role-appropriate landing.
+  if (to.name === 'admin-root') {
+    return { name: await landingRoute() }
   }
   // On the controller binary there is no checkout flow — operators always
   // belong in /admin. Redirect at the root; deep links into /admin work as-is.
   if (to.name === 'checkout') {
     const id = await loadKioskIdentity()
     if (id?.role === 'controller') {
-      return { name: auth.isAuthenticated ? 'admin-items' : 'admin-login' }
+      return { name: auth.isAuthenticated ? await landingRoute() : 'admin-login' }
     }
   }
 })

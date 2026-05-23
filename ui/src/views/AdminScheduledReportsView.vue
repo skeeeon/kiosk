@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { pb } from '../lib/pb'
 import ScheduledReportDialog from '../components/ScheduledReportDialog.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
+import NotificationsTabs from '../components/NotificationsTabs.vue'
 import { useAdminToast } from '../composables/useAdminToast'
 import { useKioskIdentity } from '../composables/useKioskIdentity'
 import type { ScheduledReportRecord } from '../types'
@@ -126,14 +127,20 @@ async function onDelete() {
 
 <template>
   <main class="p-6 max-w-6xl mx-auto w-full">
-    <header class="mb-4 flex items-start justify-between gap-4">
-      <div>
-        <h1 class="text-2xl font-semibold">Scheduled reports</h1>
-        <p class="text-sm text-slate-400 mt-1">
-          Email a report on a recurring schedule. The kiosk's scheduler re-reads this list whenever
-          you save, so changes apply without a restart.
-        </p>
-      </div>
+    <header class="mb-4">
+      <h1 class="text-2xl font-semibold">Notifications</h1>
+      <p class="text-sm text-slate-400 mt-1">
+        Email events the kiosk sends.
+      </p>
+    </header>
+
+    <NotificationsTabs />
+
+    <div class="mb-4 flex items-start justify-between gap-4">
+      <p class="text-sm text-slate-400">
+        Email a report on a recurring schedule. The kiosk&rsquo;s scheduler re-reads
+        this list whenever you save, so changes apply without a restart.
+      </p>
       <button
         v-if="!isController"
         type="button"
@@ -142,7 +149,7 @@ async function onDelete() {
       >
         New schedule
       </button>
-    </header>
+    </div>
 
     <div
       v-if="isController"

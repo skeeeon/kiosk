@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { pb } from '../lib/pb'
 import { useAdminToast } from '../composables/useAdminToast'
+import NotificationsTabs from '../components/NotificationsTabs.vue'
 
 interface SendLogRow {
   id: string
@@ -120,20 +121,19 @@ function prevPage() {
 
 <template>
   <main class="p-6 max-w-6xl mx-auto w-full">
-    <header class="mb-4 flex items-start justify-between gap-4">
-      <div>
-        <h1 class="text-2xl font-semibold">Recent sends</h1>
-        <p class="text-sm text-slate-400 mt-1">
-          One row per attempted recipient over the last {{ lookbackDays }} days. Older entries are pruned automatically.
-        </p>
-      </div>
-      <RouterLink
-        :to="{ name: 'admin-notifications' }"
-        class="shrink-0 px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm"
-      >
-        ← Back to notifications
-      </RouterLink>
+    <header class="mb-4">
+      <h1 class="text-2xl font-semibold">Notifications</h1>
+      <p class="text-sm text-slate-400 mt-1">
+        Email events the kiosk sends.
+      </p>
     </header>
+
+    <NotificationsTabs />
+
+    <p class="text-sm text-slate-400 mb-4">
+      One row per attempted recipient over the last {{ lookbackDays }} days.
+      Older entries are pruned automatically.
+    </p>
 
     <div class="flex gap-3 mb-3">
       <select
