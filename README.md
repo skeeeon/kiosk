@@ -884,7 +884,7 @@ separately. JetStream must be enabled (`nats-server -js`). Provision the
 stream and KV buckets once, out of band:
 
 ```bash
-nats stream add KIOSK_EVENTS --subjects 'kiosk.>' --retention limits --max-age 168h
+nats stream add KIOSK_EVENTS --subjects 'kiosk.>' --retention limits --max-age 168h --no-ack
 nats kv add catalog_items --history 1
 nats kv add catalog_users --history 1
 nats kv add catalog_groups --history 1
@@ -892,6 +892,26 @@ nats kv add catalog_groups --history 1
 
 (The controller will auto-create these on first start as well; the manual
 form is here so operators have a record of what's provisioned.)
+
+**`--no-ack` is load-bearing.** The controller→kiosk command bus uses
+core NATS request/reply on subjects inside the stream's filter space
+(e.g., `kiosk.K01.command.inventory.adjust`). With the default
+`--no-ack=false`, JetStream sees the message's `Reply` inbox and races a
+PubAck to it — which the controller's `nc.Request()` then mis-reads as
+the kiosk's actual reply (you'll see "kiosk online" but get back a stream
+sequence number instead of the result). The kiosk and controller never
+use the JetStream publish API; everything goes through `nc.Publish`,
+which doesn't expect a PubAck. So turning the publisher-side ack off
+costs nothing and unblocks request/reply.
+
+This setting is **separate from consumer acknowledgement** — the
+controller's durable consumer still uses `AckExplicitPolicy`, so it acks
+each event it processes and JetStream advances the cursor accordingly.
+`--no-ack` only suppresses the stream's PubAck flowing back to the
+*publisher*, not the consumer's ack flowing back to the *stream*. The
+controller's `ensureStream` sets `NoAck: true` and the comment block
+explains why; don't remove it without a replacement (e.g., narrowing
+`--subjects` to exclude `command.*` and `heartbeat`).
 
 Names above are the defaults. On a shared NATS cluster where `kiosk.>` or
 `KIOSK_EVENTS` are already taken, override via `nats.subject_prefix` and

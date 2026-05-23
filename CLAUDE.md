@@ -157,6 +157,26 @@ Three invariants:
    Do NOT add these to `FilterSubjects` and do NOT publish them through
    `events.Publish` — they're not events.
 
+   **The stream is configured `NoAck: true`** (set in
+   `internal/controller/consumer.go::ensureStream`). This is load-bearing
+   for the command bus: command subjects live inside the stream's
+   `kiosk.>` filter, so a `nc.Request` to `kiosk.<code>.command.<name>`
+   would otherwise race JetStream's PubAck against the kiosk dispatcher's
+   actual reply — the requester sees the PubAck first and mis-reads it
+   as the answer. We never use `js.Publish` (all publishes go through
+   `nc.Publish` via `events.Publisher.PublishJSON`), so turning off
+   PubAck is invisible to the publisher side. `NoAck` only affects
+   stream→publisher; the consumer's `AckExplicitPolicy` is the other
+   direction and is unaffected — that ack is what advances the durable
+   cursor and must stay.
+
+   Implication for new event types: as long as you keep using
+   `events.Publish` / `nc.Publish`, you're fine. If you ever want
+   `js.Publish` semantics (synchronous "did the stream store this?"
+   confirmation), you'll need to flip `NoAck` off and narrow the stream
+   subjects to exclude the command/heartbeat space — `NoAck: true` and
+   `js.Publish` are mutually exclusive.
+
 **Kiosk identity is process-global, not request-scoped.** `internal/kioskctx`
 holds an `atomic.Pointer[Identity]` set once at startup from config. Every
 transaction is stamped with `kiosk_code` + `location_code` from this — the

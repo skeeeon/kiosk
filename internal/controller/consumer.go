@@ -147,10 +147,23 @@ func (a *Aggregator) ensureStream(ctx context.Context) (jetstream.Stream, error)
 		MaxAge:      7 * 24 * time.Hour,
 		Storage:     jetstream.FileStorage,
 		Replicas:    1,
+		// NoAck: true is load-bearing. The kiosk command bus uses core NATS
+		// request/reply on subjects inside this stream's filter space
+		// (kiosk.<code>.command.<name>). With the default NoAck: false,
+		// JetStream sees the message's Reply inbox and races a PubAck to it
+		// — which the controller's nc.Request() then mis-reads as the
+		// kiosk's actual reply. We never use js.Publish anywhere (all
+		// publishes go via nc.Publish through events.Publisher), so the
+		// PubAck has no consumer; turning it off costs nothing and unblocks
+		// request/reply. Consumer-side acks (AckExplicitPolicy below) are
+		// unaffected — that's a separate ack flowing the other direction.
+		NoAck: true,
 	}
 	// CreateOrUpdateStream is idempotent for compatible changes. Operators
 	// who want different knobs (more replicas, longer retention) can `nats
 	// stream edit` out of band — but the defaults work out of the box.
+	// NoAck IS a compatible update; an existing stream provisioned without
+	// it will be flipped over on the controller's next startup.
 	return a.js.CreateOrUpdateStream(ctx, cfg)
 }
 
