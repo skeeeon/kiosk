@@ -35,7 +35,7 @@ async function onSubmit() {
   error.value = null
   try {
     await auth.login(email.value, password.value)
-    const target = (route.query.redirect as string) || '/admin/items'
+    const target = (route.query.redirect as string) || '/admin/'
     router.replace(target)
   } catch (e) {
     error.value = (e as Error).message || 'Login failed'

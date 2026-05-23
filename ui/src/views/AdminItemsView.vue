@@ -7,6 +7,7 @@ import ConfirmDialog from '../components/ConfirmDialog.vue'
 import DataTable, { type ColumnDef } from '../components/DataTable.vue'
 import { useAdminToast } from '../composables/useAdminToast'
 import { useKioskIdentity } from '../composables/useKioskIdentity'
+import { useListShortcuts } from '../composables/useListShortcuts'
 import { useUrlQuerySync } from '../composables/useUrlQuerySync'
 import type { ItemRecord } from '../types'
 
@@ -33,6 +34,7 @@ const total = ref(0)
 
 const editing = ref<Partial<ItemRecord> | null>(null)
 const deleting = ref<ItemRecord | null>(null)
+const searchInput = ref<HTMLInputElement | null>(null)
 
 useUrlQuerySync({
   page: { ref: page, default: 1, parse: (v) => Number(v) || 1 },
@@ -182,22 +184,53 @@ function openNew() {
   editing.value = {}
 }
 
+// "/" focuses the search box, "n" opens the New item sheet (skipped when
+// managed since the create button is hidden in that mode).
+useListShortcuts({
+  searchInput,
+  onNew: openNew,
+  canCreate: computed(() => !managed.value),
+})
+
 function openEdit(item: ItemRecord) {
   editing.value = { ...item }
 }
 
+// Shared inner save. Returns true on success so the caller can decide
+// whether to close the sheet or reseed it for another entry.
+async function persistSave(data: Partial<ItemRecord>): Promise<boolean> {
+  const isEdit = !!data.id
+  if (isEdit) {
+    await pb.collection('items').update<ItemRecord>(data.id!, data)
+  } else {
+    await pb.collection('items').create<ItemRecord>(data)
+  }
+  return isEdit
+}
+
 async function onSave(data: Partial<ItemRecord>) {
   error.value = null
-  const isEdit = !!data.id
   try {
-    if (isEdit) {
-      await pb.collection('items').update<ItemRecord>(data.id!, data)
-    } else {
-      await pb.collection('items').create<ItemRecord>(data)
-    }
+    const wasEdit = await persistSave(data)
     editing.value = null
     await Promise.all([load(), loadAggregates()])
-    toast.success(isEdit ? `Saved ${data.code ?? 'item'}` : `Created ${data.code ?? 'item'}`)
+    toast.success(wasEdit ? `Saved ${data.code ?? 'item'}` : `Created ${data.code ?? 'item'}`)
+  } catch (e) {
+    const msg = (e as Error).message
+    error.value = msg
+    toast.error(msg)
+  }
+}
+
+async function onSaveAndAdd(data: Partial<ItemRecord>) {
+  error.value = null
+  try {
+    await persistSave(data)
+    // Reseed: fresh {} triggers the dialog's prop-identity watch to reset
+    // the form. Sheet stays open.
+    editing.value = {}
+    await Promise.all([load(), loadAggregates()])
+    toast.success(`Created ${data.code ?? 'item'} — ready for next`)
   } catch (e) {
     const msg = (e as Error).message
     error.value = msg
@@ -268,9 +301,10 @@ async function onDelete() {
 
     <div class="flex gap-3 mb-4">
       <input
+        ref="searchInput"
         v-model="search"
         type="search"
-        placeholder="Search code, name, category…"
+        placeholder="Search code, name, category… (press / to focus)"
         class="flex-1 rounded-lg bg-slate-900 border border-slate-800 px-3 py-2 text-slate-100"
       />
       <select
@@ -364,6 +398,7 @@ async function onDelete() {
       :is-controller="isController"
       @update:open="(v) => { if (!v) { editing = null; void load() } }"
       @save="onSave"
+      @save-and-add-another="onSaveAndAdd"
     />
 
     <ConfirmDialog

@@ -6,6 +6,7 @@ import ConfirmDialog from '../components/ConfirmDialog.vue'
 import DataTable, { type ColumnDef } from '../components/DataTable.vue'
 import { useAdminToast } from '../composables/useAdminToast'
 import { useKioskIdentity } from '../composables/useKioskIdentity'
+import { useListShortcuts } from '../composables/useListShortcuts'
 import { useUrlQuerySync } from '../composables/useUrlQuerySync'
 import type { GroupRecord } from '../types'
 
@@ -20,6 +21,7 @@ const search = ref('')
 
 const editing = ref<Partial<GroupRecord> | null>(null)
 const deleting = ref<GroupRecord | null>(null)
+const searchInput = ref<HTMLInputElement | null>(null)
 
 useUrlQuerySync({
   q: { ref: search, default: '' },
@@ -56,6 +58,12 @@ function openNew() {
   editing.value = {}
 }
 
+useListShortcuts({
+  searchInput,
+  onNew: openNew,
+  canCreate: computed(() => !managed.value),
+})
+
 function openEdit(group: GroupRecord) {
   editing.value = { ...group }
 }
@@ -75,18 +83,37 @@ const emptyText = computed(() =>
     : 'No groups match your filter.',
 )
 
+async function persistSave(data: Partial<GroupRecord>): Promise<boolean> {
+  const isEdit = !!data.id
+  if (isEdit) {
+    await pb.collection('groups').update<GroupRecord>(data.id!, data)
+  } else {
+    await pb.collection('groups').create<GroupRecord>(data as Record<string, unknown>)
+  }
+  return isEdit
+}
+
 async function onSave(data: Partial<GroupRecord>) {
   error.value = null
-  const isEdit = !!data.id
   try {
-    if (isEdit) {
-      await pb.collection('groups').update<GroupRecord>(data.id!, data)
-    } else {
-      await pb.collection('groups').create<GroupRecord>(data as Record<string, unknown>)
-    }
+    const wasEdit = await persistSave(data)
     editing.value = null
     await load()
-    toast.success(isEdit ? `Saved ${data.code ?? 'group'}` : `Created ${data.code ?? 'group'}`)
+    toast.success(wasEdit ? `Saved ${data.code ?? 'group'}` : `Created ${data.code ?? 'group'}`)
+  } catch (e) {
+    const msg = (e as Error).message
+    error.value = msg
+    toast.error(msg)
+  }
+}
+
+async function onSaveAndAdd(data: Partial<GroupRecord>) {
+  error.value = null
+  try {
+    await persistSave(data)
+    editing.value = {}
+    await load()
+    toast.success(`Created ${data.code ?? 'group'} — ready for next`)
   } catch (e) {
     const msg = (e as Error).message
     error.value = msg
@@ -132,9 +159,10 @@ async function onDelete() {
     </header>
 
     <input
+      ref="searchInput"
       v-model="search"
       type="search"
-      placeholder="Search code, name, contact email…"
+      placeholder="Search code, name, contact email… (press / to focus)"
       class="w-full rounded-lg bg-slate-900 border border-slate-800 px-3 py-2 text-slate-100 mb-4"
     />
 
@@ -182,6 +210,7 @@ async function onDelete() {
       :managed="managed"
       @update:open="(v) => { if (!v) editing = null }"
       @save="onSave"
+      @save-and-add-another="onSaveAndAdd"
     />
 
     <ConfirmDialog

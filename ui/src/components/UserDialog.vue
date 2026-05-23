@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import AppDialog from './AppDialog.vue'
 import type { GroupRecord, WorkerRecord } from '../types'
 
@@ -16,6 +16,7 @@ const props = withDefaults(
 const emit = defineEmits<{
   'update:open': [value: boolean]
   save: [data: Partial<WorkerRecord>]
+  'save-and-add-another': [data: Partial<WorkerRecord>]
   'create-group': []
 }>()
 
@@ -28,9 +29,11 @@ const form = reactive<Partial<WorkerRecord>>({
   active: true,
 })
 
+const initialSnapshot = ref('')
+
 watch(
-  () => props.open,
-  (open) => {
+  () => [props.open, props.user] as const,
+  ([open]) => {
     if (!open) return
     Object.assign(form, {
       code: '',
@@ -41,14 +44,20 @@ watch(
       active: true,
       ...(props.user ?? {}),
     })
+    initialSnapshot.value = JSON.stringify(form)
   },
   { immediate: true },
 )
 
 const isEdit = computed(() => !!props.user?.id)
+const dirty = computed(() => JSON.stringify(form) !== initialSnapshot.value)
 
 function onSubmit() {
   emit('save', { ...form })
+}
+
+function onSubmitAndAdd() {
+  emit('save-and-add-another', { ...form })
 }
 </script>
 
@@ -58,6 +67,8 @@ function onSubmit() {
     variant="sheet"
     :title="isEdit ? 'Edit worker' : 'New worker'"
     :description="isEdit ? undefined : 'Workers identify by badge scan; passwords are auto-generated and unused in v1.'"
+    confirm-discard
+    :dirty="dirty && !managed"
     @update:open="emit('update:open', $event)"
   >
     <form class="flex flex-col gap-4" @submit.prevent="onSubmit">
@@ -148,6 +159,14 @@ function onSubmit() {
           @click="emit('update:open', false)"
         >
           {{ managed ? 'Close' : 'Cancel' }}
+        </button>
+        <button
+          v-if="!managed && !isEdit"
+          type="button"
+          class="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-100 text-sm font-medium"
+          @click="onSubmitAndAdd"
+        >
+          Save &amp; add another
         </button>
         <button
           v-if="!managed"

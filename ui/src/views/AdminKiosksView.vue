@@ -7,6 +7,7 @@ import KioskDialog from '../components/KioskDialog.vue'
 import DataTable, { type ColumnDef } from '../components/DataTable.vue'
 import { useAdminToast } from '../composables/useAdminToast'
 import { useKioskIdentity } from '../composables/useKioskIdentity'
+import { useListShortcuts } from '../composables/useListShortcuts'
 import { useUrlQuerySync } from '../composables/useUrlQuerySync'
 import type { HeartbeatsResponse, KioskRecord } from '../types'
 
@@ -21,6 +22,7 @@ const error = ref<string | null>(null)
 const search = ref('')
 
 const editing = ref<Partial<KioskRecord> | null>(null)
+const searchInput = ref<HTMLInputElement | null>(null)
 
 useUrlQuerySync({
   q: { ref: search, default: '' },
@@ -121,6 +123,8 @@ function openNew() {
   editing.value = {}
 }
 
+useListShortcuts({ searchInput, onNew: openNew, canCreate: isController })
+
 function lastSeenDisplay(v?: string): string {
   if (!v) return 'never'
   const d = new Date(v)
@@ -178,6 +182,23 @@ async function onSave(data: Partial<KioskRecord>) {
     toast.error(msg)
   }
 }
+
+// Bulk-pre-register flow: stay on the list, reseed the dialog with a blank
+// draft. Operator can fast-create several kiosks in a row, then drill into
+// whichever ones need item assignment afterwards.
+async function onSaveAndAdd(data: Partial<KioskRecord>) {
+  error.value = null
+  try {
+    const created = await pb.collection('kiosks').create<KioskRecord>(data)
+    editing.value = {}
+    await load()
+    toast.success(`Created ${created.kiosk_code} — ready for next`)
+  } catch (e) {
+    const msg = (e as Error).message
+    error.value = msg
+    toast.error(msg)
+  }
+}
 </script>
 
 <template>
@@ -198,9 +219,10 @@ async function onSave(data: Partial<KioskRecord>) {
     </header>
 
     <input
+      ref="searchInput"
       v-model="search"
       type="search"
-      placeholder="Search code, location, notes…"
+      placeholder="Search code, location, notes… (press / to focus)"
       class="w-full rounded-lg bg-slate-900 border border-slate-800 px-3 py-2 text-slate-100 mb-4"
     />
 
@@ -253,6 +275,7 @@ async function onSave(data: Partial<KioskRecord>) {
       :kiosk="editing"
       @update:open="(v) => { if (!v) editing = null }"
       @save="onSave"
+      @save-and-add-another="onSaveAndAdd"
     />
   </main>
 </template>

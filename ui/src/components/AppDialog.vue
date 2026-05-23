@@ -9,9 +9,14 @@
          operators oriented and works well on tablet/phone.
 
      `size` controls width. Defaults to 'md'. For sheets, the values map to a
-     fixed-width panel; for modals, to max-width caps. -->
+     fixed-width panel; for modals, to max-width caps.
+
+     `confirmDiscard` + `dirty`: when both are true, ESC / overlay-click / X
+     attempts to close show a small inline "Discard changes?" prompt instead
+     of dismissing the sheet. The host computes `dirty` (typically by
+     stringify-diffing the form against the initial snapshot). -->
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import {
   DialogClose,
   DialogContent,
@@ -29,10 +34,33 @@ const props = withDefaults(
     description?: string
     size?: 'sm' | 'md' | 'lg'
     variant?: 'modal' | 'sheet'
+    confirmDiscard?: boolean
+    dirty?: boolean
   }>(),
-  { size: 'md', variant: 'modal' },
+  { size: 'md', variant: 'modal', confirmDiscard: false, dirty: false },
 )
 const emit = defineEmits<{ 'update:open': [value: boolean] }>()
+
+// Internal confirm overlay state. When the outer dialog tries to close while
+// dirty, we intercept and surface this nested confirm instead of propagating
+// update:open=false. Discarding propagates; cancelling leaves the sheet open.
+const discardOpen = ref(false)
+
+function onRootOpenChange(v: boolean) {
+  if (!v && props.confirmDiscard && props.dirty) {
+    discardOpen.value = true
+    return
+  }
+  emit('update:open', v)
+}
+
+function discardConfirm() {
+  discardOpen.value = false
+  emit('update:open', false)
+}
+function discardCancel() {
+  discardOpen.value = false
+}
 
 const modalSizeClass = computed(() => {
   switch (props.size) {
@@ -58,7 +86,7 @@ const sheetSizeClass = computed(() => {
 </script>
 
 <template>
-  <DialogRoot :open="open" @update:open="emit('update:open', $event)">
+  <DialogRoot :open="open" @update:open="onRootOpenChange">
     <DialogPortal>
       <DialogOverlay
         class="fixed inset-0 bg-black/70 backdrop-blur-sm z-30 data-[state=open]:animate-in data-[state=closed]:animate-out"
@@ -110,6 +138,39 @@ const sheetSizeClass = computed(() => {
         </div>
         <div class="flex-1 overflow-y-auto px-6 py-5">
           <slot />
+        </div>
+      </DialogContent>
+    </DialogPortal>
+  </DialogRoot>
+
+  <!-- Nested discard-changes confirm. Stacks above the host sheet/modal via
+       its own portal; closing this one does NOT close the outer dialog
+       unless the operator clicks "Discard". -->
+  <DialogRoot :open="discardOpen" @update:open="(v) => { if (!v) discardCancel() }">
+    <DialogPortal>
+      <DialogOverlay class="fixed inset-0 bg-black/70 backdrop-blur-sm z-50" />
+      <DialogContent
+        class="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[92vw] max-w-md bg-slate-900 rounded-2xl border border-slate-800 p-6 z-50 shadow-2xl"
+      >
+        <DialogTitle class="text-xl font-semibold text-slate-100">Discard changes?</DialogTitle>
+        <DialogDescription class="text-slate-400 text-sm mt-1 mb-5">
+          Your edits haven&rsquo;t been saved. If you close now, they&rsquo;ll be lost.
+        </DialogDescription>
+        <div class="flex justify-end gap-3">
+          <button
+            type="button"
+            class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200"
+            @click="discardCancel"
+          >
+            Keep editing
+          </button>
+          <button
+            type="button"
+            class="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-500 text-white font-medium"
+            @click="discardConfirm"
+          >
+            Discard
+          </button>
         </div>
       </DialogContent>
     </DialogPortal>

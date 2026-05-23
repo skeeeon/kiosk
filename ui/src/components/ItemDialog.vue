@@ -25,6 +25,11 @@ const props = withDefaults(
 const emit = defineEmits<{
   'update:open': [value: boolean]
   save: [data: Partial<ItemRecord>]
+  // Same payload as save, but the host should reset to a fresh new-record
+  // form (typically by re-assigning a fresh {} to its `editing` ref) instead
+  // of closing the sheet. The dialog's watch reseeds the form when the item
+  // prop reference changes while open stays true.
+  'save-and-add-another': [data: Partial<ItemRecord>]
 }>()
 
 // `kind` collapses the two underlying axes (type, tracking_mode) into one
@@ -66,10 +71,14 @@ const form = reactive<Partial<ItemRecord>>({
 })
 
 const kind = ref<Kind>('tool-qty')
+const initialSnapshot = ref('')
 
+// Watch both `open` and the `item` prop reference so that "Save and add
+// another" — which re-assigns a fresh {} while keeping open=true — re-seeds
+// the form to a blank draft.
 watch(
-  () => props.open,
-  (open) => {
+  () => [props.open, props.item] as const,
+  ([open]) => {
     if (!open) return
     Object.assign(form, {
       code: '',
@@ -85,9 +94,12 @@ watch(
       ...(props.item ?? {}),
     })
     kind.value = kindFromItem(props.item)
+    initialSnapshot.value = JSON.stringify(form)
   },
   { immediate: true },
 )
+
+const dirty = computed(() => JSON.stringify(form) !== initialSnapshot.value)
 
 watch(kind, (k) => applyKindToForm(k))
 
@@ -141,6 +153,10 @@ function onSubmit() {
   emit('save', { ...form })
 }
 
+function onSubmitAndAdd() {
+  emit('save-and-add-another', { ...form })
+}
+
 function onAdjusted(result: StockAdjustmentResult) {
   form.quantity_on_hand = result.new_quantity
 }
@@ -152,6 +168,8 @@ function onAdjusted(result: StockAdjustmentResult) {
     variant="sheet"
     :title="isEdit ? 'Edit item' : 'New item'"
     :size="isSerialized && isEdit ? 'lg' : 'md'"
+    confirm-discard
+    :dirty="dirty && !managed"
     @update:open="emit('update:open', $event)"
   >
     <form class="flex flex-col gap-4" @submit.prevent="onSubmit">
@@ -339,6 +357,14 @@ function onAdjusted(result: StockAdjustmentResult) {
           @click="emit('update:open', false)"
         >
           {{ managed ? 'Close' : 'Cancel' }}
+        </button>
+        <button
+          v-if="!managed && !isEdit"
+          type="button"
+          class="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-100 text-sm font-medium"
+          @click="onSubmitAndAdd"
+        >
+          Save &amp; add another
         </button>
         <button
           v-if="!managed"

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import AppDialog from './AppDialog.vue'
 import type { AdminRecord } from '../types'
 
@@ -12,6 +12,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   'update:open': [value: boolean]
   save: [data: Partial<AdminRecord>]
+  'save-and-add-another': [data: Partial<AdminRecord>]
 }>()
 
 const form = reactive<Partial<AdminRecord>>({
@@ -20,9 +21,11 @@ const form = reactive<Partial<AdminRecord>>({
   active: true,
 })
 
+const initialSnapshot = ref('')
+
 watch(
-  () => props.open,
-  (open) => {
+  () => [props.open, props.admin] as const,
+  ([open]) => {
     if (!open) return
     Object.assign(form, {
       email: '',
@@ -30,14 +33,20 @@ watch(
       active: true,
       ...(props.admin ?? {}),
     })
+    initialSnapshot.value = JSON.stringify(form)
   },
   { immediate: true },
 )
 
 const isEdit = computed(() => !!props.admin?.id)
+const dirty = computed(() => JSON.stringify(form) !== initialSnapshot.value)
 
 function onSubmit() {
   emit('save', { ...form })
+}
+
+function onSubmitAndAdd() {
+  emit('save-and-add-another', { ...form })
 }
 </script>
 
@@ -49,6 +58,8 @@ function onSubmit() {
     :description="isEdit
       ? 'Password changes go through the &quot;Forgot password&quot; flow on the admin login screen.'
       : 'A random password is generated on save and shown to you once — capture it before closing the confirmation.'"
+    confirm-discard
+    :dirty="dirty"
     @update:open="emit('update:open', $event)"
   >
     <form class="flex flex-col gap-4" @submit.prevent="onSubmit">
@@ -88,6 +99,14 @@ function onSubmit() {
           @click="emit('update:open', false)"
         >
           Cancel
+        </button>
+        <button
+          v-if="!isEdit"
+          type="button"
+          class="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-100 text-sm font-medium"
+          @click="onSubmitAndAdd"
+        >
+          Save &amp; add another
         </button>
         <button
           type="submit"

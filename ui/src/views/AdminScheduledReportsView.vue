@@ -110,17 +110,32 @@ const emptyText = computed(() =>
   isController.value ? '' : 'No scheduled reports yet. Click "New schedule" to create one.',
 )
 
+async function persistSave(data: Partial<ScheduledReportRecord>): Promise<boolean> {
+  if (data.id) {
+    await pb.collection('scheduled_reports').update<ScheduledReportRecord>(data.id, data)
+    return true
+  }
+  await pb.collection('scheduled_reports').create<ScheduledReportRecord>(data as Record<string, unknown>)
+  return false
+}
+
 async function onSave(data: Partial<ScheduledReportRecord>) {
   try {
-    if (data.id) {
-      await pb.collection('scheduled_reports').update<ScheduledReportRecord>(data.id, data)
-      toast.success('Schedule updated')
-    } else {
-      await pb.collection('scheduled_reports').create<ScheduledReportRecord>(data as Record<string, unknown>)
-      toast.success('Schedule created')
-    }
+    const wasEdit = await persistSave(data)
     editing.value = null
     await load()
+    toast.success(wasEdit ? 'Schedule updated' : 'Schedule created')
+  } catch (e) {
+    toast.error((e as Error).message)
+  }
+}
+
+async function onSaveAndAdd(data: Partial<ScheduledReportRecord>) {
+  try {
+    await persistSave(data)
+    editing.value = {}
+    await load()
+    toast.success('Schedule created — ready for next')
   } catch (e) {
     toast.error((e as Error).message)
   }
@@ -220,6 +235,7 @@ async function onDelete() {
       :report="editing"
       @update:open="(v) => { if (!v) editing = null }"
       @save="onSave"
+      @save-and-add-another="onSaveAndAdd"
     />
 
     <ConfirmDialog

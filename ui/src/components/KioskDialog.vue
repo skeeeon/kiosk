@@ -3,7 +3,7 @@
      this dialog is what AdminKiosksView's "New kiosk" button opens to
      pre-register a kiosk before it phones home. -->
 <script setup lang="ts">
-import { reactive, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import AppDialog from './AppDialog.vue'
 import type { KioskRecord } from '../types'
 
@@ -15,6 +15,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   'update:open': [value: boolean]
   save: [data: Partial<KioskRecord>]
+  'save-and-add-another': [data: Partial<KioskRecord>]
 }>()
 
 const form = reactive<Partial<KioskRecord>>({
@@ -24,9 +25,11 @@ const form = reactive<Partial<KioskRecord>>({
   notes: '',
 })
 
+const initialSnapshot = ref('')
+
 watch(
-  () => props.open,
-  (open) => {
+  () => [props.open, props.kiosk] as const,
+  ([open]) => {
     if (!open) return
     Object.assign(form, {
       kiosk_code: '',
@@ -35,20 +38,31 @@ watch(
       notes: '',
       ...(props.kiosk ?? {}),
     })
+    initialSnapshot.value = JSON.stringify(form)
   },
   { immediate: true },
 )
+
+const dirty = computed(() => JSON.stringify(form) !== initialSnapshot.value)
+
+function buildPayload(): Partial<KioskRecord> {
+  return {
+    kiosk_code: form.kiosk_code,
+    location_code: form.location_code,
+    status: form.status,
+    notes: form.notes,
+  }
+}
 
 function onSubmit() {
   // Create path only. Status defaults to unknown unless the admin
   // changed it. Editing of an existing kiosk now happens on the detail
   // view, which has room for the full set of tabs.
-  emit('save', {
-    kiosk_code: form.kiosk_code,
-    location_code: form.location_code,
-    status: form.status,
-    notes: form.notes,
-  })
+  emit('save', buildPayload())
+}
+
+function onSubmitAndAdd() {
+  emit('save-and-add-another', buildPayload())
 }
 </script>
 
@@ -59,6 +73,8 @@ function onSubmit() {
     title="New kiosk"
     size="md"
     description="Pre-register a kiosk so you can assign items to it before it phones home. Kiosks also self-register on first event; that path is a no-op when the row already exists."
+    confirm-discard
+    :dirty="dirty"
     @update:open="emit('update:open', $event)"
   >
     <form class="flex flex-col gap-4" @submit.prevent="onSubmit">
@@ -111,6 +127,13 @@ function onSubmit() {
           @click="emit('update:open', false)"
         >
           Cancel
+        </button>
+        <button
+          type="button"
+          class="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-100 text-sm font-medium"
+          @click="onSubmitAndAdd"
+        >
+          Save &amp; add another
         </button>
         <button
           type="submit"

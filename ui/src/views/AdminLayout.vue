@@ -2,14 +2,15 @@
 import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import {
-  PopoverRoot,
-  PopoverTrigger,
-  PopoverPortal,
-  PopoverContent,
   DialogRoot,
   DialogPortal,
   DialogOverlay,
   DialogContent,
+  TooltipProvider,
+  TooltipRoot,
+  TooltipTrigger,
+  TooltipPortal,
+  TooltipContent,
 } from 'reka-ui'
 import { useAuthStore } from '../stores/auth'
 import { useKioskIdentity } from '../composables/useKioskIdentity'
@@ -47,7 +48,6 @@ function toggleCollapsed() {
 // is an overlay so it doesn't push content on narrow viewports.
 const drawerOpen = ref(false)
 
-const managedMenuOpen = ref(false)
 const resyncing = ref(false)
 
 async function onResync() {
@@ -59,7 +59,6 @@ async function onResync() {
       `Resync complete: republished ${r.transactions_published} transactions, ${r.lines_published} lines` +
         (r.skipped > 0 ? ` (${r.skipped} skipped)` : ''),
     )
-    managedMenuOpen.value = false
   } catch (e) {
     toast.error(`Resync failed: ${(e as Error).message}`)
   } finally {
@@ -128,6 +127,7 @@ function closeDrawer() {
 </script>
 
 <template>
+  <TooltipProvider :delay-duration="150" :skip-delay-duration="200">
   <div class="flex flex-1 min-h-0">
     <!-- Desktop sidebar (md+). -->
     <aside
@@ -142,16 +142,29 @@ function closeDrawer() {
            the expand toggle on top and the logo below; the chip is hidden
            since it wouldn't fit in 64px. -->
       <div v-if="collapsed" class="flex flex-col items-center gap-3 px-2 py-3 border-b border-slate-800">
-        <button
-          type="button"
-          class="flex items-center justify-center h-7 w-7 rounded-md text-slate-400 hover:bg-slate-800 hover:text-slate-200"
-          title="Expand sidebar"
-          @click="toggleCollapsed"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="h-4 w-4">
-            <path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 0 1 .02-1.06L10.44 10 7.23 6.29a.75.75 0 1 1 1.06-1.06l3.75 4.25a.75.75 0 0 1 0 1.04l-3.75 4.25a.75.75 0 0 1-1.06.02Z" clip-rule="evenodd" />
-          </svg>
-        </button>
+        <TooltipRoot>
+          <TooltipTrigger as-child>
+            <button
+              type="button"
+              class="flex items-center justify-center h-7 w-7 rounded-md text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+              aria-label="Expand sidebar"
+              @click="toggleCollapsed"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="h-4 w-4">
+                <path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 0 1 .02-1.06L10.44 10 7.23 6.29a.75.75 0 1 1 1.06-1.06l3.75 4.25a.75.75 0 0 1 0 1.04l-3.75 4.25a.75.75 0 0 1-1.06.02Z" clip-rule="evenodd" />
+              </svg>
+            </button>
+          </TooltipTrigger>
+          <TooltipPortal>
+            <TooltipContent
+              side="right"
+              :side-offset="8"
+              class="z-50 rounded-md bg-slate-800 border border-slate-700 px-2 py-1 text-xs text-slate-100 shadow-lg"
+            >
+              Expand sidebar
+            </TooltipContent>
+          </TooltipPortal>
+        </TooltipRoot>
         <img
           v-if="logoUrl"
           :src="logoUrl"
@@ -170,16 +183,29 @@ function closeDrawer() {
             @error="logoBroken = true"
           />
           <span v-else class="text-sm font-semibold text-slate-200">Admin</span>
-          <button
-            type="button"
-            class="flex items-center justify-center h-7 w-7 rounded-md text-slate-400 hover:bg-slate-800 hover:text-slate-200 shrink-0"
-            title="Collapse sidebar"
-            @click="toggleCollapsed"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="h-4 w-4">
-              <path fill-rule="evenodd" d="M12.79 14.77a.75.75 0 0 0-.02-1.06L9.56 10l3.21-3.71a.75.75 0 1 0-1.06-1.06L7.96 9.48a.75.75 0 0 0 0 1.04l3.75 4.25a.75.75 0 0 0 1.08.02Z" clip-rule="evenodd" />
-            </svg>
-          </button>
+          <TooltipRoot>
+            <TooltipTrigger as-child>
+              <button
+                type="button"
+                class="flex items-center justify-center h-7 w-7 rounded-md text-slate-400 hover:bg-slate-800 hover:text-slate-200 shrink-0"
+                aria-label="Collapse sidebar"
+                @click="toggleCollapsed"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="h-4 w-4">
+                  <path fill-rule="evenodd" d="M12.79 14.77a.75.75 0 0 0-.02-1.06L9.56 10l3.21-3.71a.75.75 0 1 0-1.06-1.06L7.96 9.48a.75.75 0 0 0 0 1.04l3.75 4.25a.75.75 0 0 0 1.08.02Z" clip-rule="evenodd" />
+                </svg>
+              </button>
+            </TooltipTrigger>
+            <TooltipPortal>
+              <TooltipContent
+                side="bottom"
+                :side-offset="6"
+                class="z-50 rounded-md bg-slate-800 border border-slate-700 px-2 py-1 text-xs text-slate-100 shadow-lg"
+              >
+                Collapse sidebar
+              </TooltipContent>
+            </TooltipPortal>
+          </TooltipRoot>
         </div>
         <div class="px-4 pb-3">
           <span
@@ -203,84 +229,47 @@ function closeDrawer() {
         </div>
       </div>
 
-      <!-- Managed pill (kiosk + managed only). Becomes an icon-only button in
-           collapsed mode while keeping the popover affordance. -->
-      <div v-if="managed" class="px-2 py-2 border-b border-slate-800">
-        <PopoverRoot v-model:open="managedMenuOpen">
-          <PopoverTrigger as-child>
-            <button
-              type="button"
-              :class="[
-                'inline-flex items-center rounded-full border bg-sky-900/60 border-sky-700 text-sky-200 hover:bg-sky-900/80 cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
-                collapsed
-                  ? 'h-8 w-12 justify-center mx-auto'
-                  : 'gap-1.5 px-2.5 py-1 text-xs font-medium w-full justify-center',
-              ]"
-              :title="collapsed ? 'Managed by controller' : 'Catalog is read-only — items, workers, and groups are edited at the controller. Click for managed-kiosk actions.'"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="h-3.5 w-3.5 shrink-0">
-                <path d="M8.5 4.5a3.5 3.5 0 0 1 4.95 0l2.05 2.05a3.5 3.5 0 0 1-4.95 4.95l-.6-.6 1.06-1.06.6.6a2 2 0 1 0 2.83-2.83L12.39 5.56a2 2 0 0 0-2.83 0l-.6.6L7.9 5.1l.6-.6Zm-3 3a3.5 3.5 0 0 1 4.95 0l.6.6L9.99 9.16l-.6-.6a2 2 0 1 0-2.83 2.83l2.05 2.05a2 2 0 0 0 2.83 0l.6-.6 1.06 1.06-.6.6a3.5 3.5 0 0 1-4.95-4.95L5.5 7.5Z" />
-              </svg>
-              <template v-if="!collapsed">
-                <span class="truncate">Managed by controller</span>
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="h-3 w-3 opacity-70 shrink-0">
-                  <path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 0 1 1.06.02L10 11.06l3.71-3.83a.75.75 0 1 1 1.08 1.04l-4.25 4.39a.75.75 0 0 1-1.08 0L5.21 8.27a.75.75 0 0 1 .02-1.06Z" clip-rule="evenodd" />
-                </svg>
-              </template>
-            </button>
-          </PopoverTrigger>
-          <PopoverPortal>
-            <PopoverContent
-              align="start"
-              :side="collapsed ? 'right' : 'bottom'"
-              :side-offset="8"
-              class="z-40 w-80 rounded-xl border border-slate-800 bg-slate-900 p-4 shadow-2xl text-sm text-slate-300 focus:outline-none"
-            >
-              <h3 class="text-slate-100 font-semibold mb-1">Managed kiosk</h3>
-              <p class="text-slate-400 text-xs mb-3">
-                Items, workers, and groups are edited at the controller and synced
-                down. This kiosk pushes transactions back up automatically.
-              </p>
-              <div class="border-t border-slate-800 pt-3">
-                <button
-                  type="button"
-                  class="w-full px-3 py-2 rounded-lg bg-sky-800/70 hover:bg-sky-700 text-sky-100 text-sm font-medium disabled:opacity-50"
-                  :disabled="resyncing"
-                  @click="onResync"
-                >
-                  {{ resyncing ? 'Resyncing…' : 'Resync ledger to controller' }}
-                </button>
-                <p class="text-xs text-slate-500 mt-2">
-                  Re-emits every completed transaction&rsquo;s events. Safe to run
-                  any time — the controller deduplicates by source transaction id.
-                  Use after a suspected NATS outage to recover dropped events.
-                </p>
-              </div>
-            </PopoverContent>
-          </PopoverPortal>
-        </PopoverRoot>
-      </div>
-
-      <!-- Nav -->
+      <!-- Nav. In collapsed/rail mode each link is wrapped with a Reka Tooltip
+           that surfaces the label on hover/focus; expanded mode is plain. -->
       <nav class="flex-1 overflow-y-auto py-3 px-2">
         <template v-for="(section, sIdx) in visibleSections" :key="section.id">
           <div v-if="!collapsed" class="px-2 pt-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
             {{ section.label }}
           </div>
           <div v-else-if="sIdx > 0" class="my-2 mx-3 border-t border-slate-800" aria-hidden="true" />
+          <template v-if="collapsed">
+            <TooltipRoot v-for="item in section.items" :key="item.name">
+              <TooltipTrigger as-child>
+                <RouterLink
+                  :to="{ name: item.name }"
+                  class="flex items-center justify-center h-10 mx-1 rounded-lg border-l-2 border-transparent text-slate-300 hover:bg-slate-800/60 hover:text-slate-100"
+                  active-class="bg-brand-primary/15 text-slate-50 border-brand-primary"
+                  :aria-label="item.label"
+                >
+                  <SidebarNavIcon :name="item.name" class="h-5 w-5 shrink-0" />
+                </RouterLink>
+              </TooltipTrigger>
+              <TooltipPortal>
+                <TooltipContent
+                  side="right"
+                  :side-offset="8"
+                  class="z-50 rounded-md bg-slate-800 border border-slate-700 px-2 py-1 text-xs text-slate-100 shadow-lg"
+                >
+                  {{ item.label }}
+                </TooltipContent>
+              </TooltipPortal>
+            </TooltipRoot>
+          </template>
           <RouterLink
+            v-else
             v-for="item in section.items"
             :key="item.name"
             :to="{ name: item.name }"
-            :title="collapsed ? item.label : undefined"
-            :class="[
-              'flex items-center rounded-lg text-slate-300 hover:bg-slate-800 hover:text-slate-100',
-              collapsed ? 'justify-center h-10 mx-1' : 'gap-3 px-3 py-2',
-            ]"
-            active-class="bg-slate-800 text-slate-100"
+            class="flex items-center gap-3 px-3 py-2 rounded-lg border-l-2 border-transparent text-slate-300 hover:bg-slate-800/60 hover:text-slate-100"
+            active-class="bg-brand-primary/15 text-slate-50 border-brand-primary"
           >
             <SidebarNavIcon :name="item.name" class="h-5 w-5 shrink-0" />
-            <span v-if="!collapsed" class="truncate">{{ item.label }}</span>
+            <span class="truncate">{{ item.label }}</span>
           </RouterLink>
         </template>
       </nav>
@@ -291,19 +280,39 @@ function closeDrawer() {
         <div v-if="!collapsed" class="px-2 py-1 text-xs text-slate-400 truncate" :title="auth.admin?.email">
           {{ auth.admin?.email }}
         </div>
+        <TooltipRoot v-if="collapsed">
+          <TooltipTrigger as-child>
+            <button
+              type="button"
+              class="mt-1 flex items-center justify-center h-9 w-9 mx-auto rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200"
+              aria-label="Logout"
+              @click="onLogout"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="h-4 w-4">
+                <path d="M3 4a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v1a.5.5 0 0 1-1 0V4a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-1a.5.5 0 0 1 1 0v1a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4Zm11.85 2.65a.5.5 0 0 1 .7 0l2.8 2.8a.5.5 0 0 1 0 .7l-2.8 2.8a.5.5 0 0 1-.7-.7L16.79 10.5H8a.5.5 0 0 1 0-1h8.79l-1.94-1.95a.5.5 0 0 1 0-.7Z" />
+              </svg>
+            </button>
+          </TooltipTrigger>
+          <TooltipPortal>
+            <TooltipContent
+              side="right"
+              :side-offset="8"
+              class="z-50 rounded-md bg-slate-800 border border-slate-700 px-2 py-1 text-xs text-slate-100 shadow-lg"
+            >
+              Logout
+            </TooltipContent>
+          </TooltipPortal>
+        </TooltipRoot>
         <button
+          v-else
           type="button"
-          :class="[
-            'mt-1 flex items-center rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200',
-            collapsed ? 'justify-center h-9 w-9 mx-auto' : 'w-full justify-center gap-1.5 px-3 py-2 text-sm',
-          ]"
-          :title="collapsed ? 'Logout' : undefined"
+          class="mt-1 w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm"
           @click="onLogout"
         >
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="h-4 w-4">
             <path d="M3 4a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v1a.5.5 0 0 1-1 0V4a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-1a.5.5 0 0 1 1 0v1a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4Zm11.85 2.65a.5.5 0 0 1 .7 0l2.8 2.8a.5.5 0 0 1 0 .7l-2.8 2.8a.5.5 0 0 1-.7-.7L16.79 10.5H8a.5.5 0 0 1 0-1h8.79l-1.94-1.95a.5.5 0 0 1 0-.7Z" />
           </svg>
-          <span v-if="!collapsed">Logout</span>
+          <span>Logout</span>
         </button>
       </div>
     </aside>
@@ -350,8 +359,8 @@ function closeDrawer() {
                 v-for="item in section.items"
                 :key="item.name"
                 :to="{ name: item.name }"
-                class="flex items-center gap-3 px-3 py-2 rounded-lg text-slate-300 hover:bg-slate-800 hover:text-slate-100"
-                active-class="bg-slate-800 text-slate-100"
+                class="flex items-center gap-3 px-3 py-2 rounded-lg border-l-2 border-transparent text-slate-300 hover:bg-slate-800/60 hover:text-slate-100"
+                active-class="bg-brand-primary/15 text-slate-50 border-brand-primary"
                 @click="closeDrawer"
               >
                 <SidebarNavIcon :name="item.name" class="h-5 w-5 shrink-0" />
@@ -402,15 +411,25 @@ function closeDrawer() {
         </span>
       </div>
 
-      <!-- Managed banner (kiosk + managed only). -->
+      <!-- Managed banner (kiosk + managed only). Carries the Resync action too —
+           single affordance, no sidebar duplicate. -->
       <div
         v-if="managed"
-        class="px-6 py-2 bg-sky-950/60 border-b border-sky-800 text-sky-200 text-sm flex items-center gap-2"
+        class="px-6 py-2 bg-sky-950/60 border-b border-sky-800 text-sky-200 text-sm flex items-center gap-3"
       >
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="h-4 w-4 shrink-0">
           <path d="M8.5 4.5a3.5 3.5 0 0 1 4.95 0l2.05 2.05a3.5 3.5 0 0 1-4.95 4.95l-.6-.6 1.06-1.06.6.6a2 2 0 1 0 2.83-2.83L12.39 5.56a2 2 0 0 0-2.83 0l-.6.6L7.9 5.1l.6-.6Zm-3 3a3.5 3.5 0 0 1 4.95 0l.6.6L9.99 9.16l-.6-.6a2 2 0 1 0-2.83 2.83l2.05 2.05a2 2 0 0 0 2.83 0l.6-.6 1.06 1.06-.6.6a3.5 3.5 0 0 1-4.95-4.95L5.5 7.5Z" />
         </svg>
-        <span>Catalog managed by controller — items, workers, and groups are edited centrally and synced down to this kiosk.</span>
+        <span class="flex-1 min-w-0">Catalog managed by controller — items, workers, and groups are edited centrally and synced down to this kiosk.</span>
+        <button
+          type="button"
+          class="shrink-0 px-3 py-1 rounded-md bg-sky-800/70 hover:bg-sky-700 text-sky-100 text-xs font-medium disabled:opacity-50"
+          :disabled="resyncing"
+          title="Re-emit every completed transaction's events. Safe to run any time — the controller deduplicates by source transaction id. Use after a suspected NATS outage to recover dropped events."
+          @click="onResync"
+        >
+          {{ resyncing ? 'Resyncing…' : 'Resync ledger' }}
+        </button>
       </div>
 
       <div class="flex-1 overflow-auto">
@@ -419,4 +438,5 @@ function closeDrawer() {
       <AdminToast />
     </div>
   </div>
+  </TooltipProvider>
 </template>

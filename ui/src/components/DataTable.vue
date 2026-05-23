@@ -76,6 +76,11 @@ const rangeLabel = computed(() => {
 
 const showPagination = computed(() => props.total !== undefined)
 
+// When the table is row-clickable we render a thin right-edge chevron column
+// so the affordance is visible without hovering. Same colspan math used for
+// the loading / empty / error rows so they still span the full table.
+const totalCols = computed(() => props.columns.length + (props.rowClickable ? 1 : 0))
+
 function alignClass(align?: 'left' | 'right' | 'center') {
   if (align === 'right') return 'text-right'
   if (align === 'center') return 'text-center'
@@ -153,21 +158,22 @@ function onRowClick(row: T) {
                 </svg>
               </span>
             </th>
+            <th v-if="rowClickable" class="w-8" aria-hidden="true" />
           </tr>
         </thead>
         <tbody class="divide-y divide-slate-800">
           <tr v-if="loading">
-            <td :colspan="columns.length" class="text-center text-slate-500 py-8">Loading…</td>
+            <td :colspan="totalCols" class="text-center text-slate-500 py-8">Loading…</td>
           </tr>
           <tr v-else-if="error">
-            <td :colspan="columns.length" class="text-center py-8">
+            <td :colspan="totalCols" class="text-center py-8">
               <slot name="error" :error="error">
                 <span class="text-red-300">{{ error }}</span>
               </slot>
             </td>
           </tr>
           <tr v-else-if="rows.length === 0">
-            <td :colspan="columns.length" class="text-center text-slate-500 py-8">
+            <td :colspan="totalCols" class="text-center text-slate-500 py-8">
               <slot name="empty">{{ emptyText }}</slot>
             </td>
           </tr>
@@ -176,7 +182,7 @@ function onRowClick(row: T) {
             v-else
             :key="rowKey(row)"
             :class="[
-              rowClickable ? 'hover:bg-slate-800/50 cursor-pointer' : '',
+              rowClickable ? 'group hover:bg-slate-800/50 cursor-pointer' : '',
               rowClass?.(row) ?? '',
             ]"
             @click="onRowClick(row)"
@@ -189,6 +195,17 @@ function onRowClick(row: T) {
               <slot :name="`cell-${col.key}`" :row="row" :index="index">
                 {{ (row as Record<string, unknown>)[col.key] ?? '' }}
               </slot>
+            </td>
+            <td v-if="rowClickable" class="pr-3 pl-0 text-right">
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                viewBox="0 0 20 20"
+                fill="currentColor"
+                class="inline-block h-4 w-4 text-slate-600 group-hover:text-slate-300 transition-colors"
+                aria-hidden="true"
+              >
+                <path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 0 1 .02-1.06L10.44 10 7.23 6.29a.75.75 0 1 1 1.06-1.06l3.75 4.25a.75.75 0 0 1 0 1.04l-3.75 4.25a.75.75 0 0 1-1.06.02Z" clip-rule="evenodd" />
+              </svg>
             </td>
           </tr>
         </tbody>

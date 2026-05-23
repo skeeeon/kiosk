@@ -8,6 +8,7 @@ import ConfirmDialog from '../components/ConfirmDialog.vue'
 import DataTable, { type ColumnDef } from '../components/DataTable.vue'
 import { useAdminToast } from '../composables/useAdminToast'
 import { useKioskIdentity } from '../composables/useKioskIdentity'
+import { useListShortcuts } from '../composables/useListShortcuts'
 import { useUrlQuerySync } from '../composables/useUrlQuerySync'
 import type { GroupRecord, WorkerRecord } from '../types'
 
@@ -28,6 +29,7 @@ const editing = ref<Partial<WorkerRecord> | null>(null)
 const deleting = ref<WorkerRecord | null>(null)
 const creatingGroup = ref<Partial<GroupRecord> | null>(null)
 const viewingHistory = ref<WorkerRecord | null>(null)
+const searchInput = ref<HTMLInputElement | null>(null)
 
 useUrlQuerySync({
   page: { ref: page, default: 1, parse: (v) => Number(v) || 1 },
@@ -131,6 +133,12 @@ function openNew() {
   editing.value = {}
 }
 
+useListShortcuts({
+  searchInput,
+  onNew: openNew,
+  canCreate: computed(() => !managed.value),
+})
+
 function openEdit(user: WorkerRecord) {
   editing.value = { ...user }
 }
@@ -148,23 +156,42 @@ function isFKConstraintError(msg: string): boolean {
   return m.includes('foreign key') || m.includes('constraint') || m.includes('referenced')
 }
 
+async function persistSave(data: Partial<WorkerRecord>): Promise<boolean> {
+  const isEdit = !!data.id
+  if (isEdit) {
+    await pb.collection('users').update<WorkerRecord>(data.id!, data)
+  } else {
+    const pw = randomPassword()
+    await pb.collection('users').create<WorkerRecord>({
+      ...data,
+      password: pw,
+      passwordConfirm: pw,
+    } as Record<string, unknown>)
+  }
+  return isEdit
+}
+
 async function onSave(data: Partial<WorkerRecord>) {
   error.value = null
-  const isEdit = !!data.id
   try {
-    if (isEdit) {
-      await pb.collection('users').update<WorkerRecord>(data.id!, data)
-    } else {
-      const pw = randomPassword()
-      await pb.collection('users').create<WorkerRecord>({
-        ...data,
-        password: pw,
-        passwordConfirm: pw,
-      } as Record<string, unknown>)
-    }
+    const wasEdit = await persistSave(data)
     editing.value = null
     await load()
-    toast.success(isEdit ? `Saved ${data.code ?? 'worker'}` : `Created ${data.code ?? 'worker'}`)
+    toast.success(wasEdit ? `Saved ${data.code ?? 'worker'}` : `Created ${data.code ?? 'worker'}`)
+  } catch (e) {
+    const msg = (e as Error).message
+    error.value = msg
+    toast.error(msg)
+  }
+}
+
+async function onSaveAndAdd(data: Partial<WorkerRecord>) {
+  error.value = null
+  try {
+    await persistSave(data)
+    editing.value = {}
+    await load()
+    toast.success(`Created ${data.code ?? 'worker'} — ready for next`)
   } catch (e) {
     const msg = (e as Error).message
     error.value = msg
@@ -226,9 +253,10 @@ async function onCreateGroupFromUser(data: Partial<GroupRecord>) {
     </header>
 
     <input
+      ref="searchInput"
       v-model="search"
       type="search"
-      placeholder="Search code, name, email, group…"
+      placeholder="Search code, name, email, group… (press / to focus)"
       class="w-full rounded-lg bg-slate-900 border border-slate-800 px-3 py-2 text-slate-100 mb-4"
     />
 
@@ -294,6 +322,7 @@ async function onCreateGroupFromUser(data: Partial<GroupRecord>) {
       :groups="groups"
       @update:open="(v) => { if (!v) editing = null }"
       @save="onSave"
+      @save-and-add-another="onSaveAndAdd"
       @create-group="creatingGroup = {}"
     />
 

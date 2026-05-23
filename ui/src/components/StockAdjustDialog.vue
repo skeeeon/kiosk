@@ -3,7 +3,7 @@
      through /api/kiosk/items/{id}/adjust which logs the change to
      stock_adjustments inside the same transaction as the item update. -->
 <script setup lang="ts">
-import { computed, reactive, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import AppDialog from './AppDialog.vue'
 import { api } from '../lib/api'
 import { useAdminToast } from '../composables/useAdminToast'
@@ -37,6 +37,8 @@ const form = reactive<{
 const submitting = computed(() => false) // kept for future async UX; useful as a guard
 let inFlight = false
 
+const initialSnapshot = ref('')
+
 watch(
   () => props.open,
   (open) => {
@@ -44,9 +46,18 @@ watch(
       form.mode = 'delta'
       form.value = 0
       form.reason = ''
+      initialSnapshot.value = JSON.stringify(form)
     }
   },
 )
+
+// Dirty if value moved off 0 OR reason has any content. Mode flips alone
+// don't count — toggling between Delta/Absolute without committing isn't
+// data the operator would feel they'd lose.
+const dirty = computed(() => {
+  return JSON.stringify(form) !== initialSnapshot.value &&
+    (form.value !== 0 || form.reason.trim() !== '')
+})
 
 // Show the resulting quantity inline so admin sees what they're about to commit.
 const projected = computed(() =>
@@ -98,6 +109,8 @@ async function submit() {
     variant="sheet"
     title="Adjust stock"
     :description="`${itemName} (${itemCode}) — currently ${currentQty}`"
+    confirm-discard
+    :dirty="dirty"
     @update:open="emit('update:open', $event)"
   >
     <form class="flex flex-col gap-4" @submit.prevent="submit">

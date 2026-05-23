@@ -7,6 +7,7 @@ import ConfirmDialog from '../components/ConfirmDialog.vue'
 import DataTable, { type ColumnDef } from '../components/DataTable.vue'
 import { useAdminToast } from '../composables/useAdminToast'
 import { useAuthStore } from '../stores/auth'
+import { useListShortcuts } from '../composables/useListShortcuts'
 import { useUrlQuerySync } from '../composables/useUrlQuerySync'
 import type { AdminRecord } from '../types'
 
@@ -20,6 +21,7 @@ const search = ref('')
 
 const editing = ref<Partial<AdminRecord> | null>(null)
 const deleting = ref<AdminRecord | null>(null)
+const searchInput = ref<HTMLInputElement | null>(null)
 
 useUrlQuerySync({
   q: { ref: search, default: '' },
@@ -70,6 +72,8 @@ function openNew() {
   editing.value = {}
 }
 
+useListShortcuts({ searchInput, onNew: openNew })
+
 function openEdit(a: AdminRecord) {
   editing.value = { ...a }
 }
@@ -88,34 +92,60 @@ function isFKConstraintError(msg: string): boolean {
   return m.includes('foreign key') || m.includes('constraint') || m.includes('referenced')
 }
 
+// Returns the generated password on create, null on edit. The caller decides
+// whether to surface the password prompt and how to advance the dialog.
+async function persistSave(data: Partial<AdminRecord>): Promise<string | null> {
+  const isEdit = !!data.id
+  if (isEdit) {
+    await pb.collection('admins').update<AdminRecord>(data.id!, {
+      email: data.email,
+      name: data.name,
+      active: data.active,
+    })
+    return null
+  }
+  const pw = randomPassword()
+  await pb.collection('admins').create<AdminRecord>({
+    email: data.email,
+    name: data.name,
+    active: data.active ?? true,
+    password: pw,
+    passwordConfirm: pw,
+  } as Record<string, unknown>)
+  return pw
+}
+
 async function onSave(data: Partial<AdminRecord>) {
   error.value = null
-  const isEdit = !!data.id
   try {
-    if (isEdit) {
-      await pb.collection('admins').update<AdminRecord>(data.id!, {
-        email: data.email,
-        name: data.name,
-        active: data.active,
-      })
-      editing.value = null
-      await load()
-      toast.success(`Saved ${data.email}`)
-    } else {
-      const pw = randomPassword()
-      await pb.collection('admins').create<AdminRecord>({
-        email: data.email,
-        name: data.name,
-        active: data.active ?? true,
-        password: pw,
-        passwordConfirm: pw,
-      } as Record<string, unknown>)
-      editing.value = null
-      await load()
+    const pw = await persistSave(data)
+    editing.value = null
+    await load()
+    if (pw) {
       passwordPrompt.value = { email: data.email ?? '', password: pw }
       copied.value = false
       toast.success(`Created ${data.email}`)
+    } else {
+      toast.success(`Saved ${data.email}`)
     }
+  } catch (e) {
+    const msg = (e as Error).message
+    error.value = msg
+    toast.error(msg)
+  }
+}
+
+async function onSaveAndAdd(data: Partial<AdminRecord>) {
+  error.value = null
+  try {
+    const pw = await persistSave(data)
+    editing.value = {}
+    await load()
+    if (pw) {
+      passwordPrompt.value = { email: data.email ?? '', password: pw }
+      copied.value = false
+    }
+    toast.success(`Created ${data.email} — ready for next`)
   } catch (e) {
     const msg = (e as Error).message
     error.value = msg
@@ -170,9 +200,10 @@ async function onDelete() {
     </header>
 
     <input
+      ref="searchInput"
       v-model="search"
       type="search"
-      placeholder="Search email, name…"
+      placeholder="Search email, name… (press / to focus)"
       class="w-full rounded-lg bg-slate-900 border border-slate-800 px-3 py-2 text-slate-100 mb-4"
     />
 
@@ -218,6 +249,7 @@ async function onDelete() {
       :is-self="isSelf(editing)"
       @update:open="(v) => { if (!v) editing = null }"
       @save="onSave"
+      @save-and-add-another="onSaveAndAdd"
     />
 
     <AppDialog

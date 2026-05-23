@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import AppDialog from './AppDialog.vue'
 import type { ScheduledReportRecord } from '../types'
 
@@ -11,6 +11,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   'update:open': [value: boolean]
   save: [data: Partial<ScheduledReportRecord>]
+  'save-and-add-another': [data: Partial<ScheduledReportRecord>]
 }>()
 
 // Working draft. Two pieces of state outside it: extrasText (textarea →
@@ -32,9 +33,11 @@ const extrasText = reactive({ value: '' })
 
 const error = reactive({ message: '' })
 
+const initialSnapshot = ref('')
+
 watch(
-  () => props.open,
-  (open) => {
+  () => [props.open, props.report] as const,
+  ([open]) => {
     if (!open) return
     Object.assign(form, {
       report_key: 'open_checkouts',
@@ -55,11 +58,15 @@ watch(
     }
     extrasText.value = (form.recipients.extras ?? []).join('\n')
     error.message = ''
+    initialSnapshot.value = JSON.stringify({ form, extras: extrasText.value })
   },
   { immediate: true },
 )
 
 const isEdit = computed(() => !!props.report?.id)
+const dirty = computed(
+  () => JSON.stringify({ form, extras: extrasText.value }) !== initialSnapshot.value,
+)
 
 const weekdayOptions = [
   { value: 0, label: 'Sunday' },
@@ -90,26 +97,36 @@ function isValidEmail(addr: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(addr)
 }
 
-function onSubmit() {
+function buildPayload(): Partial<ScheduledReportRecord> | null {
   const extras = parseExtras(extrasText.value)
   for (const e of extras) {
     if (!isValidEmail(e)) {
       error.message = `Not a valid email: ${e}`
-      return
+      return null
     }
   }
   if (!form.recipients?.worker_email && !form.recipients?.all_admins && extras.length === 0) {
     error.message = 'At least one recipient is required.'
-    return
+    return null
   }
-  emit('save', {
+  return {
     ...form,
     recipients: {
       worker_email: false, // digests don't have a worker context
       all_admins: form.recipients?.all_admins ?? false,
       extras,
     },
-  })
+  }
+}
+
+function onSubmit() {
+  const payload = buildPayload()
+  if (payload) emit('save', payload)
+}
+
+function onSubmitAndAdd() {
+  const payload = buildPayload()
+  if (payload) emit('save-and-add-another', payload)
 }
 </script>
 
@@ -120,6 +137,8 @@ function onSubmit() {
     :title="isEdit ? 'Edit scheduled report' : 'New scheduled report'"
     description="Reports email a digest of the named query on the schedule you pick. Add or remove rows here at any time — the scheduler updates without a kiosk restart."
     size="lg"
+    confirm-discard
+    :dirty="dirty"
     @update:open="emit('update:open', $event)"
   >
     <form class="flex flex-col gap-4" @submit.prevent="onSubmit">
@@ -222,6 +241,14 @@ function onSubmit() {
           @click="emit('update:open', false)"
         >
           Cancel
+        </button>
+        <button
+          v-if="!isEdit"
+          type="button"
+          class="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-100 text-sm font-medium"
+          @click="onSubmitAndAdd"
+        >
+          Save &amp; add another
         </button>
         <button
           type="submit"

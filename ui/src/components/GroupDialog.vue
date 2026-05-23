@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import AppDialog from './AppDialog.vue'
 import type { GroupRecord } from '../types'
 
@@ -15,6 +15,7 @@ const props = withDefaults(
 const emit = defineEmits<{
   'update:open': [value: boolean]
   save: [data: Partial<GroupRecord>]
+  'save-and-add-another': [data: Partial<GroupRecord>]
 }>()
 
 const form = reactive<Partial<GroupRecord>>({
@@ -26,9 +27,11 @@ const form = reactive<Partial<GroupRecord>>({
   active: true,
 })
 
+const initialSnapshot = ref('')
+
 watch(
-  () => props.open,
-  (open) => {
+  () => [props.open, props.group] as const,
+  ([open]) => {
     if (!open) return
     Object.assign(form, {
       code: '',
@@ -39,14 +42,20 @@ watch(
       active: true,
       ...(props.group ?? {}),
     })
+    initialSnapshot.value = JSON.stringify(form)
   },
   { immediate: true },
 )
 
 const isEdit = computed(() => !!props.group?.id)
+const dirty = computed(() => JSON.stringify(form) !== initialSnapshot.value)
 
 function onSubmit() {
   emit('save', { ...form })
+}
+
+function onSubmitAndAdd() {
+  emit('save-and-add-another', { ...form })
 }
 </script>
 
@@ -56,6 +65,8 @@ function onSubmit() {
     variant="sheet"
     :title="isEdit ? 'Edit group' : 'New group'"
     description="Groups associate workers with a sub-contractor or trade. The contact email receives copies of receipts and (later) digest emails for all workers in the group."
+    confirm-discard
+    :dirty="dirty && !managed"
     @update:open="emit('update:open', $event)"
   >
     <form class="flex flex-col gap-4" @submit.prevent="onSubmit">
@@ -130,6 +141,14 @@ function onSubmit() {
           @click="emit('update:open', false)"
         >
           {{ managed ? 'Close' : 'Cancel' }}
+        </button>
+        <button
+          v-if="!managed && !isEdit"
+          type="button"
+          class="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-100 text-sm font-medium"
+          @click="onSubmitAndAdd"
+        >
+          Save &amp; add another
         </button>
         <button
           v-if="!managed"
