@@ -6,6 +6,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import AppDialog from './AppDialog.vue'
+import DataTable, { type ColumnDef } from './DataTable.vue'
 import TransactionDetailDialog, { type TxSummary } from './TransactionDetailDialog.vue'
 import { pb } from '../lib/pb'
 import type { WorkerRecord } from '../types'
@@ -35,12 +36,20 @@ const emit = defineEmits<{ 'update:open': [value: boolean] }>()
 
 const rows = ref<TxRow[]>([])
 const page = ref(1)
-const totalPages = ref(1)
+const perPage = ref(50)
+const total = ref(0)
 const loading = ref(false)
 const error = ref<string | null>(null)
 
 const detailOpen = ref(false)
 const selected = ref<TxSummary | null>(null)
+
+const columns: ColumnDef[] = [
+  { key: 'completed', label: 'Completed' },
+  { key: 'kiosk', label: 'Kiosk' },
+  { key: 'group', label: 'Group' },
+  { key: 'lines', label: 'Lines', align: 'right' },
+]
 
 async function load(p = 1) {
   if (!props.worker) return
@@ -51,13 +60,13 @@ async function load(p = 1) {
     if (props.kioskCode) {
       parts.push(`kiosk_code = "${props.kioskCode.replace(/"/g, '\\"')}"`)
     }
-    const res = await pb.collection('transactions').getList<TxRow>(p, 50, {
+    const res = await pb.collection('transactions').getList<TxRow>(p, perPage.value, {
       filter: parts.join(' && '),
       sort: '-completed_at',
     })
     rows.value = res.items
     page.value = res.page
-    totalPages.value = res.totalPages
+    total.value = res.totalItems
   } catch (e) {
     error.value = (e as Error).message
   } finally {
@@ -109,54 +118,33 @@ function formatDateTime(iso: string): string {
         {{ error }}
       </p>
 
-      <div class="rounded-2xl bg-slate-950 border border-slate-800 overflow-hidden">
-        <table class="w-full text-left text-sm">
-          <thead class="bg-slate-900/70 text-slate-400">
-            <tr>
-              <th class="px-4 py-2 font-medium">Completed</th>
-              <th class="px-4 py-2 font-medium">Kiosk</th>
-              <th class="px-4 py-2 font-medium">Group</th>
-              <th class="px-4 py-2 font-medium text-right">Lines</th>
-            </tr>
-          </thead>
-          <tbody class="divide-y divide-slate-800">
-            <tr v-if="loading">
-              <td colspan="4" class="text-center text-slate-500 py-6">Loading…</td>
-            </tr>
-            <tr v-else-if="rows.length === 0">
-              <td colspan="4" class="text-center text-slate-500 py-6">No transactions for this worker.</td>
-            </tr>
-            <tr v-for="t in rows" :key="t.id" class="hover:bg-slate-800/40 cursor-pointer" @click="openDetail(t)">
-              <td class="px-4 py-2 text-slate-200">{{ formatDateTime(t.completed_at) }}</td>
-              <td class="px-4 py-2 font-mono text-slate-400">{{ t.kiosk_code }}</td>
-              <td class="px-4 py-2 text-slate-400">{{ t.user_group || '—' }}</td>
-              <td class="px-4 py-2 text-right tabular-nums text-slate-300">{{ t.lines_count }}</td>
-            </tr>
-          </tbody>
-        </table>
-        <div
-          v-if="totalPages > 1"
-          class="flex items-center justify-between px-4 py-2 border-t border-slate-800 text-sm"
-        >
-          <button
-            type="button"
-            class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-40"
-            :disabled="page <= 1 || loading"
-            @click="load(page - 1)"
-          >
-            Previous
-          </button>
-          <span class="text-slate-400">Page {{ page }} of {{ totalPages }}</span>
-          <button
-            type="button"
-            class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-40"
-            :disabled="page >= totalPages || loading"
-            @click="load(page + 1)"
-          >
-            Next
-          </button>
-        </div>
-      </div>
+      <DataTable
+        :columns="columns"
+        :rows="rows"
+        :row-key="(t) => t.id"
+        :loading="loading"
+        empty-text="No transactions for this worker."
+        row-clickable
+        :page="page"
+        :per-page="perPage"
+        :total="total"
+        @row-click="openDetail"
+        @update:page="(p) => load(p)"
+        @update:per-page="(n) => { perPage = n; load(1) }"
+      >
+        <template #cell-completed="{ row }">
+          <span class="text-slate-200">{{ formatDateTime(row.completed_at) }}</span>
+        </template>
+        <template #cell-kiosk="{ row }">
+          <span class="font-mono text-slate-400">{{ row.kiosk_code }}</span>
+        </template>
+        <template #cell-group="{ row }">
+          <span class="text-slate-400">{{ row.user_group || '—' }}</span>
+        </template>
+        <template #cell-lines="{ row }">
+          <span class="tabular-nums text-slate-300">{{ row.lines_count }}</span>
+        </template>
+      </DataTable>
     </div>
 
     <TransactionDetailDialog

@@ -259,7 +259,7 @@ onMounted(load)
 </script>
 
 <template>
-  <main class="p-6 max-w-4xl mx-auto w-full">
+  <main class="p-6 max-w-7xl mx-auto w-full">
     <header class="mb-4">
       <h1 class="text-2xl font-semibold">Notifications</h1>
       <p class="text-sm text-slate-400 mt-1">
@@ -270,6 +270,7 @@ onMounted(load)
 
     <NotificationsTabs />
 
+    <div class="max-w-4xl">
     <div class="mb-4 flex items-center justify-between gap-4">
       <p class="text-sm text-slate-400">
         Customize the email sent for each kiosk event.
@@ -412,6 +413,7 @@ onMounted(load)
         </span>
       </footer>
     </section>
+    </div>
 
     <AppDialog
       :open="showHelp"

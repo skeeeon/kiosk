@@ -295,10 +295,10 @@ async function onCreateGroupFromUser(data: Partial<GroupRecord>) {
         <span v-else class="text-slate-600">●</span>
       </template>
       <template #cell-__actions="{ row }">
-        <span class="whitespace-nowrap">
+        <span class="inline-flex items-center gap-2 whitespace-nowrap">
           <button
             type="button"
-            class="text-slate-400 hover:text-slate-200 px-2 py-1"
+            class="px-3 py-1.5 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm border border-slate-700"
             @click.stop="viewingHistory = row"
           >
             History
@@ -306,7 +306,7 @@ async function onCreateGroupFromUser(data: Partial<GroupRecord>) {
           <button
             v-if="!managed"
             type="button"
-            class="text-red-400 hover:text-red-300 px-2 py-1 ml-2"
+            class="px-3 py-1.5 rounded-md bg-red-950/60 hover:bg-red-900/60 text-red-200 text-sm border border-red-800/70"
             @click.stop="deleting = row"
           >
             Delete

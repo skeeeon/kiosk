@@ -158,7 +158,7 @@ async function onDelete() {
 </script>
 
 <template>
-  <main class="p-6 max-w-6xl mx-auto w-full">
+  <main class="p-6 max-w-7xl mx-auto w-full">
     <header class="mb-4">
       <h1 class="text-2xl font-semibold">Notifications</h1>
       <p class="text-sm text-slate-400 mt-1">
@@ -235,7 +235,7 @@ async function onDelete() {
       <template #cell-__actions="{ row }">
         <button
           type="button"
-          class="text-red-400 hover:text-red-300 px-2 py-1 whitespace-nowrap"
+          class="px-3 py-1.5 rounded-md bg-red-950/60 hover:bg-red-900/60 text-red-200 text-sm border border-red-800/70 whitespace-nowrap"
           @click.stop="deleting = row"
         >
           Delete

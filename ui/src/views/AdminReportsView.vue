@@ -6,6 +6,7 @@ import { useAdminToast } from '../composables/useAdminToast'
 import { useKioskIdentity } from '../composables/useKioskIdentity'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import CheckoutCloseDialog from '../components/CheckoutCloseDialog.vue'
+import DataTable, { type ColumnDef } from '../components/DataTable.vue'
 import TransactionDetailDialog, {
   type TxSummary,
 } from '../components/TransactionDetailDialog.vue'
@@ -150,19 +151,22 @@ const openRows = ref<OpenRow[]>([])
 const openSearch = ref('')
 const txRows = ref<TxRow[]>([])
 const txPage = ref(1)
-const txTotalPages = ref(1)
+const txPerPage = ref(50)
+const txTotal = ref(0)
 const lowStockRows = ref<LowStockRow[]>([])
 const fleetLowStockRows = ref<FleetLowStockRow[]>([])
 const fleetLowStockErrors = ref<{ kiosk_code: string; error: string }[]>([])
 const auditRows = ref<AdjustmentAuditRow[]>([])
 const auditPage = ref(1)
-const auditTotalPages = ref(1)
+const auditPerPage = ref(50)
+const auditTotal = ref(0)
 const auditSourceFilter = ref<'' | 'local' | 'controller'>('')
 const auditFrom = ref<string>(defaultFromDate())
 const auditTo = ref<string>(defaultToDate())
 const lifecycleRows = ref<LifecycleAuditRow[]>([])
 const lifecyclePage = ref(1)
-const lifecycleTotalPages = ref(1)
+const lifecyclePerPage = ref(50)
+const lifecycleTotal = ref(0)
 const lifecycleActionFilter = ref<'' | 'create' | 'decommission' | 'reactivate' | 'delete'>('')
 const lifecycleSourceFilter = ref<'' | 'local' | 'controller'>('')
 const lifecycleFrom = ref<string>(defaultFromDate())
@@ -264,14 +268,14 @@ async function loadTransactions(page = 1) {
     if (kioskFilter.value) {
       filterParts.push(`kiosk_code = "${kioskFilter.value.replace(/"/g, '\\"')}"`)
     }
-    const res = await pb.collection('transactions').getList<TxRow>(page, 50, {
+    const res = await pb.collection('transactions').getList<TxRow>(page, txPerPage.value, {
       filter: filterParts.join(' && '),
       sort: '-completed_at',
       expand: 'user',
     })
     txRows.value = res.items
     txPage.value = res.page
-    txTotalPages.value = res.totalPages
+    txTotal.value = res.totalItems
   } catch (e) {
     error.value = (e as Error).message
   } finally {
@@ -409,13 +413,13 @@ async function loadAudit(page = 1) {
     }
     if (auditFrom.value) parts.push(`created >= "${auditFrom.value} 00:00:00.000Z"`)
     if (auditTo.value) parts.push(`created <= "${auditTo.value} 23:59:59.999Z"`)
-    const res = await pb.collection('inventory_audit').getList<AdjustmentAuditRow>(page, 50, {
+    const res = await pb.collection('inventory_audit').getList<AdjustmentAuditRow>(page, auditPerPage.value, {
       filter: parts.join(' && '),
       sort: '-created',
     })
     auditRows.value = res.items
     auditPage.value = res.page
-    auditTotalPages.value = res.totalPages
+    auditTotal.value = res.totalItems
   } catch (e) {
     error.value = (e as Error).message
   } finally {
@@ -448,13 +452,13 @@ async function loadLifecycle(page = 1) {
       if (kioskFilter.value) {
         parts.push(`kiosk_code = "${kioskFilter.value.replace(/"/g, '\\"')}"`)
       }
-      const res = await pb.collection('instance_lifecycle_audit').getList<LifecycleAuditRow>(page, 50, {
+      const res = await pb.collection('instance_lifecycle_audit').getList<LifecycleAuditRow>(page, lifecyclePerPage.value, {
         filter: parts.join(' && '),
         sort: '-created',
       })
       lifecycleRows.value = res.items
       lifecyclePage.value = res.page
-      lifecycleTotalPages.value = res.totalPages
+      lifecycleTotal.value = res.totalItems
     } else {
       // Kiosk-local: expand item + item_instance so we can show item/code
       // and instance code in the same table layout as the controller view.
@@ -476,7 +480,7 @@ async function loadLifecycle(page = 1) {
           item_instance?: { code: string }
         }
       }
-      const res = await pb.collection('instance_audit').getList<KioskInstanceAuditRow>(page, 50, {
+      const res = await pb.collection('instance_audit').getList<KioskInstanceAuditRow>(page, lifecyclePerPage.value, {
         filter: parts.join(' && '),
         sort: '-created',
         expand: 'item,item_instance',
@@ -497,7 +501,7 @@ async function loadLifecycle(page = 1) {
         created: r.created,
       }))
       lifecyclePage.value = res.page
-      lifecycleTotalPages.value = res.totalPages
+      lifecycleTotal.value = res.totalItems
     }
   } catch (e) {
     error.value = (e as Error).message
@@ -667,7 +671,7 @@ function formatDateTime(iso: string): string {
 
 function tabClasses(target: Tab) {
   return target === tab.value
-    ? 'border-emerald-500 text-slate-100'
+    ? 'border-brand-primary text-slate-100'
     : 'border-transparent text-slate-400 hover:text-slate-200'
 }
 
@@ -706,6 +710,39 @@ function openTxDetail(t: TxRow) {
   }
   detailOpen.value = true
 }
+
+const txColumns: ColumnDef[] = [
+  { key: 'completed', label: 'Completed' },
+  { key: 'who', label: 'Who' },
+  { key: 'kiosk', label: 'Kiosk' },
+  { key: 'location', label: 'Location' },
+  { key: 'lines', label: 'Lines', align: 'right' },
+  { key: 'status', label: 'Status' },
+]
+
+const auditColumns: ColumnDef[] = [
+  { key: 'when', label: 'When' },
+  { key: 'kiosk', label: 'Kiosk' },
+  { key: 'item', label: 'Item' },
+  { key: 'source', label: 'Source' },
+  { key: 'delta', label: 'Δ', align: 'right' },
+  { key: 'prev_new', label: 'Prev → New', align: 'right' },
+  { key: 'reason', label: 'Reason' },
+]
+
+const lifecycleColumns = computed<ColumnDef[]>(() => {
+  const cols: ColumnDef[] = [{ key: 'when', label: 'When' }]
+  if (isController.value) cols.push({ key: 'kiosk', label: 'Kiosk' })
+  cols.push(
+    { key: 'item', label: 'Item' },
+    { key: 'instance', label: 'Instance' },
+    { key: 'action', label: 'Action' },
+    { key: 'active_change', label: 'Active' },
+    { key: 'source', label: 'Source' },
+    { key: 'reason', label: 'Reason' },
+  )
+  return cols
+})
 </script>
 
 <template>
@@ -1057,71 +1094,42 @@ function openTxDetail(t: TxRow) {
           Export CSV
         </button>
       </div>
-      <div class="rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden">
-      <table class="w-full text-left text-sm">
-        <thead class="bg-slate-950/70 text-slate-400">
-          <tr>
-            <th class="px-4 py-3 font-medium">Completed</th>
-            <th class="px-4 py-3 font-medium">Who</th>
-            <th class="px-4 py-3 font-medium">Kiosk</th>
-            <th class="px-4 py-3 font-medium">Location</th>
-            <th class="px-4 py-3 font-medium">Lines</th>
-            <th class="px-4 py-3 font-medium">Status</th>
-          </tr>
-        </thead>
-        <tbody class="divide-y divide-slate-800">
-          <tr v-if="loading">
-            <td colspan="6" class="text-center text-slate-500 py-8">Loading…</td>
-          </tr>
-          <tr v-else-if="txRows.length === 0">
-            <td colspan="6" class="text-center text-slate-500 py-8">No transactions yet.</td>
-          </tr>
-          <tr
-            v-for="t in txRows"
-            :key="t.id"
-            class="hover:bg-slate-800/40 cursor-pointer"
-            @click="openTxDetail(t)"
-          >
-            <td class="px-4 py-3 text-slate-300">{{ formatDateTime(t.completed_at) }}</td>
-            <td class="px-4 py-3">
-              <div>{{ t.expand?.user?.name }}</div>
-              <div class="text-xs text-slate-500 font-mono">{{ t.expand?.user?.code }}</div>
-            </td>
-            <td class="px-4 py-3 font-mono text-slate-400">{{ t.kiosk_code }}</td>
-            <td class="px-4 py-3 text-slate-400">{{ t.location_code }}</td>
-            <td class="px-4 py-3 tabular-nums text-slate-300">{{ t.lines_count }}</td>
-            <td class="px-4 py-3">
-              <span class="inline-block px-2 py-0.5 rounded text-xs bg-emerald-900/60 text-emerald-200">
-                {{ t.status }}
-              </span>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-
-      <div
-        v-if="txTotalPages > 1"
-        class="flex items-center justify-between px-4 py-3 border-t border-slate-800 text-sm"
+      <DataTable
+        :columns="txColumns"
+        :rows="txRows"
+        :row-key="(t) => t.id"
+        :loading="loading"
+        empty-text="No transactions yet."
+        row-clickable
+        :page="txPage"
+        :per-page="txPerPage"
+        :total="txTotal"
+        @row-click="openTxDetail"
+        @update:page="(p) => loadTransactions(p)"
+        @update:per-page="(n) => { txPerPage = n; loadTransactions(1) }"
       >
-        <button
-          type="button"
-          class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40"
-          :disabled="txPage <= 1 || loading"
-          @click="loadTransactions(txPage - 1)"
-        >
-          Previous
-        </button>
-        <span class="text-slate-400">Page {{ txPage }} of {{ txTotalPages }}</span>
-        <button
-          type="button"
-          class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40"
-          :disabled="txPage >= txTotalPages || loading"
-          @click="loadTransactions(txPage + 1)"
-        >
-          Next
-        </button>
-      </div>
-      </div>
+        <template #cell-completed="{ row }">
+          <span class="text-slate-300">{{ formatDateTime(row.completed_at) }}</span>
+        </template>
+        <template #cell-who="{ row }">
+          <div>{{ row.expand?.user?.name }}</div>
+          <div class="text-xs text-slate-500 font-mono">{{ row.expand?.user?.code }}</div>
+        </template>
+        <template #cell-kiosk="{ row }">
+          <span class="font-mono text-slate-400">{{ row.kiosk_code }}</span>
+        </template>
+        <template #cell-location="{ row }">
+          <span class="text-slate-400">{{ row.location_code }}</span>
+        </template>
+        <template #cell-lines="{ row }">
+          <span class="tabular-nums text-slate-300">{{ row.lines_count }}</span>
+        </template>
+        <template #cell-status="{ row }">
+          <span class="inline-block px-2 py-0.5 rounded text-xs bg-emerald-900/60 text-emerald-200">
+            {{ row.status }}
+          </span>
+        </template>
+      </DataTable>
     </div>
 
     <!-- Adjustment audit (controller-only) -->
@@ -1168,82 +1176,53 @@ function openTxDetail(t: TxRow) {
         </span>
       </div>
 
-      <div class="rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden">
-        <table class="w-full text-left text-sm">
-          <thead class="bg-slate-950/70 text-slate-400">
-            <tr>
-              <th class="px-4 py-3 font-medium">When</th>
-              <th class="px-4 py-3 font-medium">Kiosk</th>
-              <th class="px-4 py-3 font-medium">Item</th>
-              <th class="px-4 py-3 font-medium">Source</th>
-              <th class="px-4 py-3 font-medium text-right">Δ</th>
-              <th class="px-4 py-3 font-medium text-right">Prev → New</th>
-              <th class="px-4 py-3 font-medium">Reason</th>
-            </tr>
-          </thead>
-          <tbody class="divide-y divide-slate-800">
-            <tr v-if="loading">
-              <td colspan="7" class="text-center text-slate-500 py-8">Loading…</td>
-            </tr>
-            <tr v-else-if="auditRows.length === 0">
-              <td colspan="7" class="text-center text-slate-500 py-8">
-                No adjustments in the selected window.
-              </td>
-            </tr>
-            <tr v-for="r in auditRows" :key="r.id" class="hover:bg-slate-800/40">
-              <td class="px-4 py-3 text-slate-300">{{ formatDateTime(r.created) }}</td>
-              <td class="px-4 py-3 font-mono text-slate-400">{{ r.kiosk_code }}</td>
-              <td class="px-4 py-3">
-                <div class="font-medium">{{ r.item_name || '—' }}</div>
-                <div class="text-xs text-slate-500 font-mono">{{ r.item_code }}</div>
-              </td>
-              <td class="px-4 py-3">
-                <span
-                  class="inline-block px-2 py-0.5 rounded text-xs"
-                  :class="r.source === 'controller'
-                    ? 'bg-sky-900/60 text-sky-200'
-                    : 'bg-slate-800/80 text-slate-300'"
-                >
-                  {{ r.source || 'local' }}
-                </span>
-              </td>
-              <td
-                class="px-4 py-3 text-right tabular-nums font-semibold"
-                :class="r.delta < 0 ? 'text-red-400' : r.delta > 0 ? 'text-emerald-400' : 'text-slate-400'"
-              >
-                {{ r.delta > 0 ? '+' : '' }}{{ r.delta }}
-              </td>
-              <td class="px-4 py-3 text-right tabular-nums text-slate-300">
-                {{ r.prev_quantity }} → {{ r.new_quantity }}
-              </td>
-              <td class="px-4 py-3 text-slate-400">{{ r.reason || '—' }}</td>
-            </tr>
-          </tbody>
-        </table>
-
-        <div
-          v-if="auditTotalPages > 1"
-          class="flex items-center justify-between px-4 py-3 border-t border-slate-800 text-sm"
-        >
-          <button
-            type="button"
-            class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40"
-            :disabled="auditPage <= 1 || loading"
-            @click="loadAudit(auditPage - 1)"
+      <DataTable
+        :columns="auditColumns"
+        :rows="auditRows"
+        :row-key="(r) => r.id"
+        :loading="loading"
+        empty-text="No adjustments in the selected window."
+        :page="auditPage"
+        :per-page="auditPerPage"
+        :total="auditTotal"
+        @update:page="(p) => loadAudit(p)"
+        @update:per-page="(n) => { auditPerPage = n; loadAudit(1) }"
+      >
+        <template #cell-when="{ row }">
+          <span class="text-slate-300">{{ formatDateTime(row.created) }}</span>
+        </template>
+        <template #cell-kiosk="{ row }">
+          <span class="font-mono text-slate-400">{{ row.kiosk_code }}</span>
+        </template>
+        <template #cell-item="{ row }">
+          <div class="font-medium">{{ row.item_name || '—' }}</div>
+          <div class="text-xs text-slate-500 font-mono">{{ row.item_code }}</div>
+        </template>
+        <template #cell-source="{ row }">
+          <span
+            class="inline-block px-2 py-0.5 rounded text-xs"
+            :class="row.source === 'controller'
+              ? 'bg-sky-900/60 text-sky-200'
+              : 'bg-slate-800/80 text-slate-300'"
           >
-            Previous
-          </button>
-          <span class="text-slate-400">Page {{ auditPage }} of {{ auditTotalPages }}</span>
-          <button
-            type="button"
-            class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40"
-            :disabled="auditPage >= auditTotalPages || loading"
-            @click="loadAudit(auditPage + 1)"
+            {{ row.source || 'local' }}
+          </span>
+        </template>
+        <template #cell-delta="{ row }">
+          <span
+            class="tabular-nums font-semibold"
+            :class="row.delta < 0 ? 'text-red-400' : row.delta > 0 ? 'text-emerald-400' : 'text-slate-400'"
           >
-            Next
-          </button>
-        </div>
-      </div>
+            {{ row.delta > 0 ? '+' : '' }}{{ row.delta }}
+          </span>
+        </template>
+        <template #cell-prev_new="{ row }">
+          <span class="tabular-nums text-slate-300">{{ row.prev_quantity }} → {{ row.new_quantity }}</span>
+        </template>
+        <template #cell-reason="{ row }">
+          <span class="text-slate-400">{{ row.reason || '—' }}</span>
+        </template>
+      </DataTable>
     </div>
 
     <!-- Instance lifecycle audit -->
@@ -1304,90 +1283,62 @@ function openTxDetail(t: TxRow) {
         </span>
       </div>
 
-      <div class="rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden">
-        <table class="w-full text-left text-sm">
-          <thead class="bg-slate-950/70 text-slate-400">
-            <tr>
-              <th class="px-4 py-3 font-medium">When</th>
-              <th v-if="isController" class="px-4 py-3 font-medium">Kiosk</th>
-              <th class="px-4 py-3 font-medium">Item</th>
-              <th class="px-4 py-3 font-medium">Instance</th>
-              <th class="px-4 py-3 font-medium">Action</th>
-              <th class="px-4 py-3 font-medium">Active</th>
-              <th class="px-4 py-3 font-medium">Source</th>
-              <th class="px-4 py-3 font-medium">Reason</th>
-            </tr>
-          </thead>
-          <tbody class="divide-y divide-slate-800">
-            <tr v-if="loading">
-              <td :colspan="isController ? 8 : 7" class="text-center text-slate-500 py-8">Loading…</td>
-            </tr>
-            <tr v-else-if="lifecycleRows.length === 0">
-              <td :colspan="isController ? 8 : 7" class="text-center text-slate-500 py-8">
-                No lifecycle events in the selected window.
-              </td>
-            </tr>
-            <tr v-for="r in lifecycleRows" :key="r.id" class="hover:bg-slate-800/40">
-              <td class="px-4 py-3 text-slate-300">{{ formatDateTime(r.created) }}</td>
-              <td v-if="isController" class="px-4 py-3 font-mono text-slate-400">{{ r.kiosk_code }}</td>
-              <td class="px-4 py-3">
-                <div class="font-medium">{{ r.item_name || '—' }}</div>
-                <div class="text-xs text-slate-500 font-mono">{{ r.item_code }}</div>
-              </td>
-              <td class="px-4 py-3 font-mono text-slate-300 text-xs">{{ r.instance_code || r.instance_id }}</td>
-              <td class="px-4 py-3">
-                <span
-                  class="inline-block px-2 py-0.5 rounded text-xs"
-                  :class="{
-                    'bg-emerald-900/60 text-emerald-200': r.action === 'create' || r.action === 'reactivate',
-                    'bg-amber-900/60 text-amber-200': r.action === 'decommission',
-                    'bg-red-900/60 text-red-200': r.action === 'delete',
-                  }"
-                >
-                  {{ r.action }}
-                </span>
-              </td>
-              <td class="px-4 py-3 text-xs text-slate-400 tabular-nums">
-                {{ r.prev_active ? 'Y' : 'N' }} → {{ r.new_active ? 'Y' : 'N' }}
-              </td>
-              <td class="px-4 py-3">
-                <span
-                  class="inline-block px-2 py-0.5 rounded text-xs"
-                  :class="r.source === 'controller'
-                    ? 'bg-sky-900/60 text-sky-200'
-                    : 'bg-slate-800/80 text-slate-300'"
-                >
-                  {{ r.source || 'local' }}
-                </span>
-              </td>
-              <td class="px-4 py-3 text-slate-400">{{ r.reason || '—' }}</td>
-            </tr>
-          </tbody>
-        </table>
-
-        <div
-          v-if="lifecycleTotalPages > 1"
-          class="flex items-center justify-between px-4 py-3 border-t border-slate-800 text-sm"
-        >
-          <button
-            type="button"
-            class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40"
-            :disabled="lifecyclePage <= 1 || loading"
-            @click="loadLifecycle(lifecyclePage - 1)"
+      <DataTable
+        :columns="lifecycleColumns"
+        :rows="lifecycleRows"
+        :row-key="(r) => r.id"
+        :loading="loading"
+        empty-text="No lifecycle events in the selected window."
+        :page="lifecyclePage"
+        :per-page="lifecyclePerPage"
+        :total="lifecycleTotal"
+        @update:page="(p) => loadLifecycle(p)"
+        @update:per-page="(n) => { lifecyclePerPage = n; loadLifecycle(1) }"
+      >
+        <template #cell-when="{ row }">
+          <span class="text-slate-300">{{ formatDateTime(row.created) }}</span>
+        </template>
+        <template #cell-kiosk="{ row }">
+          <span class="font-mono text-slate-400">{{ row.kiosk_code }}</span>
+        </template>
+        <template #cell-item="{ row }">
+          <div class="font-medium">{{ row.item_name || '—' }}</div>
+          <div class="text-xs text-slate-500 font-mono">{{ row.item_code }}</div>
+        </template>
+        <template #cell-instance="{ row }">
+          <span class="font-mono text-slate-300 text-xs">{{ row.instance_code || row.instance_id }}</span>
+        </template>
+        <template #cell-action="{ row }">
+          <span
+            class="inline-block px-2 py-0.5 rounded text-xs"
+            :class="{
+              'bg-emerald-900/60 text-emerald-200': row.action === 'create' || row.action === 'reactivate',
+              'bg-amber-900/60 text-amber-200': row.action === 'decommission',
+              'bg-red-900/60 text-red-200': row.action === 'delete',
+            }"
           >
-            Previous
-          </button>
-          <span class="text-slate-400">Page {{ lifecyclePage }} of {{ lifecycleTotalPages }}</span>
-          <button
-            type="button"
-            class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40"
-            :disabled="lifecyclePage >= lifecycleTotalPages || loading"
-            @click="loadLifecycle(lifecyclePage + 1)"
+            {{ row.action }}
+          </span>
+        </template>
+        <template #cell-active_change="{ row }">
+          <span class="text-xs text-slate-400 tabular-nums">
+            {{ row.prev_active ? 'Y' : 'N' }} → {{ row.new_active ? 'Y' : 'N' }}
+          </span>
+        </template>
+        <template #cell-source="{ row }">
+          <span
+            class="inline-block px-2 py-0.5 rounded text-xs"
+            :class="row.source === 'controller'
+              ? 'bg-sky-900/60 text-sky-200'
+              : 'bg-slate-800/80 text-slate-300'"
           >
-            Next
-          </button>
-        </div>
-      </div>
+            {{ row.source || 'local' }}
+          </span>
+        </template>
+        <template #cell-reason="{ row }">
+          <span class="text-slate-400">{{ row.reason || '—' }}</span>
+        </template>
+      </DataTable>
     </div>
 
     <!-- Notifications deliverability -->

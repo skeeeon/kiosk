@@ -383,7 +383,7 @@ async function onDelete() {
         <button
           v-if="!managed"
           type="button"
-          class="text-red-400 hover:text-red-300 px-2 py-1"
+          class="px-3 py-1.5 rounded-md bg-red-950/60 hover:bg-red-900/60 text-red-200 text-sm border border-red-800/70 whitespace-nowrap"
           @click.stop="deleting = row"
         >
           Delete
