@@ -76,6 +76,20 @@ type EventPayload struct {
 	// integrity.rebuild fields.
 	Deleted  int `json:"deleted,omitempty"`
 	Inserted int `json:"inserted,omitempty"`
+
+	// checkout.admin_close fields. Reuses AdminID / ControllerAdminID /
+	// Source / Reason / CommandID above; the admin_close-specific bits are
+	// the closure_reason (separate from inventory.adjust's reason text)
+	// and the open_checkout_id snapshot for downstream reporting.
+	OpenCheckoutID string `json:"open_checkout_id,omitempty"`
+	ClosureReason  string `json:"closure_reason,omitempty"`
+	Notes          string `json:"notes,omitempty"`
+
+	// instance.lifecycle fields.
+	InstanceID   string `json:"instance_id,omitempty"`
+	InstanceCode string `json:"instance_code,omitempty"`
+	PrevActive   bool   `json:"prev_active,omitempty"`
+	NewActive    bool   `json:"new_active,omitempty"`
 }
 
 // Aggregator owns the JetStream consumer lifecycle. One per controller
@@ -201,6 +215,12 @@ func (a *Aggregator) ensureConsumer(ctx context.Context, stream jetstream.Stream
 			events.ItemActionFilter(),
 			events.InventoryAdjustFilter(),
 			events.IntegrityRebuildFilter(),
+			// Admin-initiated close + instance lifecycle land here too so
+			// the controller has a single durable cursor over every event
+			// shape. Today the dispatcher ack-and-logs both; future
+			// projectors can light up without re-subscribing.
+			events.AdminCloseFilter(),
+			events.InstanceLifecycleFilter(),
 			// Notification subjects published by managed kiosks. The
 			// controller renders + sends from its own template rows so
 			// SMTP credentials and recipient lists live centrally rather
@@ -277,6 +297,40 @@ func (a *Aggregator) handle(ctx context.Context, msg jetstream.Msg) {
 			"admin_id", payload.AdminID,
 			"deleted", payload.Deleted,
 			"inserted", payload.Inserted)
+		_ = msg.Ack()
+	case strings.HasSuffix(subject, ".checkout.admin_close"):
+		// Audit-only today. The kiosk emits one of these per admin-driven
+		// close; the projected transaction_lines row (which arrives via the
+		// regular item.{action} → ProjectLine path doesn't exist for
+		// admin_close because the kiosk doesn't publish an item.admin_close
+		// event — only checkout.admin_close). The matching transaction
+		// itself rides the transaction.complete subject. For now we just
+		// log; a future projector can light up by reading the same payload.
+		slog.Info("controller.aggregator.checkout_admin_close",
+			"subject", subject,
+			"kiosk_code", payload.KioskCode,
+			"transaction_id", payload.TransactionID,
+			"open_checkout_id", payload.OpenCheckoutID,
+			"closure_reason", payload.ClosureReason,
+			"source", payload.Source,
+			"admin_id", payload.AdminID,
+			"controller_admin_id", payload.ControllerAdminID)
+		_ = msg.Ack()
+	case strings.HasSuffix(subject, ".instance.lifecycle"):
+		// Audit-only today. Same reasoning as integrity.rebuild — record the
+		// event so an operator-facing surface can pick it up later.
+		slog.Info("controller.aggregator.instance_lifecycle",
+			"subject", subject,
+			"kiosk_code", payload.KioskCode,
+			"instance_id", payload.InstanceID,
+			"instance_code", payload.InstanceCode,
+			"item_code", payload.ItemCode,
+			"action", payload.Action,
+			"prev_active", payload.PrevActive,
+			"new_active", payload.NewActive,
+			"source", payload.Source,
+			"admin_id", payload.AdminID,
+			"controller_admin_id", payload.ControllerAdminID)
 		_ = msg.Ack()
 	default:
 		// Stream subjects we don't recognize — ack so we don't pile up

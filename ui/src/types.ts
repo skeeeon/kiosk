@@ -30,6 +30,21 @@ export interface User {
   role: string
   email?: string
   open_count: number
+  // Populated by /api/kiosk/scan when the scan resolves a user. One row per
+  // open_checkouts unit (qty=N non-serialized checkouts produce N rows).
+  // Empty/omitted when open_count is 0.
+  open_checkouts?: OpenCheckoutDetail[]
+}
+
+export interface OpenCheckoutDetail {
+  id: string
+  item_id: string
+  item_code: string
+  item_name: string
+  item_instance_id?: string
+  instance_serial?: string
+  qty: number
+  checked_out_at: string
 }
 
 export interface Item {

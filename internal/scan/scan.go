@@ -16,6 +16,26 @@ type User struct {
 	// user. Populated on /scan responses so the SPA can welcome a worker
 	// with context ("3 items out") without a second round-trip.
 	OpenCount int `json:"open_count"`
+	// OpenCheckouts is the worker's currently-out items, hydrated with item
+	// name + instance serial so the kiosk SPA can render a "What you have
+	// out" panel directly from the badge-scan reply. One row per
+	// open_checkouts unit (a qty=N checkout on a non-serialized item shows
+	// up as N rows here). Empty when OpenCount is 0.
+	OpenCheckouts []OpenCheckoutDetail `json:"open_checkouts,omitempty"`
+}
+
+// OpenCheckoutDetail is one row in User.OpenCheckouts. Mirrors the
+// open_checkouts.id + item + (optional) instance shape the SPA needs to
+// render the panel.
+type OpenCheckoutDetail struct {
+	ID             string `json:"id"`
+	ItemID         string `json:"item_id"`
+	ItemCode       string `json:"item_code"`
+	ItemName       string `json:"item_name"`
+	ItemInstanceID string `json:"item_instance_id,omitempty"`
+	InstanceSerial string `json:"instance_serial,omitempty"`
+	Qty            int    `json:"qty"`
+	CheckedOutAt   string `json:"checked_out_at"`
 }
 
 type Item struct {

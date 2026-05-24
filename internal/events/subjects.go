@@ -68,6 +68,23 @@ func IntegrityRebuildSubject(kioskCode string) string {
 	return fmt.Sprintf("%s.%s.integrity.rebuild", SubjectPrefix(), kioskCode)
 }
 
+// AdminCloseSubject builds the subject for an admin-initiated open_checkouts
+// close event: "<prefix>.<kiosk_code>.checkout.admin_close". One event per
+// closed row, emitted after the transaction+line+open-row delete commits.
+// Distinct from item.return so reports can separate "worker returned it" from
+// "admin closed it without a return" without a discriminator filter.
+func AdminCloseSubject(kioskCode string) string {
+	return fmt.Sprintf("%s.%s.checkout.admin_close", SubjectPrefix(), kioskCode)
+}
+
+// InstanceLifecycleSubject builds the subject for an item_instances lifecycle
+// event: "<prefix>.<kiosk_code>.instance.lifecycle". Fired by the PB record
+// hooks on create, decommission (active true→false), reactivate
+// (active false→true), and delete. Cosmetic edits don't publish.
+func InstanceLifecycleSubject(kioskCode string) string {
+	return fmt.Sprintf("%s.%s.instance.lifecycle", SubjectPrefix(), kioskCode)
+}
+
 // ReceiptTransactionSubject builds the subject for a "render and send the
 // transaction receipt" notification event: "<prefix>.<kiosk_code>.receipt.transaction".
 // Payload is a notifications.ReceiptContext serialized as JSON. The
@@ -126,6 +143,18 @@ func InventoryAdjustFilter() string {
 
 func IntegrityRebuildFilter() string {
 	return SubjectPrefix() + ".*.integrity.rebuild"
+}
+
+// AdminCloseFilter is the controller-side consumer filter for the admin
+// force-close subject.
+func AdminCloseFilter() string {
+	return SubjectPrefix() + ".*.checkout.admin_close"
+}
+
+// InstanceLifecycleFilter is the controller-side consumer filter for the
+// item_instances lifecycle subject.
+func InstanceLifecycleFilter() string {
+	return SubjectPrefix() + ".*.instance.lifecycle"
 }
 
 // ReceiptTransactionFilter is the controller-side consumer filter for the

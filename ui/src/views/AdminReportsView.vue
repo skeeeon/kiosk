@@ -5,6 +5,7 @@ import { api, download } from '../lib/api'
 import { useAdminToast } from '../composables/useAdminToast'
 import { useKioskIdentity } from '../composables/useKioskIdentity'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
+import CheckoutCloseDialog from '../components/CheckoutCloseDialog.vue'
 import TransactionDetailDialog, {
   type TxSummary,
 } from '../components/TransactionDetailDialog.vue'
@@ -173,6 +174,43 @@ async function loadKiosks() {
 
 const rebuildOpen = ref(false)
 const rebuilding = ref(false)
+
+// Selected aging-table row + dialog state for the admin force-close flow.
+// The Aging report DTO synthesizes ids from transaction_line_id (with a
+// "-N" suffix for non-serialized qty>1 rows); CheckoutCloseDialog strips
+// that suffix before posting.
+interface CloseTarget {
+  rowId: string
+  itemCode: string
+  itemName: string
+  userCode: string
+  userName: string
+  serial: string
+  kioskCode: string
+}
+const closeTarget = ref<CloseTarget | null>(null)
+const closeOpen = ref(false)
+
+function openCloseDialog(r: OpenRow, fallbackUserName: string, fallbackUserCode: string) {
+  closeTarget.value = {
+    rowId: r.id,
+    itemCode: r.expand?.item?.code ?? '',
+    itemName: r.expand?.item?.name ?? '',
+    userCode: r.expand?.user?.code ?? fallbackUserCode,
+    userName: r.expand?.user?.name ?? fallbackUserName,
+    serial: r.serial ?? '',
+    kioskCode: r.kiosk_code ?? kioskFilter.value ?? '',
+  }
+  closeOpen.value = true
+}
+
+async function onCheckoutClosed() {
+  closeOpen.value = false
+  closeTarget.value = null
+  // Refresh whichever tab is active — both Aging and Currently-out share
+  // the same source data, so the disappearance is visible immediately.
+  loadCurrentTab()
+}
 
 const selectedTx = ref<TxSummary | null>(null)
 const detailOpen = ref(false)
@@ -690,14 +728,15 @@ function openTxDetail(t: TxRow) {
               <th class="px-4 py-3 font-medium">Who</th>
               <th class="px-4 py-3 font-medium">Serial</th>
               <th class="px-4 py-3 font-medium">Out for</th>
+              <th class="px-4 py-3 font-medium text-right">Action</th>
             </tr>
           </thead>
           <tbody class="divide-y divide-slate-800">
             <tr v-if="loading">
-              <td colspan="4" class="text-center text-slate-500 py-8">Loading…</td>
+              <td colspan="5" class="text-center text-slate-500 py-8">Loading…</td>
             </tr>
             <tr v-else-if="filteredOpen.length === 0">
-              <td colspan="4" class="text-center text-slate-500 py-8">
+              <td colspan="5" class="text-center text-slate-500 py-8">
                 {{ openSearch ? 'No matches.' : 'Nothing is currently out.' }}
               </td>
             </tr>
@@ -716,6 +755,15 @@ function openTxDetail(t: TxRow) {
                 :title="formatDateTime(r.checked_out_at)"
               >
                 {{ formatRelative(r.checked_out_at) }}
+              </td>
+              <td class="px-4 py-3 text-right">
+                <button
+                  type="button"
+                  class="text-xs px-2 py-1 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700"
+                  @click="openCloseDialog(r, r.expand?.user?.name ?? '', r.expand?.user?.code ?? '')"
+                >
+                  Close…
+                </button>
               </td>
             </tr>
           </tbody>
@@ -763,18 +811,19 @@ function openTxDetail(t: TxRow) {
               <th class="px-4 py-3 font-medium">Item</th>
               <th class="px-4 py-3 font-medium">Serial</th>
               <th class="px-4 py-3 font-medium text-right">Days out</th>
+              <th class="px-4 py-3 font-medium text-right">Action</th>
             </tr>
           </thead>
           <tbody class="divide-y divide-slate-800">
             <tr v-if="loading">
-              <td colspan="4" class="text-center text-slate-500 py-8">Loading…</td>
+              <td colspan="5" class="text-center text-slate-500 py-8">Loading…</td>
             </tr>
             <tr v-else-if="agingGroups.length === 0">
-              <td colspan="4" class="text-center text-slate-500 py-8">Nothing is currently out.</td>
+              <td colspan="5" class="text-center text-slate-500 py-8">Nothing is currently out.</td>
             </tr>
             <template v-for="g in agingGroups" :key="g.userId">
               <tr class="bg-slate-950/60">
-                <td colspan="4" class="px-4 py-2">
+                <td colspan="5" class="px-4 py-2">
                   <span class="font-semibold text-slate-200">{{ g.userName }}</span>
                   <span class="ml-2 text-xs text-slate-500 font-mono">{{ g.userCode }}</span>
                   <span class="ml-3 text-xs text-slate-400">
@@ -802,6 +851,15 @@ function openTxDetail(t: TxRow) {
                   "
                 >
                   {{ Math.floor((Date.now() - new Date(r.checked_out_at).getTime()) / (1000 * 60 * 60 * 24)) }}
+                </td>
+                <td class="px-4 py-2 text-right">
+                  <button
+                    type="button"
+                    class="text-xs px-2 py-1 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700"
+                    @click="openCloseDialog(r, g.userName, g.userCode)"
+                  >
+                    Close…
+                  </button>
                 </td>
               </tr>
             </template>
@@ -1292,6 +1350,21 @@ function openTxDetail(t: TxRow) {
       :open="detailOpen"
       :transaction="selectedTx"
       @update:open="detailOpen = $event"
+    />
+
+    <CheckoutCloseDialog
+      v-if="closeTarget"
+      :open="closeOpen"
+      :row-id="closeTarget.rowId"
+      :item-code="closeTarget.itemCode"
+      :item-name="closeTarget.itemName"
+      :user-code="closeTarget.userCode"
+      :user-name="closeTarget.userName"
+      :serial="closeTarget.serial"
+      :is-controller="isController"
+      :kiosk-code="closeTarget.kioskCode"
+      @update:open="closeOpen = $event"
+      @closed="onCheckoutClosed"
     />
   </main>
 </template>

@@ -20,6 +20,7 @@ import (
 	"github.com/skeeeon/kiosk/internal/events"
 	"github.com/skeeeon/kiosk/internal/handlers"
 	"github.com/skeeeon/kiosk/internal/heartbeat"
+	"github.com/skeeeon/kiosk/internal/instances"
 	"github.com/skeeeon/kiosk/internal/kioskctx"
 	"github.com/skeeeon/kiosk/internal/notifications"
 	"github.com/skeeeon/kiosk/internal/scheduler"
@@ -148,6 +149,13 @@ func main() {
 	notifier := notifications.New(app)
 	h := handlers.New(app, cfg, carts, notifier)
 
+	// PB record hooks on item_instances: create / decommission (active flip)
+	// / delete write an instance_audit row + publish an instance.lifecycle
+	// event. Cosmetic edits don't audit. Only the kiosk binary mutates
+	// instances (the controller SPA hides the instances panel), so this
+	// registration lives here exclusively.
+	instances.New().Register(app)
+
 	// Scheduled reports register their cron jobs at boot and react to
 	// record-hook changes thereafter — adding/editing/deleting a row in
 	// the SPA reflects in app.Cron() without a restart.
@@ -223,6 +231,7 @@ func main() {
 		e.Router.POST("/api/kiosk/items/import", h.CSVImport)
 		e.Router.GET("/api/kiosk/items.csv", h.ItemsExportCSV)
 		e.Router.POST("/api/kiosk/items/{id}/adjust", h.AdjustItemStock)
+		e.Router.POST("/api/kiosk/checkouts/by-line/{transaction_line_id}/close", h.AdminCloseCheckout)
 		e.Router.GET("/api/kiosk/transactions.csv", h.TransactionsExportCSV)
 		e.Router.GET("/api/kiosk/notifications", h.ListNotificationTemplates)
 		e.Router.PATCH("/api/kiosk/notifications/{event_type}", h.UpdateNotificationTemplate)

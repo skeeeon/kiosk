@@ -45,10 +45,47 @@ func TestKioskMigrationsApplyCleanly(t *testing.T) {
 	for _, name := range []string{
 		"users", "admins", "items", "item_instances",
 		"transactions", "transaction_lines", "open_checkouts",
-		"stock_adjustments",
+		"stock_adjustments", "instance_audit",
 	} {
 		if _, err := app.FindCollectionByNameOrId(name); err != nil {
 			t.Errorf("collection %q missing after migrate: %v", name, err)
+		}
+	}
+
+	// admin_close must be in transaction_lines.action enum, and the
+	// closure fields must exist. Pins the 1789000000 migration so a
+	// future regression on the action enum (or accidental field rename)
+	// surfaces here rather than as a runtime panic in commit.AdminClose.
+	lines, err := app.FindCollectionByNameOrId("transaction_lines")
+	if err != nil {
+		t.Fatalf("find transaction_lines: %v", err)
+	}
+	if f := lines.Fields.GetByName("action"); f != nil {
+		if sel, ok := f.(*core.SelectField); ok {
+			found := false
+			for _, v := range sel.Values {
+				if v == "admin_close" {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("transaction_lines.action missing admin_close; have %v", sel.Values)
+			}
+		}
+	}
+	for _, name := range []string{"closed_by_admin", "closure_reason"} {
+		if lines.Fields.GetByName(name) == nil {
+			t.Errorf("transaction_lines.%s missing", name)
+		}
+	}
+	txs, err := app.FindCollectionByNameOrId("transactions")
+	if err != nil {
+		t.Fatalf("find transactions: %v", err)
+	}
+	for _, name := range []string{"closed_by_admin", "command_id"} {
+		if txs.Fields.GetByName(name) == nil {
+			t.Errorf("transactions.%s missing", name)
 		}
 	}
 

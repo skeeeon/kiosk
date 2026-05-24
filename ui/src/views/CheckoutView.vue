@@ -10,7 +10,15 @@ import { useCart } from '../composables/useCart'
 import { useKioskIdentity } from '../composables/useKioskIdentity'
 import { useSessionStore } from '../stores/session'
 import { ApiError } from '../lib/api'
-import type { CartAction, CartLine, CommitResult, InstanceMatch, Item, User } from '../types'
+import type {
+  CartAction,
+  CartLine,
+  CommitResult,
+  InstanceMatch,
+  Item,
+  OpenCheckoutDetail,
+  User,
+} from '../types'
 
 const session = useSessionStore()
 const { cart, flash } = storeToRefs(session)
@@ -78,6 +86,30 @@ function extendReceiptCountdown() {
 const identify = ref<{ item: Item | null; instance: InstanceMatch | null } | null>(null)
 const IDENTIFY_TIMEOUT_MS = 15000
 let identifyDismissHandle: ReturnType<typeof setTimeout> | null = null
+
+// outstanding holds the worker's currently-checked-out items, captured from
+// the /api/kiosk/scan response when they badge in. Cleared on cart end (the
+// next scan re-fetches via the scan endpoint). Read-only — workers see it
+// as a glance, they don't act on rows from here.
+const outstanding = ref<OpenCheckoutDetail[]>([])
+const outstandingExpanded = ref(false)
+
+// relativeAge renders a short "Nd / Nh / Nm" string for the "What you have
+// out" panel. We avoid Intl.RelativeTimeFormat because the panel only needs
+// a small, deterministic surface and the kiosk's Vite build doesn't ship
+// any other relative-time helpers.
+function relativeAge(iso: string): string {
+  const t = new Date(iso).getTime()
+  if (!Number.isFinite(t)) return ''
+  const diffMs = Date.now() - t
+  if (diffMs < 60_000) return 'just now'
+  const minutes = Math.floor(diffMs / 60_000)
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  const days = Math.floor(hours / 24)
+  return `${days}d ago`
+}
 function showIdentify(payload: { item: Item | null; instance: InstanceMatch | null }) {
   identify.value = payload
   if (identifyDismissHandle) clearTimeout(identifyDismissHandle)
@@ -176,6 +208,8 @@ async function onScan(raw: string) {
     try {
       await c.start(u.code)
       dismissIdentify()
+      outstanding.value = u.open_checkouts ?? []
+      outstandingExpanded.value = false
       const welcome = u.open_count > 0
         ? `Welcome, ${u.name} — ${u.open_count} item${u.open_count === 1 ? '' : 's'} out`
         : `Welcome, ${u.name}`
@@ -248,6 +282,8 @@ async function onCancel() {
 async function doCancel() {
   try {
     await c.cancel()
+    outstanding.value = []
+    outstandingExpanded.value = false
     session.setFlash('info', 'Session ended')
   } catch (e) {
     handleApiError(e)
@@ -299,6 +335,8 @@ async function doCommit() {
   try {
     const result = await c.commit()
     success.value = { result, lines: snapshotLines, userName: snapshotUser }
+    outstanding.value = []
+    outstandingExpanded.value = false
     startReceiptCountdown()
   } catch (e) {
     handleApiError(e)
@@ -506,6 +544,58 @@ const flashClasses = {
       ref="cartScroller"
       class="flex-1 min-h-0 overflow-y-auto cart-scroll pr-3"
     >
+      <!-- Worker self-service: "What you have out" panel. Read-only,
+           collapsed by default. Folds away on empty so a worker who's never
+           checked anything out doesn't see noise. -->
+      <section
+        v-if="outstanding.length > 0"
+        class="mb-4 rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden"
+      >
+        <button
+          type="button"
+          class="w-full flex items-center justify-between gap-3 px-4 py-3 text-left hover:bg-slate-800/40"
+          :aria-expanded="outstandingExpanded"
+          @click="outstandingExpanded = !outstandingExpanded"
+        >
+          <div class="flex items-center gap-3">
+            <span class="text-base font-medium text-slate-200">
+              What you have out
+            </span>
+            <span
+              class="inline-flex items-center justify-center min-w-7 h-7 px-2 rounded-full bg-amber-900/40 text-amber-200 text-sm font-semibold tabular-nums"
+            >
+              {{ outstanding.length }}
+            </span>
+          </div>
+          <span class="text-slate-400 text-sm" aria-hidden="true">
+            {{ outstandingExpanded ? '▾' : '▸' }}
+          </span>
+        </button>
+        <ul
+          v-if="outstandingExpanded"
+          class="divide-y divide-slate-800 border-t border-slate-800"
+        >
+          <li
+            v-for="o in outstanding"
+            :key="o.id"
+            class="flex items-center justify-between gap-4 px-4 py-2.5"
+          >
+            <div class="flex-1 min-w-0">
+              <div class="text-slate-100 truncate">{{ o.item_name }}</div>
+              <div class="text-xs text-slate-500 font-mono">
+                {{ o.item_code }}<span v-if="o.instance_serial"> · {{ o.instance_serial }}</span>
+              </div>
+            </div>
+            <div
+              class="text-xs text-slate-400 tabular-nums whitespace-nowrap"
+              :title="o.checked_out_at"
+            >
+              {{ relativeAge(o.checked_out_at) }}
+            </div>
+          </li>
+        </ul>
+      </section>
+
       <p
         v-if="cart.lines.length === 0"
         class="rounded-2xl bg-slate-900 border border-slate-800 border-dashed text-slate-500 text-center py-12 text-lg"
