@@ -27,6 +27,7 @@ import (
 	"github.com/skeeeon/kiosk/internal/controller"
 	"github.com/skeeeon/kiosk/internal/events"
 	"github.com/skeeeon/kiosk/internal/notifications"
+	"github.com/skeeeon/kiosk/internal/scheduler"
 
 	"github.com/skeeeon/kiosk/migrations"
 )
@@ -85,6 +86,14 @@ func main() {
 
 	h := controller.New(app, cfg, notifier)
 
+	// Scheduled reports own the fleet's digest cadence in managed mode. The
+	// controller has the projected open_checkouts table + transaction ledger
+	// and the central notification_templates config, so the scheduler runs
+	// here exclusively — kiosks running in managed mode skip the scheduler
+	// entirely (see cmd/kiosk/main.go). BindRecordHooks reacts to SPA edits;
+	// RegisterEnabled reattaches enabled rows at boot inside OnServe.
+	scheduler.BindRecordHooks(app, notifier.SendTo)
+
 	// All NATS-dependent setup goes inside OnServe so non-serve subcommands
 	// (--help, seed-catalog, migrate, etc.) don't attempt to connect to a
 	// broker and fail when none is reachable. The seed subcommand brings up
@@ -108,6 +117,11 @@ func main() {
 	})
 
 	app.OnServe().BindFunc(func(e *core.ServeEvent) error {
+		// Reattach enabled scheduled_reports rows to app.Cron(). The hooks
+		// installed above keep the cron table in sync with mutations; this
+		// covers the boot path.
+		scheduler.RegisterEnabled(app, notifier.SendTo)
+
 		// NATS + catalog publisher + aggregator are brought up first so the
 		// catalog integrity/reconcile handlers below can close over the
 		// publisher. The catch-all SPA route is registered last so that

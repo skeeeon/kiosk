@@ -20,9 +20,10 @@ const editing = ref<Partial<ScheduledReportRecord> | null>(null)
 const deleting = ref<ScheduledReportRecord | null>(null)
 
 async function load() {
-  if (isController.value) {
-    // Scheduler runs on the kiosk; the controller view stays empty so
-    // operators don't conflate the two surfaces.
+  // Managed kiosks: the controller owns the schedules now, so this view
+  // stays empty on the kiosk side and a banner directs operators to the
+  // controller. The controller and standalone-kiosk paths both load.
+  if (!isController.value && managed.value) {
     rows.value = []
     return
   }
@@ -110,7 +111,9 @@ const columns: ColumnDef[] = [
 ]
 
 const emptyText = computed(() =>
-  isController.value ? '' : 'No scheduled reports yet. Click "New schedule" to create one.',
+  !isController.value && managed.value
+    ? ''
+    : 'No scheduled reports yet. Click "New schedule" to create one.',
 )
 
 async function persistSave(data: Partial<ScheduledReportRecord>): Promise<boolean> {
@@ -167,11 +170,11 @@ async function onDelete() {
 
     <div class="mb-4 flex items-start justify-between gap-4">
       <p class="text-sm text-slate-400">
-        Email a report on a recurring schedule. The kiosk&rsquo;s scheduler re-reads
+        Email a report on a recurring schedule. The scheduler re-reads
         this list whenever you save, so changes apply without a restart.
       </p>
       <button
-        v-if="!isController"
+        v-if="isController || !managed"
         type="button"
         class="shrink-0 px-4 py-2 rounded-lg bg-brand-primary hover:bg-brand-primary-hover text-white font-medium"
         @click="openNew"
@@ -181,20 +184,10 @@ async function onDelete() {
     </div>
 
     <div
-      v-if="isController"
+      v-if="!isController && managed"
       class="rounded-lg bg-slate-900 border border-slate-800 text-slate-300 px-4 py-3 mb-4 text-sm"
     >
-      Scheduled reports run on each kiosk, not on the controller. Configure them from the kiosk&rsquo;s admin SPA.
-    </div>
-    <div
-      v-else-if="managed"
-      class="rounded-lg bg-sky-950/60 border border-sky-800 text-sky-200 px-4 py-3 mb-4 text-sm"
-    >
-      Schedules run on this kiosk (it owns the open-checkouts data the
-      digest is built from), but the rendered email is sent from the
-      controller via centralized SMTP. The &ldquo;Last status&rdquo; column
-      below reflects local publish success — view the controller&rsquo;s
-      Recent sends tab for the actual SMTP outcome.
+      Scheduled reports are managed on the controller in this deployment. Configure them from the controller&rsquo;s admin SPA.
     </div>
 
     <DataTable

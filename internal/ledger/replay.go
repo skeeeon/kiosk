@@ -30,6 +30,45 @@ type OpenRow struct {
 	TransactionLine string // transaction_lines.id
 }
 
+// ReadOpenRows reads the open_checkouts table directly — the fast path
+// for the kiosk (where commit maintains the table) and the controller
+// (where ProjectOpenCheckouts does). Empty kioskCode reads every row.
+//
+// The instance identifier reads the controller-only source_item_instance_id
+// text column first (kiosk-local IDs that can't live in the
+// item_instance RelationField on the controller's projection) and falls
+// back to item_instance for the kiosk side, where item_instances are local
+// and the FK is real.
+func ReadOpenRows(app core.App, kioskCode string) ([]OpenRow, error) {
+	filter := ""
+	params := dbx.Params{}
+	if kioskCode != "" {
+		filter = "kiosk_code = {:k}"
+		params["k"] = kioskCode
+	}
+	recs, err := app.FindRecordsByFilter("open_checkouts",
+		filter, "checked_out_at", 0, 0, params)
+	if err != nil {
+		return nil, fmt.Errorf("read open_checkouts: %w", err)
+	}
+	out := make([]OpenRow, 0, len(recs))
+	for _, r := range recs {
+		inst := r.GetString("source_item_instance_id")
+		if inst == "" {
+			inst = r.GetString("item_instance")
+		}
+		out = append(out, OpenRow{
+			Item:            r.GetString("item"),
+			ItemInstance:    inst,
+			User:            r.GetString("user"),
+			Serial:          r.GetString("serial"),
+			CheckedOutAt:    r.GetDateTime("checked_out_at").Time(),
+			TransactionLine: r.GetString("transaction_line"),
+		})
+	}
+	return out, nil
+}
+
 // ReplayOpenRows walks the transaction_lines ledger in chronological order
 // and reconstructs the open_checkouts rows that should be present right
 // now. Mirrors the kiosk commit hook's closeCheckoutsForLine fallback

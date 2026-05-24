@@ -24,10 +24,10 @@ import (
 //   - Reuses the existing command bus already wired for the per-kiosk
 //     inventory panel.
 //
-// Out-counts are computed locally from the controller's projected ledger
-// (`ledger.ReplayOpenRows`) rather than over the wire, so the snapshot
-// command's payload doesn't need to grow. The two sources are joined by
-// item_code (the cross-fleet stable identifier).
+// Out-counts are computed locally from the controller's projected
+// open_checkouts table (`ledger.ReadOpenRows`) rather than over the wire,
+// so the snapshot command's payload doesn't need to grow. The two sources
+// are joined by item_code (the cross-fleet stable identifier).
 //
 // Trade-off: offline kiosks are excluded from the result and surfaced in
 // the `errors` section so the operator sees a partial-report indicator.
@@ -237,10 +237,11 @@ func lowStockRowsForKiosk(app core.App, kioskCode string, rawData json.RawMessag
 		return nil, err
 	}
 
-	// Out-count per item_code. ReplayOpenRows returns OpenRow keyed by
-	// item_id; map through the catalog so we can join against the
-	// snapshot's item_code field.
-	openRows, err := ledger.ReplayOpenRows(app, kioskCode)
+	// Out-count per item_code. ReadOpenRows queries the projected
+	// open_checkouts table directly (maintained by ProjectOpenCheckouts);
+	// the map through the catalog joins item_id → item_code so the count
+	// pairs with the snapshot's item_code field.
+	openRows, err := ledger.ReadOpenRows(app, kioskCode)
 	if err != nil {
 		return nil, err
 	}

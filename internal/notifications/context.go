@@ -1,7 +1,6 @@
 package notifications
 
 import (
-	"encoding/json"
 	"strconv"
 	"time"
 
@@ -173,22 +172,6 @@ func (c DailyActivityContext) PayloadSummary() string {
 	return c.Kiosk.Code + " · " + c.Cadence + " · " +
 		strconv.Itoa(c.TransactionCount) + " txns / " +
 		strconv.Itoa(c.LinesCount) + " lines"
-}
-
-// DigestEnvelope is the wire shape published over NATS for managed-kiosk
-// scheduled digests. The kiosk computes the context locally (kiosk-local
-// data the controller may not project — open_checkouts, transaction
-// aggregates) and ships it together with the per-schedule recipients
-// spec so the controller can render the fleet-global template AND honor
-// the per-schedule audience.
-//
-// Context is a json.RawMessage rather than a concrete type so this single
-// envelope serves every digest event type. The controller dispatcher
-// branches on EventType to choose the right unmarshal target.
-type DigestEnvelope struct {
-	EventType  string          `json:"event_type"`
-	Context    json.RawMessage `json:"context"`
-	Recipients Recipients      `json:"recipients"`
 }
 
 // BuildReceiptContext assembles the template payload from the values the

@@ -105,27 +105,6 @@ func LowStockAlertSubject(kioskCode string) string {
 	return fmt.Sprintf("%s.%s.alert.lowstock", SubjectPrefix(), kioskCode)
 }
 
-// OpenChecksDigestSubject builds the subject for a scheduled-digest event:
-// "<prefix>.<kiosk_code>.digest.open_checkouts". Payload is a
-// notifications.DigestEnvelope that wraps the OpenChecksDigestContext
-// computed locally on the kiosk and the per-schedule recipients spec. The
-// kiosk owns the cron timing and the open_checkouts replay (controller
-// doesn't project open_checkouts); the controller renders + SMTPs +
-// logs to its own send_log. Schedule rows themselves remain kiosk-local.
-func OpenChecksDigestSubject(kioskCode string) string {
-	return fmt.Sprintf("%s.%s.digest.open_checkouts", SubjectPrefix(), kioskCode)
-}
-
-// DailyActivityDigestSubject builds the subject for a scheduled daily-activity
-// digest event: "<prefix>.<kiosk_code>.digest.daily_activity". The wire
-// envelope is the shared notifications.DigestEnvelope discriminated by
-// EventType; the controller dispatcher unmarshals env.Context as a
-// DailyActivityContext. Window sizing (24h / 7d / 30d) is driven by the
-// schedule row's cadence and is computed kiosk-side before publish.
-func DailyActivityDigestSubject(kioskCode string) string {
-	return fmt.Sprintf("%s.%s.digest.daily_activity", SubjectPrefix(), kioskCode)
-}
-
 // StreamSubjectFilter is the catch-all subject pattern the controller's
 // stream binds to ("<prefix>.>") so every per-kiosk subject lands without
 // per-kiosk wiring.
@@ -177,18 +156,6 @@ func ReceiptTransactionFilter() string {
 // low-stock notification subject.
 func LowStockAlertFilter() string {
 	return SubjectPrefix() + ".*.alert.lowstock"
-}
-
-// OpenChecksDigestFilter is the controller-side consumer filter for the
-// scheduled open-checkouts digest subject.
-func OpenChecksDigestFilter() string {
-	return SubjectPrefix() + ".*.digest.open_checkouts"
-}
-
-// DailyActivityDigestFilter is the controller-side consumer filter for the
-// scheduled daily-activity digest subject.
-func DailyActivityDigestFilter() string {
-	return SubjectPrefix() + ".*.digest.daily_activity"
 }
 
 // CommandSubject builds the subject for a controller→kiosk command targeting

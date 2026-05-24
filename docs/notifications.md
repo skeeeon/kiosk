@@ -16,9 +16,9 @@ the audit trail lands depends on whether the kiosk is managed:
 | Template authoring | `/admin/notifications` on this kiosk | `/admin/notifications` on the **controller** |
 | SMTP credentials | this kiosk's PocketBase superuser UI (`/_/` → Settings → Mail) | controller's PocketBase superuser UI |
 | Send log | this kiosk's `notification_send_log` | controller's `notification_send_log` |
-| Schedule rows | kiosk-local | **kiosk-local** (because `open_checkouts` is kiosk-local) |
-| Cron timing + digest computation | kiosk | kiosk |
-| Render + SMTP dispatch | kiosk | **controller** (over NATS) |
+| Schedule rows | kiosk-local | **controller** (with optional per-kiosk scope) |
+| Cron timing + digest computation | kiosk | **controller** |
+| Render + SMTP dispatch | kiosk | controller |
 
 In managed mode the kiosk's local `notification_templates` rows still
 exist (they're seeded by the same migrations) but are dormant — the
@@ -32,30 +32,20 @@ the local notifier. The aggregator subscribes to:
 - `{prefix}.{kiosk_code}.alert.lowstock` — `LowStockContext`.
   Day-scoped dedup is the intended semantics: "tell me once per item
   per day," not just a redelivery guard.
-- `{prefix}.{kiosk_code}.digest.open_checkouts` — a `DigestEnvelope`
-  (`{event_type, context, recipients}`) carrying the per-schedule
-  recipients override. No dedup: digests are meant to fire each
-  cadence. The `context` is a JSON-encoded `OpenChecksDigestContext`.
-- `{prefix}.{kiosk_code}.digest.daily_activity` — same envelope shape,
-  with the `context` a JSON-encoded `DailyActivityContext`. Window
-  span is sized by the schedule's cadence: `daily` → last 24h,
-  `weekly` → 7d, `monthly` → 30d. Scope is per-kiosk; admins running a
-  fleet get one email per kiosk per fire.
 
-The envelope's `event_type` field discriminates between digest
-contexts so a single wire shape serves every digest type. New digests
-slot in by adding a new event-type constant, a default
-subject/body, a runner, an `events.*DigestSubject` builder, and a
-dispatch case on the controller side — no envelope changes needed.
+Scheduled digests (`open_checkouts`, `daily_activity`) no longer ride
+NATS. The controller owns the `scheduled_reports` rows, the cron, the
+digest computation (against its projected `open_checkouts` + ledger),
+and the SMTP send. The kiosk's scheduler is skipped entirely when
+`controller.enabled=true`; the SPA on the kiosk side shows a banner
+directing operators to the controller. Standalone kiosks keep the
+local scheduler + local SMTP path unchanged.
 
-Schedule rows stay on each kiosk because the kiosk owns the data the
-digests aggregate (`open_checkouts` is kiosk-local; transactions are
-projected but a per-kiosk digest still wants its kiosk's identity).
-The kiosk's scheduler computes the digest locally and ships the
-envelope; the controller renders against its own template, sends to
-the embedded recipients, and writes its own send-log row. The kiosk's
-`scheduled_reports.last_status` reflects the *publish* outcome — view
-the controller's "Recent sends" tab for the SMTP outcome.
+Schedule rows carry an optional `kiosk_code` column. Empty = fleet-wide
+(one digest covering every kiosk's data); set = scoped to one kiosk.
+The dialog on the controller-side SPA exposes a "Scope" dropdown
+populated from the `kiosks` collection; on a standalone kiosk the
+field stays empty and out of the UI.
 
 `recipients.all_admins` resolves against whichever app's `admins`
 collection the notifier is bound to — controller admins on the

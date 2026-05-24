@@ -89,7 +89,6 @@ blocked or failed by them.
 | Open-checkouts rebuild | `{prefix}.{kiosk_code}.integrity.rebuild` |
 | Receipt context (managed mode only) | `{prefix}.{kiosk_code}.receipt.transaction` |
 | Low-stock alert (managed mode only) | `{prefix}.{kiosk_code}.alert.lowstock` |
-| Scheduled digest (managed mode only) | `{prefix}.{kiosk_code}.digest.open_checkouts` |
 
 `{prefix}` is `"kiosk"` by default and configurable via
 `nats.subject_prefix` (both kiosk and controller must agree). Override

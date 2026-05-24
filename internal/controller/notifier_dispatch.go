@@ -1,7 +1,6 @@
 package controller
 
 import (
-	"encoding/json"
 	"log/slog"
 
 	"github.com/nats-io/nats.go/jetstream"
@@ -58,83 +57,6 @@ func (a *Aggregator) handleReceiptTransaction(msg jetstream.Msg) {
 		return
 	}
 	a.notifier.SendIfFirst(notifications.EventTypeReceiptTransaction, ctx.Transaction.ID, ctx)
-	_ = msg.Ack()
-}
-
-// handleOpenChecksDigest renders + sends a scheduled open-checkouts digest
-// using the per-schedule recipients spec embedded in the envelope. The
-// kiosk owns the cron timing and the ledger replay; the controller only
-// renders + SMTPs + logs.
-//
-// Synchronous SendTo (not SendIfFirst) because digests are intentionally
-// repeating events: daily/weekly schedules SHOULD fire each cadence, so
-// any dedupe gate would break the semantics. JetStream redelivery is the
-// only re-send risk and is rare; if it bites, add a refKey derived from
-// {schedule_id, scheduled_run_time} in a follow-up.
-func (a *Aggregator) handleOpenChecksDigest(msg jetstream.Msg) {
-	var env notifications.DigestEnvelope
-	if err := unmarshalMsg(msg, &env); err != nil {
-		slog.Warn("controller.notifier.digest_bad_payload",
-			"subject", msg.Subject(), "error", err)
-		_ = msg.Term()
-		return
-	}
-	var ctx notifications.OpenChecksDigestContext
-	if err := json.Unmarshal(env.Context, &ctx); err != nil {
-		slog.Warn("controller.notifier.digest_context_bad",
-			"subject", msg.Subject(), "error", err)
-		_ = msg.Term()
-		return
-	}
-	if ctx.Kiosk.Code == "" {
-		slog.Warn("controller.notifier.digest_missing_fields",
-			"subject", msg.Subject())
-		_ = msg.Term()
-		return
-	}
-	if a.notifier == nil {
-		_ = msg.Ack()
-		return
-	}
-	if err := a.notifier.SendTo(notifications.EventTypeOpenChecksDigest, ctx, env.Recipients); err != nil {
-		slog.Warn("controller.notifier.digest_send_failed",
-			"kiosk_code", ctx.Kiosk.Code, "error", err)
-	}
-	_ = msg.Ack()
-}
-
-// handleDailyActivityDigest mirrors handleOpenChecksDigest for the daily
-// activity payload. The wire envelope is shared (notifications.DigestEnvelope);
-// only the concrete unmarshal target changes.
-func (a *Aggregator) handleDailyActivityDigest(msg jetstream.Msg) {
-	var env notifications.DigestEnvelope
-	if err := unmarshalMsg(msg, &env); err != nil {
-		slog.Warn("controller.notifier.daily_activity_bad_payload",
-			"subject", msg.Subject(), "error", err)
-		_ = msg.Term()
-		return
-	}
-	var ctx notifications.DailyActivityContext
-	if err := json.Unmarshal(env.Context, &ctx); err != nil {
-		slog.Warn("controller.notifier.daily_activity_context_bad",
-			"subject", msg.Subject(), "error", err)
-		_ = msg.Term()
-		return
-	}
-	if ctx.Kiosk.Code == "" {
-		slog.Warn("controller.notifier.daily_activity_missing_fields",
-			"subject", msg.Subject())
-		_ = msg.Term()
-		return
-	}
-	if a.notifier == nil {
-		_ = msg.Ack()
-		return
-	}
-	if err := a.notifier.SendTo(notifications.EventTypeDailyActivity, ctx, env.Recipients); err != nil {
-		slog.Warn("controller.notifier.daily_activity_send_failed",
-			"kiosk_code", ctx.Kiosk.Code, "error", err)
-	}
 	_ = msg.Ack()
 }
 

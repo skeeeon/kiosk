@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -161,40 +160,19 @@ func main() {
 	// record-hook changes thereafter — adding/editing/deleting a row in
 	// the SPA reflects in app.Cron() without a restart.
 	//
-	// In managed mode the scheduler computes the digest locally (it needs
-	// open_checkouts state, which only the kiosk has) but publishes a
-	// notifications.DigestEnvelope over NATS so the controller does the
-	// actual SMTP send and writes its own send_log row. In standalone
-	// mode the local Notifier owns the full send path as before.
-	var send scheduler.Sender = notifier.SendTo
-	if cfg.Controller.Enabled {
-		kioskCode := cfg.Kiosk.Code
-		send = func(eventType string, data any, recipients notifications.Recipients) error {
-			subject, err := digestSubjectFor(eventType, kioskCode)
-			if err != nil {
-				return err
-			}
-			payload, err := json.Marshal(data)
-			if err != nil {
-				return fmt.Errorf("managed-mode scheduler: marshal %q payload: %w", eventType, err)
-			}
-			events.Publish(subject, notifications.DigestEnvelope{
-				EventType:  eventType,
-				Context:    payload,
-				Recipients: recipients,
-			})
-			// events.Publish is fire-and-forget — slogs on failure, no
-			// error return. Treat a publish as "accepted" for the schedule
-			// row's last_status; the actual send outcome lives on the
-			// controller's notification_send_log.
-			return nil
-		}
+	// Standalone deployments only. In managed mode the controller owns
+	// the schedule rows, the cron, and the SMTP send — it has the
+	// fleet-wide projected ledger and the central template config, so
+	// the previous "kiosk computes, NATS-ships to controller for send"
+	// detour goes away. The kiosk's SPA hides the view in managed mode
+	// (see AdminScheduledReportsView's role gate).
+	if !cfg.Controller.Enabled {
+		scheduler.BindRecordHooks(app, notifier.SendTo)
+		app.OnServe().BindFunc(func(e *core.ServeEvent) error {
+			scheduler.RegisterEnabled(app, notifier.SendTo)
+			return e.Next()
+		})
 	}
-	scheduler.BindRecordHooks(app, send)
-	app.OnServe().BindFunc(func(e *core.ServeEvent) error {
-		scheduler.RegisterEnabled(app, send)
-		return e.Next()
-	})
 
 	// Daily retention pass on the notifications send log + dedupe table.
 	// Runs at 03:15 local time — well outside the kiosk's busy windows. PB's
@@ -273,17 +251,4 @@ func configPath() string {
 		return p
 	}
 	return "kiosk.yaml"
-}
-
-// digestSubjectFor maps a digest event type to its kiosk-scoped NATS
-// subject. Adding a new digest means adding both an event-type constant
-// in internal/notifications and a case here.
-func digestSubjectFor(eventType, kioskCode string) (string, error) {
-	switch eventType {
-	case notifications.EventTypeOpenChecksDigest:
-		return events.OpenChecksDigestSubject(kioskCode), nil
-	case notifications.EventTypeDailyActivity:
-		return events.DailyActivityDigestSubject(kioskCode), nil
-	}
-	return "", fmt.Errorf("managed-mode scheduler: no NATS subject for event %q", eventType)
 }

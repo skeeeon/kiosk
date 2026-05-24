@@ -60,15 +60,22 @@ These started as deferred roadmap items and are now live in the binary:
   send log (`notification_send_log`) pruned at 90 days. Scheduled
   rows (`scheduled_reports`) drive the digest cron with per-row
   recipients overrides.
-- **Centralized notifications in managed mode.** Three new JetStream
-  subjects (`receipt.transaction`, `alert.lowstock`,
-  `digest.open_checkouts`) let managed kiosks publish structured
-  context payloads; the controller's aggregator dispatches each
-  through its own notifier against fleet-global templates and the
-  controller's SMTP. The SPA's Notifications view detects role at
-  boot and points its CRUD at `/api/controller/notifications` when
-  running on the controller. One set of SMTP credentials, one audit
-  trail.
+- **Centralized notifications in managed mode.** Two new JetStream
+  subjects (`receipt.transaction`, `alert.lowstock`) let managed
+  kiosks publish structured context payloads; the controller's
+  aggregator dispatches each through its own notifier against
+  fleet-global templates and the controller's SMTP. The SPA's
+  Notifications view detects role at boot and points its CRUD at
+  `/api/controller/notifications` when running on the controller. One
+  set of SMTP credentials, one audit trail.
+- **Scheduled reports owned by the controller in managed mode.** The
+  `scheduled_reports` collection moves to the controller's
+  responsibility: cron, computation against the projected
+  `open_checkouts` table + ledger, and SMTP all run on the controller.
+  The kiosk-side scheduler stays off when `controller.enabled=true`.
+  An optional `kiosk_code` column on each schedule row scopes the
+  report (empty = fleet-wide, set = one kiosk). The old kiosk →
+  controller `DigestEnvelope` NATS hop is gone.
 - **Fleet-wide low-stock report.**
   `GET /api/controller/reports/low-stock` fans `inventory.snapshot`
   out to every online managed kiosk in parallel and joins each

@@ -52,20 +52,37 @@ var reportRunners = map[string]reportRunner{
 	"daily_activity": runDailyActivityDigest,
 }
 
-// runOpenCheckoutsDigest builds an OpenChecksDigestContext by replaying
-// the ledger. Returns an empty-rows context (not an error) when nothing is
-// checked out so the digest still fires and the email body renders the
-// "no items currently checked out" branch.
-func runOpenCheckoutsDigest(app core.App, _ *core.Record) (string, any, error) {
-	rows, err := ledger.ReplayOpenRows(app, "")
+// RunReport is the exported entry point that resolves a report key to its
+// runner and invokes it. Lets out-of-package tests drive a runner against
+// a hand-built row without standing up the whole cron + record-hook
+// machinery; production code stays on the runOnce path.
+func RunReport(app core.App, key string, row *core.Record) (string, any, error) {
+	runner, ok := reportRunners[key]
+	if !ok {
+		return "", nil, fmt.Errorf("unknown report key %q", key)
+	}
+	return runner(app, row)
+}
+
+// runOpenCheckoutsDigest builds an OpenChecksDigestContext by reading the
+// (locally maintained or projected) open_checkouts table. Empty rows
+// return a populated context with zero count so the digest still fires
+// and the template renders the "no items currently checked out" branch.
+//
+// kiosk_code on the schedule row scopes the report. Empty = "this kiosk"
+// on a standalone deployment or "fleet-wide" on a controller; set = one
+// kiosk in the fleet (controller-only path — the kiosk's scheduler is
+// disabled in managed mode).
+func runOpenCheckoutsDigest(app core.App, row *core.Record) (string, any, error) {
+	rowKioskCode := row.GetString("kiosk_code")
+	rows, err := ledger.ReadOpenRows(app, rowKioskCode)
 	if err != nil {
-		return "", nil, fmt.Errorf("replay open rows: %w", err)
+		return "", nil, fmt.Errorf("read open rows: %w", err)
 	}
 	dtos, err := ledger.Hydrate(app, rows)
 	if err != nil {
 		return "", nil, fmt.Errorf("hydrate open rows: %w", err)
 	}
-	id := kioskctx.Get()
 	out := make([]notifications.OpenChecksDigestRow, 0, len(dtos))
 	for _, d := range dtos {
 		row := notifications.OpenChecksDigestRow{
@@ -83,15 +100,29 @@ func runOpenCheckoutsDigest(app core.App, _ *core.Record) (string, any, error) {
 		out = append(out, row)
 	}
 	ctx := notifications.OpenChecksDigestContext{
-		Kiosk: notifications.KioskInfo{
-			Code:         id.KioskCode,
-			LocationCode: id.LocationCode,
-		},
+		Kiosk:       digestKioskInfo(rowKioskCode),
 		GeneratedAt: time.Now().UTC(),
 		Rows:        out,
 		RowsCount:   len(out),
 	}
 	return notifications.EventTypeOpenChecksDigest, ctx, nil
+}
+
+// digestKioskInfo populates the KioskInfo block of a digest context.
+// On a standalone kiosk (rowKioskCode empty) the values come from the
+// process identity. On the controller, rowKioskCode set names the
+// scope; the LocationCode is dropped (the controller doesn't carry
+// per-kiosk location), and the template's "fleet-wide" branch handles
+// the empty case.
+func digestKioskInfo(rowKioskCode string) notifications.KioskInfo {
+	if rowKioskCode != "" {
+		return notifications.KioskInfo{Code: rowKioskCode}
+	}
+	id := kioskctx.Get()
+	return notifications.KioskInfo{
+		Code:         id.KioskCode,
+		LocationCode: id.LocationCode,
+	}
 }
 
 // RegisterEnabled walks scheduled_reports and registers a cron entry for

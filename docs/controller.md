@@ -64,18 +64,19 @@ of truth for catalog plus a unified transaction ledger.
   endpoints fast-fail with **503 `{error: "kiosk_offline",
   kiosk_code, command_id}`** when the kiosk's heartbeat is stale, so
   the SPA doesn't wait 5 s for a NATS timeout to render "offline."
-- **Notifications, centralized.** Managed kiosks publish three new
+- **Notifications, centralized.** Managed kiosks publish two
   notification subjects on the same JetStream stream —
-  `receipt.transaction` (one per commit), `alert.lowstock` (one per
-  threshold cross), and `digest.open_checkouts` (one per scheduled
-  fire). The aggregator dispatches each to the controller's
+  `receipt.transaction` (one per commit) and `alert.lowstock` (one per
+  threshold cross). The aggregator dispatches each to the controller's
   `notifications.Notifier`, which renders against the controller's
   fleet-global `notification_templates` rows, sends via the
   controller's PocketBase SMTP, and writes to the controller's
-  `notification_send_log`. The CRUD endpoints
-  (`/api/controller/notifications`) mirror the kiosk's; the SPA
-  detects role at boot and points the Templates tab at the right base
-  URL. See [Notifications](notifications.md) for the full picture.
+  `notification_send_log`. Scheduled digests don't ride NATS at all in
+  managed mode — the controller owns the `scheduled_reports` rows and
+  the scheduler; the kiosk's scheduler stays off entirely. The CRUD
+  endpoints (`/api/controller/notifications`) mirror the kiosk's; the
+  SPA detects role at boot and points the Templates tab at the right
+  base URL. See [Notifications](notifications.md) for the full picture.
 - **Inventory adjustment audit.** Every `inventory.adjust` event the
   aggregator receives is projected into the controller's
   `inventory_audit` collection — denormalized
@@ -109,9 +110,9 @@ of truth for catalog plus a unified transaction ledger.
 - **Fleet-wide low-stock report.**
   `GET /api/controller/reports/low-stock` fans `inventory.snapshot` to
   every currently-online managed kiosk in parallel, joins each kiosk's
-  reply with `out` counts computed locally from the controller's
-  projected ledger via `ledger.ReplayOpenRows`, and returns rows whose
-  `available ≤ reorder_threshold`. Offline kiosks surface under
+  reply with `out` counts read from the controller's projected
+  `open_checkouts` table via `ledger.ReadOpenRows`, and returns rows
+  whose `available ≤ reorder_threshold`. Offline kiosks surface under
   `errors` so the SPA can show "partial result — N kiosks excluded"
   instead of hiding the limitation. Honors `?kiosk_code=` so the
   page-level kiosk filter scopes the fan-out to a single target.
@@ -141,7 +142,7 @@ the aggregator); three project from dedicated event subjects:
 
 | Tab | Source | Notes |
 |---|---|---|
-| Currently out | `GET /api/kiosk/reports/open-checkouts` (controller impl reconstructs via `ledger.ReplayOpenRows`) | Honors `?kiosk_code=`; per-row "Close…" affordance forwards to the remote kiosk via the admin force-close endpoint |
+| Currently out | `GET /api/kiosk/reports/open-checkouts` (controller impl reads from the projected `open_checkouts` table) | Honors `?kiosk_code=`; per-row "Close…" affordance forwards to the remote kiosk via the admin force-close endpoint |
 | Aging | Same source as Currently out, bucketed by user with oldest-out-first sort | Per-user rollup; threshold is a display hint, not a filter; per-row "Close…" affordance same as above |
 | Low stock | `GET /api/controller/reports/low-stock` (snapshot fan-out) | Offline kiosks listed under `errors` for partial-result transparency |
 | Group activity | `transactions` + `transaction_lines` + `groups` via pb-sdk, rolled up client-side | Date range filter |

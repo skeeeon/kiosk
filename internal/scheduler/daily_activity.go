@@ -8,7 +8,6 @@ import (
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 
-	"github.com/skeeeon/kiosk/internal/kioskctx"
 	"github.com/skeeeon/kiosk/internal/notifications"
 )
 
@@ -27,11 +26,15 @@ func dailyActivityWindowFor(cadence string) (time.Duration, error) {
 	return 0, fmt.Errorf("daily_activity: unsupported cadence %q", cadence)
 }
 
-// runDailyActivityDigest aggregates the kiosk's completed transactions in
-// the window defined by the schedule's cadence and returns a populated
+// runDailyActivityDigest aggregates the completed transactions in the
+// window defined by the schedule's cadence and returns a populated
 // DailyActivityContext. Empty windows return a populated context with
 // zero counts (not an error) so the template renders its "no activity"
 // branch and the schedule row stamps as sent.
+//
+// kiosk_code on the schedule row scopes the report. Empty = "this kiosk"
+// (standalone) or "fleet-wide" (controller); set = one kiosk in the
+// fleet (controller-only path).
 func runDailyActivityDigest(app core.App, row *core.Record) (string, any, error) {
 	cadence := row.GetString("cadence")
 	window, err := dailyActivityWindowFor(cadence)
@@ -41,12 +44,9 @@ func runDailyActivityDigest(app core.App, row *core.Record) (string, any, error)
 	windowEnd := time.Now().UTC()
 	windowStart := windowEnd.Add(-window)
 
-	id := kioskctx.Get()
+	rowKioskCode := row.GetString("kiosk_code")
 	ctx := notifications.DailyActivityContext{
-		Kiosk: notifications.KioskInfo{
-			Code:         id.KioskCode,
-			LocationCode: id.LocationCode,
-		},
+		Kiosk:       digestKioskInfo(rowKioskCode),
 		GeneratedAt: time.Now().UTC(),
 		WindowStart: windowStart,
 		WindowEnd:   windowEnd,
@@ -55,17 +55,18 @@ func runDailyActivityDigest(app core.App, row *core.Record) (string, any, error)
 
 	// Transactions in the window. PB stores completed_at as a DateField;
 	// the standard ISO-with-Z layout PB itself emits is the filter format.
-	txs, err := app.FindRecordsByFilter(
-		"transactions",
-		"status = {:s} && completed_at >= {:from} && completed_at <= {:to}",
-		"completed_at",
-		0, 0,
-		dbx.Params{
-			"s":    "completed",
-			"from": windowStart.Format("2006-01-02 15:04:05.000Z"),
-			"to":   windowEnd.Format("2006-01-02 15:04:05.000Z"),
-		},
-	)
+	txFilter := "status = {:s} && completed_at >= {:from} && completed_at <= {:to}"
+	txParams := dbx.Params{
+		"s":    "completed",
+		"from": windowStart.Format("2006-01-02 15:04:05.000Z"),
+		"to":   windowEnd.Format("2006-01-02 15:04:05.000Z"),
+	}
+	if rowKioskCode != "" {
+		txFilter += " && kiosk_code = {:kc}"
+		txParams["kc"] = rowKioskCode
+	}
+	txs, err := app.FindRecordsByFilter("transactions", txFilter,
+		"completed_at", 0, 0, txParams)
 	if err != nil {
 		return "", nil, fmt.Errorf("daily_activity: list transactions: %w", err)
 	}
@@ -91,17 +92,18 @@ func runDailyActivityDigest(app core.App, row *core.Record) (string, any, error)
 	// Lines via indirect filter on the transaction relation — same trick
 	// the group-activity report uses to avoid enumerating tx IDs in a
 	// giant OR.
-	lines, err := app.FindRecordsByFilter(
-		"transaction_lines",
-		"transaction.status = {:s} && transaction.completed_at >= {:from} && transaction.completed_at <= {:to}",
-		"",
-		0, 0,
-		dbx.Params{
-			"s":    "completed",
-			"from": windowStart.Format("2006-01-02 15:04:05.000Z"),
-			"to":   windowEnd.Format("2006-01-02 15:04:05.000Z"),
-		},
-	)
+	lineFilter := "transaction.status = {:s} && transaction.completed_at >= {:from} && transaction.completed_at <= {:to}"
+	lineParams := dbx.Params{
+		"s":    "completed",
+		"from": windowStart.Format("2006-01-02 15:04:05.000Z"),
+		"to":   windowEnd.Format("2006-01-02 15:04:05.000Z"),
+	}
+	if rowKioskCode != "" {
+		lineFilter += " && transaction.kiosk_code = {:kc}"
+		lineParams["kc"] = rowKioskCode
+	}
+	lines, err := app.FindRecordsByFilter("transaction_lines", lineFilter,
+		"", 0, 0, lineParams)
 	if err != nil {
 		return "", nil, fmt.Errorf("daily_activity: list lines: %w", err)
 	}

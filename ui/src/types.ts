@@ -187,7 +187,7 @@ export interface RecipientsSpec {
 
 export interface ScheduledReportRecord {
   id: string
-  report_key: 'open_checkouts'
+  report_key: 'open_checkouts' | 'daily_activity'
   cadence: 'daily' | 'weekly' | 'monthly'
   hour: number
   weekday: number
@@ -195,6 +195,10 @@ export interface ScheduledReportRecord {
   enabled: boolean
   recipients: RecipientsSpec
   subject_override: string
+  // kiosk_code scopes the schedule to one kiosk in the fleet. Empty =
+  // fleet-wide (controller) or "this kiosk" (standalone). Set only on
+  // the controller; standalone kiosks never write a value.
+  kiosk_code?: string
   last_run_at?: string
   last_status?: 'sent' | 'failed' | 'skipped' | ''
   last_error?: string

@@ -1,6 +1,8 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import AppDialog from './AppDialog.vue'
+import { pb } from '../lib/pb'
+import { useKioskIdentity } from '../composables/useKioskIdentity'
 import type { ScheduledReportRecord } from '../types'
 
 const props = defineProps<{
@@ -14,6 +16,25 @@ const emit = defineEmits<{
   'save-and-add-another': [data: Partial<ScheduledReportRecord>]
 }>()
 
+const { identity } = useKioskIdentity()
+const isController = computed(() => identity.value?.role === 'controller')
+
+// Kiosks list for the controller-only scope dropdown. Loaded once on
+// mount; the dialog opens/closes against the same module-level cache.
+const kiosks = ref<Array<{ kiosk_code: string }>>([])
+async function loadKiosks() {
+  if (!isController.value) return
+  try {
+    kiosks.value = await pb.collection('kiosks').getFullList<{ kiosk_code: string }>({
+      sort: '+kiosk_code',
+    })
+  } catch {
+    kiosks.value = []
+  }
+}
+onMounted(loadKiosks)
+watch(isController, loadKiosks)
+
 // Working draft. Two pieces of state outside it: extrasText (textarea →
 // string[] conversion) and validation error string for inline display.
 const form = reactive<Partial<ScheduledReportRecord>>({
@@ -25,6 +46,7 @@ const form = reactive<Partial<ScheduledReportRecord>>({
   enabled: true,
   recipients: { worker_email: false, all_admins: true, extras: [] },
   subject_override: '',
+  kiosk_code: '',
 })
 
 // Local textarea text for recipients.extras — same pattern as
@@ -48,6 +70,7 @@ watch(
       enabled: true,
       recipients: { worker_email: false, all_admins: true, extras: [] },
       subject_override: '',
+      kiosk_code: '',
       ...(props.report ?? {}),
     })
     // Defensive: the prop may have a partial recipients object.
@@ -202,6 +225,18 @@ function onSubmitAndAdd() {
           class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100"
         />
         <span class="text-xs text-slate-500">Capped at 28 so the schedule fires every month including February.</span>
+      </label>
+
+      <label v-if="isController" class="flex flex-col gap-1">
+        <span class="text-sm text-slate-400">Scope</span>
+        <select
+          v-model="form.kiosk_code"
+          class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100"
+        >
+          <option value="">Fleet-wide (every kiosk)</option>
+          <option v-for="k in kiosks" :key="k.kiosk_code" :value="k.kiosk_code">{{ k.kiosk_code }}</option>
+        </select>
+        <span class="text-xs text-slate-500">Empty rolls every kiosk into one report; a specific kiosk scopes the data to just that one.</span>
       </label>
 
       <fieldset class="rounded-lg border border-slate-700 p-3">

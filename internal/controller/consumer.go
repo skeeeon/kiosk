@@ -234,11 +234,11 @@ func (a *Aggregator) ensureConsumer(ctx context.Context, stream jetstream.Stream
 			// Notification subjects published by managed kiosks. The
 			// controller renders + sends from its own template rows so
 			// SMTP credentials and recipient lists live centrally rather
-			// than on every kiosk.
+			// than on every kiosk. Digests no longer ride NATS — the
+			// controller owns the scheduler in managed mode, so the
+			// digest envelopes are gone.
 			events.ReceiptTransactionFilter(),
 			events.LowStockAlertFilter(),
-			events.OpenChecksDigestFilter(),
-			events.DailyActivityDigestFilter(),
 		},
 	}
 	return stream.CreateOrUpdateConsumer(ctx, cfg)
@@ -260,12 +260,6 @@ func (a *Aggregator) handle(ctx context.Context, msg jetstream.Msg) {
 		return
 	case strings.HasSuffix(subject, ".alert.lowstock"):
 		a.handleLowStockAlert(msg)
-		return
-	case strings.HasSuffix(subject, ".digest.open_checkouts"):
-		a.handleOpenChecksDigest(msg)
-		return
-	case strings.HasSuffix(subject, ".digest.daily_activity"):
-		a.handleDailyActivityDigest(msg)
 		return
 	}
 
