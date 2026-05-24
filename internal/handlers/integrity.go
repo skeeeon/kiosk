@@ -153,20 +153,33 @@ func (h *Handlers) Integrity(re *core.RequestEvent) error {
 // policy and the cross-fleet kiosk_code filter used by the controller's
 // reports view.
 
-// RebuildOpenCheckouts wipes open_checkouts and repopulates it from a
+// IntegrityRebuildResult is the wire shape both the HTTP handler and the
+// command-bus handler return.
+type IntegrityRebuildResult struct {
+	Deleted  int `json:"deleted"`
+	Inserted int `json:"inserted"`
+}
+
+// PerformIntegrityRebuild wipes open_checkouts and repopulates it from a
 // ledger replay. Destructive but idempotent: running it twice yields the
 // same state. Use when Integrity reports drift you can't otherwise explain.
 //
 // Each rebuilt row carries the source checkout line's `completed_at` as
 // `checked_out_at` and a FK back to its `transaction_line`, so aging /
 // audit reports stay meaningful after a rebuild.
-func (h *Handlers) RebuildOpenCheckouts(re *core.RequestEvent) error {
-	if err := h.requireAdmin(re); err != nil {
-		return err
-	}
-
+//
+// Pure of HTTP. Used by:
+//   - the kiosk's POST /api/kiosk/integrity/rebuild handler (source=local).
+//   - the controller's integrity.rebuild command bus path
+//     (source=controller, with the controller admin id + command id).
+//
+// The published integrity.rebuild event carries `source`,
+// `controller_admin_id`, and `command_id` for forward-compat with a
+// future audit-table projection — receivers that don't care just ignore
+// the extra fields.
+func PerformIntegrityRebuild(app core.App, source, adminID, controllerAdminID, commandID string) (*IntegrityRebuildResult, error) {
 	var deleted, inserted int
-	err := h.App.RunInTransaction(func(tx core.App) error {
+	err := app.RunInTransaction(func(tx core.App) error {
 		existing, err := tx.FindRecordsByFilter("open_checkouts", "", "", 0, 0)
 		if err != nil {
 			return fmt.Errorf("load open_checkouts: %w", err)
@@ -178,9 +191,9 @@ func (h *Handlers) RebuildOpenCheckouts(re *core.RequestEvent) error {
 			deleted++
 		}
 
-		// Rebuild is always all-kiosks (in practice it runs on a kiosk and
-		// the local ledger only contains that kiosk's transactions; on the
-		// controller the rebuild endpoint isn't registered).
+		// Rebuild is always all-kiosks: on the kiosk this is its own ledger;
+		// the controller never reaches this code path (the command runs on
+		// the target kiosk).
 		rows, err := ledger.ReplayOpenRows(tx, "")
 		if err != nil {
 			return err
@@ -210,21 +223,35 @@ func (h *Handlers) RebuildOpenCheckouts(re *core.RequestEvent) error {
 		return nil
 	})
 	if err != nil {
-		return re.InternalServerError("rebuild failed", err)
+		return nil, err
 	}
 
 	id := kioskctx.Get()
 	events.Publish(events.IntegrityRebuildSubject(id.KioskCode), map[string]any{
-		"kiosk_code":    id.KioskCode,
-		"location_code": id.LocationCode,
-		"admin_id":      re.Auth.Id,
-		"deleted":       deleted,
-		"inserted":      inserted,
-		"completed_at":  time.Now().UTC(),
+		"kiosk_code":          id.KioskCode,
+		"location_code":       id.LocationCode,
+		"admin_id":            adminID,
+		"controller_admin_id": controllerAdminID,
+		"source":              source,
+		"command_id":          commandID,
+		"deleted":             deleted,
+		"inserted":            inserted,
+		"completed_at":        time.Now().UTC(),
 	})
 
-	return re.JSON(http.StatusOK, map[string]any{
-		"deleted":  deleted,
-		"inserted": inserted,
-	})
+	return &IntegrityRebuildResult{Deleted: deleted, Inserted: inserted}, nil
+}
+
+// RebuildOpenCheckouts is the HTTP handler wrapper around
+// PerformIntegrityRebuild. Source is `local` and the actor is the
+// requesting admin.
+func (h *Handlers) RebuildOpenCheckouts(re *core.RequestEvent) error {
+	if err := h.requireAdmin(re); err != nil {
+		return err
+	}
+	result, err := PerformIntegrityRebuild(h.App, events.SourceLocal, re.Auth.Id, "", "")
+	if err != nil {
+		return re.InternalServerError("rebuild failed", err)
+	}
+	return re.JSON(http.StatusOK, result)
 }

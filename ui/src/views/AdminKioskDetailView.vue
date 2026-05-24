@@ -18,6 +18,7 @@ import { useAdminToast } from '../composables/useAdminToast'
 import KioskItemsPanel from '../components/KioskItemsPanel.vue'
 import KioskInventoryPanel from '../components/KioskInventoryPanel.vue'
 import KioskInstancesPanel from '../components/KioskInstancesPanel.vue'
+import AppDialog from '../components/AppDialog.vue'
 import type { HeartbeatsResponse, KioskRecord } from '../types'
 
 const props = defineProps<{ code: string }>()
@@ -165,6 +166,69 @@ async function save() {
 function back() {
   router.push({ name: 'admin-kiosks' })
 }
+
+// --- Maintenance actions: integrity rebuild + ledger republish. Both
+// run on the remote kiosk via the command bus; the offline shape mirrors
+// other command-driven endpoints (503 + kiosk_offline). Confirmations
+// gate destructive-by-policy actions even though the operations are
+// idempotent on their own.
+
+const rebuildOpen = ref(false)
+const rebuildSubmitting = ref(false)
+const republishOpen = ref(false)
+const republishSubmitting = ref(false)
+const republishForm = ref({ from: '', to: '' })
+
+async function confirmRebuild() {
+  if (!kiosk.value) return
+  rebuildSubmitting.value = true
+  try {
+    const res = await api.post<{ deleted: number; inserted: number }>(
+      `/api/controller/kiosks/${encodeURIComponent(kiosk.value.kiosk_code)}/integrity/rebuild`,
+      {},
+    )
+    rebuildOpen.value = false
+    toast.success(`Rebuilt: deleted ${res.deleted}, inserted ${res.inserted}`)
+  } catch (e) {
+    toast.error((e as Error).message)
+  } finally {
+    rebuildSubmitting.value = false
+  }
+}
+
+async function submitRepublish() {
+  if (!kiosk.value) return
+  const body: Record<string, string> = {}
+  // Convert local-datetime inputs ("2026-05-23T14:30") to RFC3339 with Z
+  // suffix so the kiosk-side parser accepts them. Empty inputs are sent
+  // as omitted fields (the kiosk treats those as "no clip on that end").
+  if (republishForm.value.from.trim()) {
+    body.from = new Date(republishForm.value.from).toISOString()
+  }
+  if (republishForm.value.to.trim()) {
+    body.to = new Date(republishForm.value.to).toISOString()
+  }
+  republishSubmitting.value = true
+  try {
+    const res = await api.post<{
+      transactions_published: number
+      lines_published: number
+      skipped: number
+    }>(
+      `/api/controller/kiosks/${encodeURIComponent(kiosk.value.kiosk_code)}/ledger/republish`,
+      body,
+    )
+    republishOpen.value = false
+    toast.success(
+      `Republished: ${res.transactions_published} transactions, ${res.lines_published} lines` +
+        (res.skipped ? ` (${res.skipped} skipped)` : ''),
+    )
+  } catch (e) {
+    toast.error((e as Error).message)
+  } finally {
+    republishSubmitting.value = false
+  }
+}
 </script>
 
 <template>
@@ -266,6 +330,35 @@ function back() {
           {{ saving ? 'Saving…' : 'Save changes' }}
         </button>
       </div>
+
+      <!-- Maintenance: rebuild the kiosk's open_checkouts from its
+           transaction_lines ledger, or re-emit completed transactions
+           so the controller's projection can backfill after a NATS
+           outage. Both run on the kiosk via the command bus. -->
+      <div class="mt-6 pt-5 border-t border-slate-800">
+        <h2 class="text-sm font-medium text-slate-300 mb-2">Maintenance</h2>
+        <p class="text-xs text-slate-500 mb-3">
+          Recover from suspected ledger drift or fill the controller&rsquo;s
+          projection after an outage. Both actions are idempotent
+          (repeating them yields the same final state).
+        </p>
+        <div class="flex gap-3 flex-wrap">
+          <button
+            type="button"
+            class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm"
+            @click="rebuildOpen = true"
+          >
+            Rebuild open checkouts
+          </button>
+          <button
+            type="button"
+            class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm"
+            @click="republishOpen = true"
+          >
+            Republish ledger…
+          </button>
+        </div>
+      </div>
     </div>
 
     <div v-if="kiosk && activeTab === 'items'">
@@ -279,5 +372,84 @@ function back() {
     <div v-if="kiosk && activeTab === 'instances'">
       <KioskInstancesPanel :kiosk-code="kiosk.kiosk_code" />
     </div>
+
+    <AppDialog
+      :open="rebuildOpen"
+      title="Rebuild open checkouts"
+      size="sm"
+      @update:open="(v) => { if (!v) rebuildOpen = false }"
+    >
+      <p class="text-slate-300 text-sm">
+        Wipes the kiosk&rsquo;s <code class="font-mono">open_checkouts</code>
+        table and rebuilds it from the transaction-line ledger. Safe to
+        repeat; use when integrity reports show drift you can&rsquo;t
+        otherwise explain.
+      </p>
+      <div class="flex justify-end gap-3 mt-5">
+        <button
+          type="button"
+          class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200"
+          @click="rebuildOpen = false"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          class="px-4 py-2 rounded-lg bg-brand-primary hover:bg-brand-primary-hover text-white font-medium disabled:opacity-50"
+          :disabled="rebuildSubmitting"
+          @click="confirmRebuild"
+        >
+          {{ rebuildSubmitting ? 'Rebuilding…' : 'Rebuild now' }}
+        </button>
+      </div>
+    </AppDialog>
+
+    <AppDialog
+      :open="republishOpen"
+      title="Republish ledger"
+      size="sm"
+      @update:open="(v) => { if (!v) republishOpen = false }"
+    >
+      <form class="flex flex-col gap-4" @submit.prevent="submitRepublish">
+        <p class="text-slate-300 text-sm">
+          Re-emit every completed transaction (and its lines) as NATS
+          events. The controller&rsquo;s projection is idempotent on
+          <code class="font-mono">source_line_id</code>, so duplicates are
+          no-ops. Leave both fields blank for a full-history republish.
+        </p>
+        <label class="flex flex-col gap-1">
+          <span class="text-sm text-slate-400">From <span class="text-slate-500">(optional)</span></span>
+          <input
+            v-model="republishForm.from"
+            type="datetime-local"
+            class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100"
+          />
+        </label>
+        <label class="flex flex-col gap-1">
+          <span class="text-sm text-slate-400">To <span class="text-slate-500">(optional)</span></span>
+          <input
+            v-model="republishForm.to"
+            type="datetime-local"
+            class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100"
+          />
+        </label>
+        <div class="flex justify-end gap-3 mt-1">
+          <button
+            type="button"
+            class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200"
+            @click="republishOpen = false"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            class="px-4 py-2 rounded-lg bg-brand-primary hover:bg-brand-primary-hover text-white font-medium disabled:opacity-50"
+            :disabled="republishSubmitting"
+          >
+            {{ republishSubmitting ? 'Republishing…' : 'Republish' }}
+          </button>
+        </div>
+      </form>
+    </AppDialog>
   </main>
 </template>

@@ -40,6 +40,8 @@ PB's `/api/collections/*` is used for PB-native CRUD.
 | `PATCH` | `/api/controller/kiosks/{code}/instances/{instance_code}` | admin | **Controller only.** Fires `instance.edit` — cosmetic-only (no audit, no lifecycle event). Body: any subset of `{code, serial, rfid_epc, notes}`. 503 on offline. |
 | `POST` | `/api/controller/kiosks/{code}/instances/{instance_code}/decommission` | admin | **Controller only.** Fires `instance.decommission`. Body: `{reason}` (required). Writes audit + emits `instance.lifecycle`. Idempotent via `command_id`; 503 on offline. |
 | `POST` | `/api/controller/kiosks/{code}/instances/{instance_code}/reactivate` | admin | **Controller only.** Fires `instance.reactivate`. Same body + idempotency shape as decommission. |
+| `POST` | `/api/controller/kiosks/{code}/integrity/rebuild` | admin | **Controller only.** Fires `integrity.rebuild` — wipes the kiosk&rsquo;s `open_checkouts` and rebuilds from its ledger. Idempotent on its own (replay produces same state). Empty body. 503 on offline. |
+| `POST` | `/api/controller/kiosks/{code}/ledger/republish` | admin | **Controller only.** Fires `ledger.republish` — re-emits transaction.complete + item.{action} events for every completed transaction in the optional `{from, to}` window. The controller&rsquo;s projection dedupes on `source_line_id`, so duplicates are no-ops. 503 on offline. |
 | `GET` | `/api/controller/reports/low-stock` | admin | **Controller only.** Fleet-wide low-stock report. Fans `inventory.snapshot` to every online managed kiosk in parallel, joins each kiosk's snapshot with `out` counts derived from the controller's projected ledger, and returns rows whose `available ≤ reorder_threshold`. Optional `?kiosk_code=` scopes to one kiosk. Response shape: `{rows: [...], errors: [{kiosk_code, error}]}` — offline kiosks appear in `errors` so partial results are explicit. |
 | `GET` | `/api/controller/notifications` | admin | **Controller only.** List notification templates. Same DTO as the kiosk's `/api/kiosk/notifications`. |
 | `PATCH` | `/api/controller/notifications/{event_type}` | admin | **Controller only.** Update subject/body/enabled/recipients on a template. |
@@ -111,7 +113,7 @@ don't ride JetStream:
 | Subject | Direction | Transport |
 |---|---|---|
 | `{prefix}.{kiosk_code}.heartbeat` | kiosk → controller | Core NATS publish, 45s cadence. No persistence — last-write-wins is the entire signal. |
-| `{prefix}.{kiosk_code}.command.<name>` | controller → kiosk | Core NATS request/reply, ≤5 s reply timeout. Today: `inventory.adjust`, `inventory.snapshot`, `checkout.close`, `instance.create`, `instance.edit`, `instance.decommission`, `instance.reactivate`, `instance.snapshot`. |
+| `{prefix}.{kiosk_code}.command.<name>` | controller → kiosk | Core NATS request/reply, ≤5 s reply timeout. Today: `inventory.adjust`, `inventory.snapshot`, `checkout.close`, `instance.create`, `instance.edit`, `instance.decommission`, `instance.reactivate`, `instance.snapshot`, `integrity.rebuild`, `ledger.republish`. |
 
 The `KIOSK_EVENTS` stream's `FilterSubjects` deliberately excludes both
 — heartbeats and commands should never be replayed from a durable

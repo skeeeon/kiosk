@@ -75,6 +75,23 @@ of truth for catalog plus a unified transaction ledger.
   (`local` vs `controller`). Idempotency anchor is the unique-when-non-
   empty `command_id` index on `instance_audit`. The Instances tab on
   the controller's per-kiosk detail page drives all five.
+- **Maintenance commands.** Two operator tools for fixing or refilling
+  state on a remote kiosk:
+  - `integrity.rebuild`
+    (`POST /api/controller/kiosks/{code}/integrity/rebuild`) wipes the
+    kiosk's `open_checkouts` and replays it from the ledger. Use when
+    drift is suspected.
+  - `ledger.republish`
+    (`POST /api/controller/kiosks/{code}/ledger/republish` with optional
+    `{from, to}` RFC3339 window) re-emits `transaction.complete` +
+    `item.{action}` events. The controller's projection is unique-
+    indexed on `source_line_id`, so duplicates are no-ops. Use when
+    events were lost (NATS outage during the kiosk's startup window).
+  Both share the kiosk-side business logic the local
+  `/api/kiosk/integrity/rebuild` + `/api/kiosk/ledger/republish`
+  endpoints use, so behavior is identical to a kiosk admin running
+  them at the touchscreen. Buttons live in the Overview tab of the
+  per-kiosk detail page.
 - **Notifications, centralized.** Managed kiosks publish two
   notification subjects on the same JetStream stream —
   `receipt.transaction` (one per commit) and `alert.lowstock` (one per

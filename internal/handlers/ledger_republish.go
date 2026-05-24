@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"net/http"
 	"time"
 
@@ -51,33 +52,61 @@ func (h *Handlers) RepublishLedger(re *core.RequestEvent) error {
 	}
 	_ = re.BindBody(&body)
 
+	result, err := PerformLedgerRepublish(h.App, body.From, body.To, events.Publish)
+	if err != nil {
+		var verr *validationError
+		if errors.As(err, &verr) {
+			return re.BadRequestError(verr.msg, nil)
+		}
+		return re.InternalServerError("load transactions", err)
+	}
+	return re.JSON(http.StatusOK, result)
+}
+
+// PerformLedgerRepublish parses {from, to} as RFC3339, builds the filter,
+// and walks completed transactions re-emitting transaction.complete +
+// item.{action} events. Pure of HTTP — shared with the controller's
+// ledger.republish command bus path. Bad timestamp formats are returned as
+// validationError so the HTTP wrapper can surface them as 400.
+//
+// The publish argument lets tests capture events without a real publisher;
+// production wires it to events.Publish.
+func PerformLedgerRepublish(app core.App, from, to string, publish func(string, any)) (*LedgerRepublishResult, error) {
 	filter := "status = 'completed'"
 	params := dbx.Params{}
-	if body.From != "" {
-		t, err := time.Parse(time.RFC3339, body.From)
+	if from != "" {
+		t, err := time.Parse(time.RFC3339, from)
 		if err != nil {
-			return re.BadRequestError("from must be RFC3339 (e.g. 2026-05-01T00:00:00Z)", err)
+			return nil, &validationError{msg: "from must be RFC3339 (e.g. 2026-05-01T00:00:00Z)"}
 		}
 		filter += " && completed_at >= {:from}"
 		params["from"] = t.UTC()
 	}
-	if body.To != "" {
-		t, err := time.Parse(time.RFC3339, body.To)
+	if to != "" {
+		t, err := time.Parse(time.RFC3339, to)
 		if err != nil {
-			return re.BadRequestError("to must be RFC3339", err)
+			return nil, &validationError{msg: "to must be RFC3339"}
 		}
 		filter += " && completed_at <= {:to}"
 		params["to"] = t.UTC()
 	}
 
-	result, err := republishLedger(h.App, filter, params, events.Publish)
+	result, err := republishLedger(app, filter, params, publish)
 	if err != nil {
-		return re.InternalServerError("load transactions", err)
+		return nil, err
 	}
-	result.From = body.From
-	result.To = body.To
-	return re.JSON(http.StatusOK, result)
+	result.From = from
+	result.To = to
+	return &result, nil
 }
+
+// validationError flags a bad caller input so wrappers can surface a 400
+// (HTTP) or a {success:false, error:"..."} (command bus) without leaking
+// it as a 500. Internal — exported only via errors.As-checkable type
+// inside the same package.
+type validationError struct{ msg string }
+
+func (e *validationError) Error() string { return e.msg }
 
 // republishLedger is the pure-DB core of the republish handler — separated
 // so it can be unit-tested without an HTTP RequestEvent. Callers pass an

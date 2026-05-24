@@ -236,6 +236,11 @@ func main() {
 		e.Router.POST("/api/controller/kiosks/{code}/instances/{instance_code}/decommission", h.InstanceDecommission(nc, hbRegistry))
 		e.Router.POST("/api/controller/kiosks/{code}/instances/{instance_code}/reactivate", h.InstanceReactivate(nc, hbRegistry))
 
+		// Maintenance commands. Both run on the target kiosk against its
+		// own ledger; the controller never reaches into the kiosk's DB.
+		e.Router.POST("/api/controller/kiosks/{code}/integrity/rebuild", h.IntegrityRebuild(nc, hbRegistry))
+		e.Router.POST("/api/controller/kiosks/{code}/ledger/republish", h.LedgerRepublish(nc, hbRegistry))
+
 		// Fleet-wide reports. Low-stock fans out inventory.snapshot to
 		// every online kiosk in parallel and joins with the controller's
 		// projected ledger to compute available quantities.

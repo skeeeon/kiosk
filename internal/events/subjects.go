@@ -216,6 +216,18 @@ func InstanceSnapshotCommandSubject(kioskCode string) string {
 	return CommandSubject(kioskCode, "instance.snapshot")
 }
 
+// Maintenance command subjects. integrity.rebuild wipes + repopulates the
+// kiosk's open_checkouts from its own ledger; ledger.republish re-emits
+// every completed transaction's events (optionally clipped to a window)
+// so the controller can backfill its projection after a NATS outage.
+func IntegrityRebuildCommandSubject(kioskCode string) string {
+	return CommandSubject(kioskCode, "integrity.rebuild")
+}
+
+func LedgerRepublishCommandSubject(kioskCode string) string {
+	return CommandSubject(kioskCode, "ledger.republish")
+}
+
 // HeartbeatSubject is the subject a kiosk publishes a periodic liveness
 // beacon on. Core NATS publish (no JetStream) — last-write-wins, no
 // persistence. The controller subscribes plainly and tracks the most recent
