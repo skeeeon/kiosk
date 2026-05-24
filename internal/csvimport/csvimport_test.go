@@ -36,27 +36,72 @@ func setupApp(t *testing.T) *pocketbase.PocketBase {
 	return app
 }
 
-func TestRun_Items_DryRunWritesNothing(t *testing.T) {
+// countActions tallies a Result's Rows by Action, so tests can assert on
+// the per-row breakdown without indexing into the slice.
+func countActions(rows []RowResult) map[string]int {
+	out := map[string]int{}
+	for _, r := range rows {
+		out[r.Action]++
+	}
+	return out
+}
+
+func TestRun_Items_DryRunClassifiesInsertVsUpdate(t *testing.T) {
 	app := setupApp(t)
+
+	// Seed one existing item so we have a known update target.
+	items, err := app.FindCollectionByNameOrId("items")
+	if err != nil {
+		t.Fatalf("find items: %v", err)
+	}
+	rec := core.NewRecord(items)
+	rec.Set("code", "HAMMER")
+	rec.Set("name", "Hammer")
+	rec.Set("type", "tool")
+	rec.Set("tracking_mode", "quantity")
+	rec.Set("active", true)
+	if err := app.Save(rec); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
 	csvBody := strings.Join([]string{
 		"code,name,type,tracking_mode,active",
-		"HAMMER,Hammer,tool,quantity,true",
+		"HAMMER,Hammer (Renamed),tool,quantity,true",  // would update
+		"WRENCH,Wrench,tool,quantity,true",            // would insert
 	}, "\n")
 
 	result, err := Run(app, KindItems, strings.NewReader(csvBody), true)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if !result.DryRun || result.RowsInserted != 0 || result.RowsUpdated != 0 {
-		t.Fatalf("dry run should not write: %+v", result)
+	if !result.DryRun {
+		t.Error("DryRun flag not set on response")
 	}
-	if _, err := app.FindFirstRecordByFilter("items", "code = {:c}", dbx.Params{"c": "HAMMER"}); err == nil {
-		t.Errorf("dry run wrote a record")
+	if got := countActions(result.Rows); got[ActionInsert] != 1 || got[ActionUpdate] != 1 {
+		t.Errorf("dry-run actions: want 1 insert + 1 update, got %v", got)
+	}
+	if result.RowsInserted != 1 || result.RowsUpdated != 1 {
+		t.Errorf("summary counts: want 1/1, got %d/%d",
+			result.RowsInserted, result.RowsUpdated)
+	}
+
+	// Dry-run must NOT touch the DB — the existing row's name still reads
+	// "Hammer", not "Hammer (Renamed)".
+	reload, err := app.FindFirstRecordByFilter("items", "code = {:c}", dbx.Params{"c": "HAMMER"})
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if got := reload.GetString("name"); got != "Hammer" {
+		t.Errorf("dry-run wrote: name = %q (expected unchanged)", got)
+	}
+	if _, err := app.FindFirstRecordByFilter("items", "code = {:c}", dbx.Params{"c": "WRENCH"}); err == nil {
+		t.Error("dry-run inserted a row")
 	}
 }
 
-func TestRun_Items_InsertThenUpdate(t *testing.T) {
+func TestRun_Items_RealRunInsertsThenUpdates(t *testing.T) {
 	app := setupApp(t)
+
 	insertCSV := strings.Join([]string{
 		"code,name,type,tracking_mode,active",
 		"HAMMER,Hammer,tool,quantity,true",
@@ -66,7 +111,7 @@ func TestRun_Items_InsertThenUpdate(t *testing.T) {
 		t.Fatalf("insert run: %v", err)
 	}
 	if r1.RowsInserted != 1 || r1.RowsUpdated != 0 {
-		t.Fatalf("insert pass: want 1 inserted/0 updated, got %+v", r1)
+		t.Fatalf("insert pass: want 1/0, got %d/%d", r1.RowsInserted, r1.RowsUpdated)
 	}
 
 	updateCSV := strings.Join([]string{
@@ -78,7 +123,7 @@ func TestRun_Items_InsertThenUpdate(t *testing.T) {
 		t.Fatalf("update run: %v", err)
 	}
 	if r2.RowsInserted != 0 || r2.RowsUpdated != 1 {
-		t.Fatalf("update pass: want 0 inserted/1 updated, got %+v", r2)
+		t.Fatalf("update pass: want 0/1, got %d/%d", r2.RowsInserted, r2.RowsUpdated)
 	}
 	rec, err := app.FindFirstRecordByFilter("items", "code = {:c}", dbx.Params{"c": "HAMMER"})
 	if err != nil {
@@ -89,12 +134,41 @@ func TestRun_Items_InsertThenUpdate(t *testing.T) {
 	}
 }
 
-// TestRun_Items_OmittedQuantityColumnsPreserveExistingValues pins the same
-// invariant the legacy handlers test pinned: omitting quantity_on_hand /
-// reorder_threshold headers must NOT overwrite the kiosk-local stock state
-// with zero. The watcher leaves these fields untouched on catalog sync,
-// and the importer must respect the same contract — otherwise a "refresh
-// names" re-import would silently zero out every kiosk's stock.
+// TestRun_Items_DuplicateCodeInSameCSVTreatedAsUpdate exercises a subtle
+// edge case of the bulk-snapshot approach: when the same code appears twice
+// in the input, the second occurrence must see the first as an existing
+// row so it classifies as update rather than colliding on insert.
+func TestRun_Items_DuplicateCodeInSameCSVTreatedAsUpdate(t *testing.T) {
+	app := setupApp(t)
+
+	csvBody := strings.Join([]string{
+		"code,name,type,tracking_mode,active",
+		"HAMMER,Hammer,tool,quantity,true",          // insert
+		"HAMMER,Hammer (v2),tool,quantity,true",     // update of the line above
+	}, "\n")
+	result, err := Run(app, KindItems, strings.NewReader(csvBody), false)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.RowsInserted != 1 || result.RowsUpdated != 1 {
+		t.Errorf("intra-CSV dup: want 1/1, got %d/%d",
+			result.RowsInserted, result.RowsUpdated)
+	}
+	rec, err := app.FindFirstRecordByFilter("items", "code = {:c}", dbx.Params{"c": "HAMMER"})
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if got := rec.GetString("name"); got != "Hammer (v2)" {
+		t.Errorf("name: want last value, got %q", got)
+	}
+}
+
+// TestRun_Items_OmittedQuantityColumnsPreserveExistingValues pins the
+// kiosk-local stock invariant: omitting quantity_on_hand/reorder_threshold
+// headers must NOT overwrite existing values with zero. The watcher leaves
+// these fields untouched on catalog sync; the importer must respect the
+// same contract — otherwise a "refresh names" re-import would silently
+// zero out every kiosk's stock.
 func TestRun_Items_OmittedQuantityColumnsPreserveExistingValues(t *testing.T) {
 	app := setupApp(t)
 
@@ -114,7 +188,6 @@ func TestRun_Items_OmittedQuantityColumnsPreserveExistingValues(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	// CSV omits quantity columns — like an admin uploading a renaming pass.
 	updateCSV := strings.Join([]string{
 		"code,name,type,tracking_mode,active,category",
 		"HAMMER,Hammer (Reframed),tool,quantity,true,Hand Tools",
@@ -142,9 +215,9 @@ func TestRun_Items_PerRowErrorsDontAbortRun(t *testing.T) {
 	app := setupApp(t)
 	csvBody := strings.Join([]string{
 		"code,name,type,tracking_mode",
-		",MissingCode,tool,quantity",            // row 2: MISSING_CODE
-		"BAD,Bad Type,widget,quantity",          // row 3: INVALID_TYPE
-		"GOOD,Good,tool,quantity",               // row 4: ok
+		",MissingCode,tool,quantity",        // row 2: MISSING_CODE
+		"BAD,Bad Type,widget,quantity",       // row 3: INVALID_TYPE
+		"GOOD,Good,tool,quantity",            // row 4: ok
 	}, "\n")
 
 	result, err := Run(app, KindItems, strings.NewReader(csvBody), false)
@@ -154,19 +227,48 @@ func TestRun_Items_PerRowErrorsDontAbortRun(t *testing.T) {
 	if result.RowsInserted != 1 {
 		t.Errorf("want 1 inserted (GOOD), got %d", result.RowsInserted)
 	}
-	if len(result.Errors) != 2 {
-		t.Fatalf("want 2 errors, got %d: %+v", len(result.Errors), result.Errors)
+	if result.RowsErrored != 2 {
+		t.Errorf("want 2 errored, got %d", result.RowsErrored)
 	}
-	// Errors carry the original 1-based row numbers (header is row 1).
-	rows := map[int]string{}
-	for _, e := range result.Errors {
-		rows[e.Row] = e.Code
+
+	// Errors are addressable per-row, with original 1-based row numbers.
+	codesByRow := map[int]string{}
+	for _, r := range result.Rows {
+		if r.Action == ActionError && len(r.Errors) > 0 {
+			codesByRow[r.Row] = r.Errors[0].Code
+		}
 	}
-	if rows[2] != "MISSING_CODE" {
-		t.Errorf("row 2 code: want MISSING_CODE, got %q", rows[2])
+	if codesByRow[2] != "MISSING_CODE" {
+		t.Errorf("row 2: want MISSING_CODE, got %q", codesByRow[2])
 	}
-	if rows[3] != "INVALID_TYPE" {
-		t.Errorf("row 3 code: want INVALID_TYPE, got %q", rows[3])
+	if codesByRow[3] != "INVALID_TYPE" {
+		t.Errorf("row 3: want INVALID_TYPE, got %q", codesByRow[3])
+	}
+}
+
+// TestRun_Items_MultipleValidationErrorsRideOnSameRow confirms the
+// importer surfaces *all* validation problems on a row rather than
+// short-circuiting at the first one. A row missing both code and name
+// should carry two Errors entries.
+func TestRun_Items_MultipleValidationErrorsRideOnSameRow(t *testing.T) {
+	app := setupApp(t)
+	csvBody := strings.Join([]string{
+		"code,name,type,tracking_mode",
+		",,widget,quantity", // missing code, missing name, AND invalid type
+	}, "\n")
+	result, err := Run(app, KindItems, strings.NewReader(csvBody), false)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(result.Rows) != 1 {
+		t.Fatalf("want 1 row, got %d", len(result.Rows))
+	}
+	row := result.Rows[0]
+	if row.Action != ActionError {
+		t.Errorf("action: want error, got %q", row.Action)
+	}
+	if len(row.Errors) < 3 {
+		t.Errorf("want >= 3 errors on this row, got %d (%+v)", len(row.Errors), row.Errors)
 	}
 }
 
@@ -180,7 +282,7 @@ func TestRun_Users_AutoCreatesGroupByCode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if result.RowsInserted != 1 || len(result.Errors) != 0 {
+	if result.RowsInserted != 1 || result.RowsErrored != 0 {
 		t.Fatalf("want 1 inserted, no errors; got %+v", result)
 	}
 
@@ -200,11 +302,30 @@ func TestRun_Users_AutoCreatesGroupByCode(t *testing.T) {
 	}
 }
 
+// TestRun_Users_DryRunSkipsGroupAutoCreate ensures a validate pass is
+// strictly read-only, even when a row references a group code that
+// doesn't exist yet. The auto-create kicks in only on real-run.
+func TestRun_Users_DryRunSkipsGroupAutoCreate(t *testing.T) {
+	app := setupApp(t)
+	csvBody := strings.Join([]string{
+		"code,name,email,role,group",
+		"W001,Alex,alex@example.com,worker,GHOST-CREW",
+	}, "\n")
+	result, err := Run(app, KindUsers, strings.NewReader(csvBody), true)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.RowsInserted != 1 {
+		t.Errorf("want 1 would-insert, got %d", result.RowsInserted)
+	}
+	if _, err := app.FindFirstRecordByFilter("groups",
+		"code = {:c}", dbx.Params{"c": "GHOST-CREW"}); err == nil {
+		t.Error("dry-run created a group")
+	}
+}
+
 func TestRun_Users_InvalidRoleRecordsErrorAndContinues(t *testing.T) {
 	app := setupApp(t)
-	// PB's users auth collection requires email — supply it on both rows
-	// so the failure mode under test is the role validation, not a save
-	// error masking it.
 	csvBody := strings.Join([]string{
 		"code,name,email,role",
 		"W001,Alex,alex@example.com,worker",
@@ -217,8 +338,19 @@ func TestRun_Users_InvalidRoleRecordsErrorAndContinues(t *testing.T) {
 	if result.RowsInserted != 1 {
 		t.Errorf("want 1 inserted, got %d", result.RowsInserted)
 	}
-	if len(result.Errors) != 1 || result.Errors[0].Code != "INVALID_ROLE" {
-		t.Fatalf("want one INVALID_ROLE error, got %+v", result.Errors)
+	if result.RowsErrored != 1 {
+		t.Fatalf("want 1 errored, got %d", result.RowsErrored)
+	}
+	// Find the errored row and check its code.
+	var errored *RowResult
+	for i := range result.Rows {
+		if result.Rows[i].Action == ActionError {
+			errored = &result.Rows[i]
+			break
+		}
+	}
+	if errored == nil || len(errored.Errors) == 0 || errored.Errors[0].Code != "INVALID_ROLE" {
+		t.Errorf("want INVALID_ROLE, got %+v", errored)
 	}
 }
 
@@ -237,7 +369,6 @@ func TestRun_Groups_UpsertWithContactMetadata(t *testing.T) {
 		t.Fatalf("want 1 inserted, got %+v", r1)
 	}
 
-	// Second pass updates the same row by code; contact_email should change.
 	updateCSV := strings.Join([]string{
 		"code,name,contact_email",
 		"CREW-A,Crew A (Day),new-lead@example.com",
@@ -272,6 +403,24 @@ func TestRun_RejectsEmptyAndHeaderOnlyCSV(t *testing.T) {
 	}
 }
 
+// TestRun_RowsIsNeverNil pins the JSON contract: even when nothing happens
+// the Rows slice must be non-nil so it marshals as `[]` rather than `null`.
+// The SPA reads `.length` directly.
+func TestRun_RowsIsNeverNil(t *testing.T) {
+	app := setupApp(t)
+	csvBody := strings.Join([]string{
+		"code,name,type,tracking_mode,active",
+		"HAMMER,Hammer,tool,quantity,true",
+	}, "\n")
+	result, err := Run(app, KindItems, strings.NewReader(csvBody), true)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Rows == nil {
+		t.Fatal("Rows must be non-nil so it marshals as [] not null")
+	}
+}
+
 func TestTemplates_RoundTripThroughRun(t *testing.T) {
 	// Each template should validate cleanly through Run with dry_run=true.
 	// This is the contract: an admin downloads a template, edits it, and
@@ -290,9 +439,8 @@ func TestTemplates_RoundTripThroughRun(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s round-trip Run: %v", kind, err)
 		}
-		if len(result.Errors) > 0 {
-			t.Errorf("%s template produced validation errors on dry-run: %+v",
-				kind, result.Errors)
+		if result.RowsErrored > 0 {
+			t.Errorf("%s template produced %d errored rows on dry-run", kind, result.RowsErrored)
 		}
 		if result.RowsTotal == 0 {
 			t.Errorf("%s template had no example rows", kind)

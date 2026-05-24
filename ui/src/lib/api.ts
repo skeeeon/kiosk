@@ -2,11 +2,12 @@
 // JSON encoding/decoding and error handling so callers can `await api.post(...)`.
 //
 // Auth: the kiosk-flow endpoints are anonymous, but the admin-only ones
-// (/integrity, /items/import, /items/{id}/adjust, /items.csv,
-// /transactions.csv) gate on requireAdmin, which reads re.Auth from the
-// Authorization header. The PocketBase JS SDK holds the admin token in
-// MemoryAuthStore (see lib/pb.ts) — we attach it here so plain fetch calls
-// don't have to know about that.
+// (/integrity, /{items,users,groups}/import and matching /template
+// downloads, /items/{id}/adjust, /items.csv, /transactions.csv) gate on
+// requireAdmin, which reads re.Auth from the Authorization header. The
+// PocketBase JS SDK holds the admin token in MemoryAuthStore (see
+// lib/pb.ts) — we attach it here so plain fetch calls don't have to know
+// about that.
 import { pb } from './pb'
 
 export class ApiError extends Error {

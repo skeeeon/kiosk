@@ -119,10 +119,15 @@ func runSeedFile(app core.App, path string, kind csvimport.Kind) error {
 	if err != nil {
 		return err
 	}
-	for _, e := range result.Errors {
-		log.Printf("seed-catalog %s row %d: %s (%s)", kind, e.Row, e.Message, e.Code)
+	for _, r := range result.Rows {
+		if r.Action != csvimport.ActionError {
+			continue
+		}
+		for _, e := range r.Errors {
+			log.Printf("seed-catalog %s row %d: %s (%s)", kind, r.Row, e.Message, e.Code)
+		}
 	}
 	log.Printf("seed-catalog %s: %d inserted, %d updated, %d errors",
-		kind, result.RowsInserted, result.RowsUpdated, len(result.Errors))
+		kind, result.RowsInserted, result.RowsUpdated, result.RowsErrored)
 	return nil
 }

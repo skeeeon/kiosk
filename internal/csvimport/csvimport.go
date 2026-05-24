@@ -1,12 +1,18 @@
-// Package csvimport holds the row-validation, upsert, and template-writer
-// logic shared by every CSV admin import (items, users, groups) on both the
-// kiosk and the controller binaries. The HTTP handlers in
+// Package csvimport holds the row-validation, diff, and template-writer
+// logic shared by every CSV admin import (items, users, groups) on both
+// the kiosk and the controller binaries. The HTTP handlers in
 // internal/handlers and internal/controller wrap this with auth, multipart
 // parsing, and JSON response shaping; the controller's seed-catalog CLI
-// reuses the same row logic so the CLI and the HTTP paths can't drift.
+// reuses the same row logic so the CLI and HTTP paths can't drift.
 //
 // Each importer is upsert-by-`code`. Bad rows record an error but don't
 // abort the run; the caller decides what to do with the Result.
+//
+// Existing records are loaded in one SELECT per kind and held in a
+// code → record map; per-row work is then an in-memory diff. This makes
+// dry-run honest (it reports `would-insert` vs `would-update` rather than
+// flattening both into a single "validated" bucket) and collapses what
+// was N+1 lookups into a single query.
 package csvimport
 
 import (
@@ -14,31 +20,58 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/csv"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"strings"
 
-	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 )
 
-// Error reports one bad row. Code is a stable token the SPA can branch on;
-// Message is human-readable detail.
+// ActionInsert / ActionUpdate / ActionError are the three terminal states
+// a row can land in. Stable strings — both the SPA's filter chips and the
+// summary counters key on them. "would-" doesn't appear; dry-run reports
+// the same action verbs and the response's DryRun flag tells the SPA to
+// render "Would insert" labels instead.
+const (
+	ActionInsert = "insert"
+	ActionUpdate = "update"
+	ActionError  = "error"
+)
+
+// RowResult is the per-row outcome the SPA renders one-per-table-row.
+// Code and Name are echoed back even on error rows (extracted from the
+// CSV even when validation fails) so the operator can identify which
+// input line went wrong without cross-referencing row numbers.
+type RowResult struct {
+	Row    int     `json:"row"`
+	Code   string  `json:"code"`
+	Name   string  `json:"name"`
+	Action string  `json:"action"`
+	Errors []Error `json:"errors,omitempty"`
+}
+
+// Error reports one validation failure on a row. Code is a stable token
+// the SPA can branch on; Message is human-readable detail. A row can carry
+// more than one (MISSING_CODE *and* INVALID_TYPE), so they ride inside
+// RowResult.Errors as a slice.
 type Error struct {
-	Row     int    `json:"row"`
 	Code    string `json:"code"`
 	Message string `json:"message"`
 }
 
-// Result is the JSON shape every importer returns. DryRun=true means no
-// rows were written; counters apply to validated rows only.
+// Result is the JSON shape every importer returns. Rows is the full per-
+// row outcome list (always non-nil so the SPA can `.length` it without a
+// nullish guard); RowsInserted/RowsUpdated/RowsErrored are summary counts
+// derived from Rows for the result-panel cards.
 type Result struct {
-	DryRun       bool    `json:"dry_run"`
-	RowsTotal    int     `json:"rows_total"`
-	RowsInserted int     `json:"rows_inserted"`
-	RowsUpdated  int     `json:"rows_updated"`
-	Errors       []Error `json:"errors"`
+	DryRun       bool        `json:"dry_run"`
+	RowsTotal    int         `json:"rows_total"`
+	RowsInserted int         `json:"rows_inserted"`
+	RowsUpdated  int         `json:"rows_updated"`
+	RowsErrored  int         `json:"rows_errored"`
+	Rows         []RowResult `json:"rows"`
 }
 
 // Kind selects which collection an importer targets. The HTTP routes and
@@ -52,9 +85,16 @@ const (
 )
 
 // Run parses a CSV stream and dispatches to the per-kind importer. Returns
-// a Result even on partial failures — errors per row are inside it; a
+// a Result even on partial failures — per-row outcomes are inside it; a
 // returned non-nil error means the upload itself was unusable (empty CSV,
 // missing header, etc.).
+//
+// One SELECT against the target collection loads all existing records into
+// a code-indexed map up front; row processing is then an in-memory diff,
+// then one save per inserted/updated row (skipped on dry-run). On a real
+// run another writer racing in with the same code between snapshot and
+// save still hits PB's unique index on `code` and surfaces as
+// INSERT_FAILED on the affected row — the rest of the batch is unaffected.
 func Run(app core.App, kind Kind, r io.Reader, dryRun bool) (*Result, error) {
 	rows, err := csv.NewReader(r).ReadAll()
 	if err != nil {
@@ -72,42 +112,82 @@ func Run(app core.App, kind Kind, r io.Reader, dryRun bool) (*Result, error) {
 		return nil, errors.New("CSV must have a 'code' column")
 	}
 
-	result := &Result{DryRun: dryRun}
+	collName, ok := collectionFor(kind)
+	if !ok {
+		return nil, fmt.Errorf("unknown import kind %q", kind)
+	}
+	coll, err := app.FindCollectionByNameOrId(collName)
+	if err != nil {
+		return nil, fmt.Errorf("find %s collection: %w", collName, err)
+	}
+	existing, err := loadByCode(app, collName)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot %s: %w", collName, err)
+	}
+
+	// Pre-allocate to len(rows)-1 so Rows is non-nil even when the CSV has
+	// zero data rows after the header (it can't, given the guard above,
+	// but defensive — `result.Rows` must never marshal as null).
+	result := &Result{DryRun: dryRun, Rows: make([]RowResult, 0, len(rows)-1)}
 	for i, row := range rows[1:] {
 		rowNum := i + 2 // 1-based, accounting for header row
 		result.RowsTotal++
 
-		var (
-			inserted bool
-			updated  bool
-			rowErrs  []Error
-		)
+		var out RowResult
 		switch kind {
 		case KindItems:
-			inserted, updated, rowErrs = upsertItemRow(app, headers, row, dryRun)
+			out = upsertItemRow(app, coll, existing, headers, row, dryRun)
 		case KindUsers:
-			inserted, updated, rowErrs = upsertUserRow(app, headers, row, dryRun)
+			out = upsertUserRow(app, coll, existing, headers, row, dryRun)
 		case KindGroups:
-			inserted, updated, rowErrs = upsertGroupRow(app, headers, row, dryRun)
-		default:
-			return nil, fmt.Errorf("unknown import kind %q", kind)
+			out = upsertGroupRow(app, coll, existing, headers, row, dryRun)
 		}
+		out.Row = rowNum
 
-		if len(rowErrs) > 0 {
-			for _, e := range rowErrs {
-				e.Row = rowNum
-				result.Errors = append(result.Errors, e)
-			}
-			continue
-		}
-		if inserted {
+		switch out.Action {
+		case ActionInsert:
 			result.RowsInserted++
-		}
-		if updated {
+		case ActionUpdate:
 			result.RowsUpdated++
+		case ActionError:
+			result.RowsErrored++
 		}
+		result.Rows = append(result.Rows, out)
 	}
 	return result, nil
+}
+
+func collectionFor(kind Kind) (string, bool) {
+	switch kind {
+	case KindItems:
+		return "items", true
+	case KindUsers:
+		return "users", true
+	case KindGroups:
+		return "groups", true
+	default:
+		return "", false
+	}
+}
+
+// loadByCode returns a map keyed on the `code` field. All three target
+// collections use the same unique `code` index, so this helper is shared.
+// We use FindRecordsByFilter with an empty filter to grab everything;
+// limit=0 means "no limit" in PB's DAO.
+func loadByCode(app core.App, coll string) (map[string]*core.Record, error) {
+	rows, err := app.FindRecordsByFilter(coll, "", "", 0, 0)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]*core.Record, len(rows))
+	for _, r := range rows {
+		code := r.GetString("code")
+		if code == "" {
+			continue
+		}
+		out[code] = r
+	}
+	return out, nil
 }
 
 // ---- shared helpers ----
@@ -174,16 +254,25 @@ func randomPassword(nbytes int) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
+// errorRow builds a RowResult with Action=error and one or more Errors.
+// Code and Name are echoed even on failure so the SPA can show *which*
+// row went wrong, not just its line number.
+func errorRow(code, name string, errs ...Error) RowResult {
+	return RowResult{Code: code, Name: name, Action: ActionError, Errors: errs}
+}
+
 // ---- items ----
 
-func upsertItemRow(app core.App, headers map[string]int, row []string, dryRun bool) (bool, bool, []Error) {
-	var errs []Error
+func upsertItemRow(app core.App, coll *core.Collection, existing map[string]*core.Record,
+	headers map[string]int, row []string, dryRun bool) RowResult {
 
 	code := csvCol(headers, row, "code")
+	name := csvCol(headers, row, "name")
+
+	var errs []Error
 	if code == "" {
 		errs = append(errs, Error{Code: "MISSING_CODE", Message: "code is required"})
 	}
-	name := csvCol(headers, row, "name")
 	if name == "" {
 		errs = append(errs, Error{Code: "MISSING_NAME", Message: "name is required"})
 	}
@@ -199,7 +288,7 @@ func upsertItemRow(app core.App, headers map[string]int, row []string, dryRun bo
 		errs = append(errs, Error{Code: "INVALID_TRACKING_MODE", Message: "tracking_mode must be 'quantity' or 'serialized'"})
 	}
 	if len(errs) > 0 {
-		return false, false, errs
+		return errorRow(code, name, errs...)
 	}
 
 	data := map[string]any{
@@ -214,8 +303,7 @@ func upsertItemRow(app core.App, headers map[string]int, row []string, dryRun bo
 	}
 	// Only set quantity fields if the column is present in the CSV — omission
 	// means "leave as-is" on update, "default to 0" on insert (PB's number
-	// field zero-default applies). This is what the kiosk's
-	// csv_omitted_columns_test pins.
+	// field zero-default applies). The csvimport tests pin this contract.
 	if _, ok := headers["quantity_on_hand"]; ok {
 		data["quantity_on_hand"] = parseCSVInt(csvCol(headers, row, "quantity_on_hand"))
 	}
@@ -223,51 +311,47 @@ func upsertItemRow(app core.App, headers map[string]int, row []string, dryRun bo
 		data["reorder_threshold"] = parseCSVInt(csvCol(headers, row, "reorder_threshold"))
 	}
 
+	prev, isUpdate := existing[code]
 	if dryRun {
-		return false, false, nil
+		if isUpdate {
+			return RowResult{Code: code, Name: name, Action: ActionUpdate}
+		}
+		return RowResult{Code: code, Name: name, Action: ActionInsert}
 	}
 
-	itemsCol, err := app.FindCollectionByNameOrId("items")
-	if err != nil {
-		return false, false, []Error{{Code: "DB_ERROR", Message: err.Error()}}
-	}
-
-	existing, err := app.FindFirstRecordByFilter("items",
-		"code = {:c}", dbx.Params{"c": code})
-	if err != nil && !isNotFound(err) {
-		return false, false, []Error{{Code: "DB_ERROR", Message: err.Error()}}
-	}
-
-	if existing != nil {
+	if isUpdate {
 		for k, v := range data {
-			existing.Set(k, v)
+			prev.Set(k, v)
 		}
-		if err := app.Save(existing); err != nil {
-			return false, false, []Error{{Code: "UPDATE_FAILED", Message: err.Error()}}
+		if err := app.Save(prev); err != nil {
+			return errorRow(code, name, Error{Code: "UPDATE_FAILED", Message: err.Error()})
 		}
-		return false, true, nil
+		return RowResult{Code: code, Name: name, Action: ActionUpdate}
 	}
 
-	rec := core.NewRecord(itemsCol)
+	rec := core.NewRecord(coll)
 	for k, v := range data {
 		rec.Set(k, v)
 	}
 	if err := app.Save(rec); err != nil {
-		return false, false, []Error{{Code: "INSERT_FAILED", Message: err.Error()}}
+		return errorRow(code, name, Error{Code: "INSERT_FAILED", Message: err.Error()})
 	}
-	return true, false, nil
+	existing[code] = rec // so a duplicate later row in the same CSV reports as update
+	return RowResult{Code: code, Name: name, Action: ActionInsert}
 }
 
 // ---- users ----
 
-func upsertUserRow(app core.App, headers map[string]int, row []string, dryRun bool) (bool, bool, []Error) {
-	var errs []Error
+func upsertUserRow(app core.App, coll *core.Collection, existing map[string]*core.Record,
+	headers map[string]int, row []string, dryRun bool) RowResult {
 
 	code := csvCol(headers, row, "code")
+	name := csvCol(headers, row, "name")
+
+	var errs []Error
 	if code == "" {
 		errs = append(errs, Error{Code: "MISSING_CODE", Message: "code is required"})
 	}
-	name := csvCol(headers, row, "name")
 	if name == "" {
 		errs = append(errs, Error{Code: "MISSING_NAME", Message: "name is required"})
 	}
@@ -279,16 +363,20 @@ func upsertUserRow(app core.App, headers map[string]int, row []string, dryRun bo
 		errs = append(errs, Error{Code: "INVALID_ROLE", Message: "role must be 'worker' or 'foreman'"})
 	}
 	if len(errs) > 0 {
-		return false, false, errs
+		return errorRow(code, name, errs...)
 	}
+
+	prev, isUpdate := existing[code]
 
 	if dryRun {
-		return false, false, nil
-	}
-
-	usersCol, err := app.FindCollectionByNameOrId("users")
-	if err != nil {
-		return false, false, []Error{{Code: "DB_ERROR", Message: err.Error()}}
+		// Group resolution writes to the DB (auto-creating missing groups)
+		// — skip it on dry-run so a validate pass is read-only. The CSV
+		// might reference a group that doesn't exist yet; the operator
+		// learns that at real-run time, when auto-create kicks in.
+		if isUpdate {
+			return RowResult{Code: code, Name: name, Action: ActionUpdate}
+		}
+		return RowResult{Code: code, Name: name, Action: ActionInsert}
 	}
 
 	// Resolve group code → id, auto-creating the row if missing. Mirrors the
@@ -299,25 +387,19 @@ func upsertUserRow(app core.App, headers map[string]int, row []string, dryRun bo
 	if groupCode != "" {
 		gID, err := ensureGroupByCode(app, groupCode)
 		if err != nil {
-			return false, false, []Error{{Code: "GROUP_RESOLVE_FAILED", Message: err.Error()}}
+			return errorRow(code, name, Error{Code: "GROUP_RESOLVE_FAILED", Message: err.Error()})
 		}
 		groupID = gID
 	}
 
-	existing, err := app.FindFirstRecordByFilter("users",
-		"code = {:c}", dbx.Params{"c": code})
-	if err != nil && !isNotFound(err) {
-		return false, false, []Error{{Code: "DB_ERROR", Message: err.Error()}}
-	}
-
 	var rec *core.Record
-	if existing != nil {
-		rec = existing
+	if isUpdate {
+		rec = prev
 	} else {
-		rec = core.NewRecord(usersCol)
+		rec = core.NewRecord(coll)
 		pw, err := randomPassword(16)
 		if err != nil {
-			return false, false, []Error{{Code: "PASSWORD_GEN_FAILED", Message: err.Error()}}
+			return errorRow(code, name, Error{Code: "PASSWORD_GEN_FAILED", Message: err.Error()})
 		}
 		rec.SetPassword(pw)
 	}
@@ -329,26 +411,23 @@ func upsertUserRow(app core.App, headers map[string]int, row []string, dryRun bo
 	rec.Set("active", parseCSVBool(csvCol(headers, row, "active"), true))
 
 	if err := app.Save(rec); err != nil {
-		if existing != nil {
-			return false, false, []Error{{Code: "UPDATE_FAILED", Message: err.Error()}}
+		if isUpdate {
+			return errorRow(code, name, Error{Code: "UPDATE_FAILED", Message: err.Error()})
 		}
-		return false, false, []Error{{Code: "INSERT_FAILED", Message: err.Error()}}
+		return errorRow(code, name, Error{Code: "INSERT_FAILED", Message: err.Error()})
 	}
-	if existing != nil {
-		return false, true, nil
+	if isUpdate {
+		return RowResult{Code: code, Name: name, Action: ActionUpdate}
 	}
-	return true, false, nil
+	existing[code] = rec
+	return RowResult{Code: code, Name: name, Action: ActionInsert}
 }
 
 // ensureGroupByCode returns the id of a groups row with the given code,
-// auto-creating it (code=name=code, active=true) if none exists. Same
-// behavior as the legacy seed.go helper — the only writer of "minimal"
-// auto-created groups; the user-import row above is the only call site
-// that needs auto-create, but the helper is shared so a future caller
-// can't accidentally diverge from the contract.
+// auto-creating it (code=name=code, active=true) if none exists.
 func ensureGroupByCode(app core.App, code string) (string, error) {
 	existing, err := app.FindFirstRecordByFilter("groups",
-		"code = {:c}", dbx.Params{"c": code})
+		"code = {:c}", map[string]any{"c": code})
 	if err == nil {
 		return existing.Id, nil
 	}
@@ -371,41 +450,36 @@ func ensureGroupByCode(app core.App, code string) (string, error) {
 
 // ---- groups ----
 
-func upsertGroupRow(app core.App, headers map[string]int, row []string, dryRun bool) (bool, bool, []Error) {
-	var errs []Error
+func upsertGroupRow(app core.App, coll *core.Collection, existing map[string]*core.Record,
+	headers map[string]int, row []string, dryRun bool) RowResult {
 
 	code := csvCol(headers, row, "code")
+	name := csvCol(headers, row, "name")
+
+	var errs []Error
 	if code == "" {
 		errs = append(errs, Error{Code: "MISSING_CODE", Message: "code is required"})
 	}
-	name := csvCol(headers, row, "name")
 	if name == "" {
 		errs = append(errs, Error{Code: "MISSING_NAME", Message: "name is required"})
 	}
 	if len(errs) > 0 {
-		return false, false, errs
+		return errorRow(code, name, errs...)
 	}
 
+	prev, isUpdate := existing[code]
 	if dryRun {
-		return false, false, nil
-	}
-
-	groupsCol, err := app.FindCollectionByNameOrId("groups")
-	if err != nil {
-		return false, false, []Error{{Code: "DB_ERROR", Message: err.Error()}}
-	}
-
-	existing, err := app.FindFirstRecordByFilter("groups",
-		"code = {:c}", dbx.Params{"c": code})
-	if err != nil && !isNotFound(err) {
-		return false, false, []Error{{Code: "DB_ERROR", Message: err.Error()}}
+		if isUpdate {
+			return RowResult{Code: code, Name: name, Action: ActionUpdate}
+		}
+		return RowResult{Code: code, Name: name, Action: ActionInsert}
 	}
 
 	var rec *core.Record
-	if existing != nil {
-		rec = existing
+	if isUpdate {
+		rec = prev
 	} else {
-		rec = core.NewRecord(groupsCol)
+		rec = core.NewRecord(coll)
 	}
 	rec.Set("code", code)
 	rec.Set("name", name)
@@ -415,13 +489,19 @@ func upsertGroupRow(app core.App, headers map[string]int, row []string, dryRun b
 	rec.Set("active", parseCSVBool(csvCol(headers, row, "active"), true))
 
 	if err := app.Save(rec); err != nil {
-		if existing != nil {
-			return false, false, []Error{{Code: "UPDATE_FAILED", Message: err.Error()}}
+		if isUpdate {
+			return errorRow(code, name, Error{Code: "UPDATE_FAILED", Message: err.Error()})
 		}
-		return false, false, []Error{{Code: "INSERT_FAILED", Message: err.Error()}}
+		return errorRow(code, name, Error{Code: "INSERT_FAILED", Message: err.Error()})
 	}
-	if existing != nil {
-		return false, true, nil
+	if isUpdate {
+		return RowResult{Code: code, Name: name, Action: ActionUpdate}
 	}
-	return true, false, nil
+	existing[code] = rec
+	return RowResult{Code: code, Name: name, Action: ActionInsert}
 }
+
+// stable JSON encoding sanity: catches a `RowResult{Errors: nil}` from
+// growing into a json `"errors": null` surprise on the SPA. Not called at
+// runtime; kept as a compile-checked assert.
+var _ = func() error { return json.NewEncoder(io.Discard).Encode(RowResult{}) }

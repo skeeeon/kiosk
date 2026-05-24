@@ -63,7 +63,25 @@ binary never invokes it, so its DB never gets these.
 
 ## CSV import format
 
-`POST /api/kiosk/items/import` expects:
+Three importers, same response shape (per-row outcomes — see
+[API reference](api.md)). All available on **both binaries** (the
+kiosk's Admin → Import view and the controller's same view; managed
+kiosks see a read-only banner pointing to the controller). Each
+endpoint has a matching `/template` route that streams a starter CSV
+with header + example rows the importer round-trips cleanly.
+
+Common rules:
+
+- Empty cells are nulls. `active` accepts `true|false|1|0|yes|no|y|n`.
+- Rows match existing records by `code` (upsert). Records not in the
+  CSV are left alone — the importer never deletes.
+- Per-row validation. A bad row records an error but doesn't abort the
+  rest of the batch.
+- Dry-run (`dry_run=true`) is read-only: one snapshot read, no writes,
+  and the response classifies every row as `insert` or `update` based
+  on the diff against current DB state.
+
+### Items — `POST /api/kiosk/items/import`
 
 ```csv
 code,name,type,unit,tracking_mode,category,active,notes,quantity_on_hand,reorder_threshold
@@ -71,10 +89,32 @@ DR-IMPACT-042,Impact Driver,tool,each,serialized,Power Tools,true,,1,0
 SCREW-DECK-3IN,Deck Screws 3in,consumable,box of 100,quantity,Fasteners,true,,25,5
 ```
 
-Empty cells are nulls. `active` accepts `true|false|1|0|yes|no|y|n`. The
-`quantity_on_hand` and `reorder_threshold` columns are optional; if
-omitted, existing rows keep their current values and new rows default
-to zero. Items are matched by `code` (upsert). Items not in the CSV are
-left alone. Per-unit serials and RFID EPCs live on `item_instances`,
-not on the SKU row — serialized SKUs created via CSV still need their
-instances added through the admin UI's instances panel.
+`quantity_on_hand` and `reorder_threshold` are optional; if omitted,
+existing rows keep their current values and new rows default to zero.
+Per-unit serials and RFID EPCs live on `item_instances`, not on the SKU
+row — serialized SKUs created via CSV still need their instances added
+through the admin UI's instances panel.
+
+### Workers — `POST /api/kiosk/users/import`
+
+```csv
+code,name,email,role,group,active
+WORKER-1,Alice,alice@example.com,worker,electrical,true
+FOREMAN-1,Sam,sam@example.com,foreman,electrical,true
+```
+
+`role` defaults to `worker`. `group` is the group's **code** (not id);
+unknown codes are auto-created on real-run with `code=name=value` and
+`active=true`, which admins enrich with contact metadata via the Groups
+admin view. Dry-run does *not* auto-create groups — the side effect
+kicks in only on actual import.
+
+### Groups — `POST /api/kiosk/groups/import`
+
+```csv
+code,name,contact_email,contact_phone,notes,active
+electrical,Electrical Crew,lead@example.com,+1-555-0100,Morning shift,true
+```
+
+Useful for back-filling contact metadata on groups that were
+auto-created by a workers import.

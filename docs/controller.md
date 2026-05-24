@@ -219,7 +219,7 @@ cp controller.yaml.example controller.yaml      # set nats.url + auth
 ./kiosk-controller
 
 # Or, for a one-shot CSV seed before serving:
-./kiosk-controller seed-catalog --items=items.csv --users=users.csv
+./kiosk-controller seed-catalog --items=items.csv --users=users.csv --groups=groups.csv
 ```
 
 The controller binary uses the **same** `migrations/` package as the
@@ -283,23 +283,23 @@ Read-only — the source of truth is per-kiosk membership.
 
 ## CSV seed format
 
-`seed-catalog` reads two optional CSV files. Items use the same
-columns as the kiosk's `/api/kiosk/items/import` endpoint (see
-[Schema → CSV import format](schema.md#csv-import-format)). Users:
+`seed-catalog` reads up to three optional CSV files (`--items`,
+`--users`, `--groups`) and shares its row-validation logic with the
+HTTP importer at `POST /api/kiosk/<kind>/import`. The column shapes,
+auto-group-create behavior, and per-row error reporting are identical;
+the CLI just emits a one-line summary per kind plus error log lines for
+bad rows, where the HTTP path returns a JSON response with per-row
+outcomes. Day-to-day catalog edits are easier through the SPA's
+**Admin → Import** view (which the controller now also exposes) — the
+CLI is for one-shot bulk seeds before the SPA is reachable, or for
+scripted re-imports.
 
-```csv
-code,name,email,role,group,active
-WORKER-1,Alice,alice@example.com,worker,electrical,true
-FOREMAN-1,Bob,bob@example.com,foreman,electrical,true
-```
+See [Schema → CSV import format](schema.md#csv-import-format) for the
+full column schemas. Groups are seeded first so user rows referencing
+a group code land on the just-imported metadata rather than
+auto-creating a minimal row.
 
-The `group` column carries the group's **code** (see the `groups`
-collection in [schema](schema.md)). Blank means ungrouped. Unknown
-group codes are **auto-created** during import — a row with
-`code = name = csvValue, active = true` is inserted, which admins
-then enrich with `contact_email`, phone, and notes via the Groups
-admin view. This keeps existing CSV formats working unchanged. On
-shared sites with multiple trades, set each worker's group so a
+On shared sites with multiple trades, set each worker's group so a
 foreman can return tools across users **only within their own
 group**; an ungrouped foreman can't act for anyone. See
 [Returns policy](configuration.md#returns-policy) for the full rules.

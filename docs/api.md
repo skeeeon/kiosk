@@ -20,7 +20,12 @@ PB's `/api/collections/*` is used for PB-native CRUD.
 | `GET` | `/api/kiosk/integrity` | admin | Diff expected vs actual `open_checkouts` |
 | `POST` | `/api/kiosk/integrity/rebuild` | admin | Wipe `open_checkouts` and rebuild it from the ledger |
 | `POST` | `/api/kiosk/ledger/republish` | admin | Re-emit transaction.complete + item.{action} events for completed transactions in an optional `{from, to}` ISO8601 window. Aggregator is idempotent so safe to re-run. |
-| `POST` | `/api/kiosk/items/import` | admin | Multipart CSV upload, upsert by `code` |
+| `POST` | `/api/kiosk/items/import` | admin | Multipart CSV upload, upsert by `code`. **Available on both binaries.** Body: `file` (CSV), `dry_run` (`true`/`false`). Returns `{dry_run, rows_total, rows_inserted, rows_updated, rows_errored, rows: [{row, code, name, action: "insert"\|"update"\|"error", errors?: [{code, message}]}]}` — one entry per input row, classified by diff against a snapshot of existing records. Dry-run is read-only and reports `insert`/`update` as the action that *would* happen. |
+| `GET` | `/api/kiosk/items/import/template` | admin | Downloadable CSV template — same columns the importer accepts plus example rows. **Available on both binaries.** |
+| `POST` | `/api/kiosk/users/import` | admin | Workers CSV importer. Same response shape as items. Unknown `group` codes are auto-created on real-run (not dry-run). **Available on both binaries.** |
+| `GET` | `/api/kiosk/users/import/template` | admin | Workers CSV template. **Available on both binaries.** |
+| `POST` | `/api/kiosk/groups/import` | admin | Groups CSV importer. Same response shape. **Available on both binaries.** |
+| `GET` | `/api/kiosk/groups/import/template` | admin | Groups CSV template. **Available on both binaries.** |
 | `POST` | `/api/kiosk/items/{id}/adjust` | admin | Change `quantity_on_hand` + write a `stock_adjustments` audit row in one transaction |
 | `POST` | `/api/kiosk/checkouts/by-line/{transaction_line_id}/close` | admin | Admin force-close one `open_checkouts` row. Body: `{reason: "lost"\|"returned_offline"\|"damaged"\|"other", notes?}`. Writes one `transactions` row + one `transaction_lines` row (`action="admin_close"`) and deletes the open row, all in one DB transaction. `lost` / `damaged` also decrement `quantity_on_hand`, write a `stock_adjustments` row, and (for serialized items) flip `item_instances.active=false` plus an `instance_audit` decommission row. |
 | `GET` | `/api/kiosk/transactions.csv` | admin | Export completed transactions as CSV (optional `from=` / `to=` ISO8601 query params) |

@@ -53,8 +53,11 @@ admin credentials to stdout **once**. To reset state: `rm -rf pb_data && ./kiosk
 The controller binary expects `controller.yaml`, uses `pb_data_controller/`,
 and sets `KIOSK_ROLE=controller` before config validation runs (relaxes the
 `kiosk.code` requirement). It can also be invoked with the `seed-catalog`
-subcommand for one-shot CSV import — see `controller.yaml.example` and the
-README's "Central controller" section.
+subcommand for one-shot CSV bulk import (items/users/groups) — see
+`controller.yaml.example` and the README's "Central controller" section.
+The same row logic backs the HTTP importer at
+`POST /api/kiosk/<kind>/import` (kind ∈ {items, users, groups}) — both
+binaries expose it, sharing `internal/csvimport.Run`.
 
 Frontend dev loop: run both the Go binary and `npm run dev` — Vite proxies
 `/api` and `/_` to the Go process. Frontend build emits to `pb_public/` (not
@@ -417,9 +420,10 @@ distinct flows in one SPA:
   `/api/kiosk/*` via plain `fetch` (`lib/api.ts`).
 - **Admin views** (`views/Admin*.vue`, `stores/auth.ts`) — authed via PocketBase
   JS SDK (`lib/pb.ts`), CRUDs the `users` and `items` collections via PB's REST
-  API, plus hits `/api/kiosk/integrity`, `/api/kiosk/items/import`, and the
-  controller-only `/api/controller/*` family for fleet liveness and remote
-  inventory adjust.
+  API, plus hits `/api/kiosk/integrity`, the
+  `/api/kiosk/{items,users,groups}/import` family (with matching
+  `/template` downloads), and the controller-only `/api/controller/*`
+  family for fleet liveness and remote inventory adjust.
 
 The scan composable skips when an `<input>`, `<textarea>`, `<select>`, or
 contenteditable has focus. If you're adding a screen where the scan flow
