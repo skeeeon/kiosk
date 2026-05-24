@@ -3,6 +3,7 @@ package controller
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"sort"
 	"sync"
@@ -12,6 +13,7 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 
 	"github.com/skeeeon/kiosk/internal/events"
+	"github.com/skeeeon/kiosk/internal/exports"
 	"github.com/skeeeon/kiosk/internal/ledger"
 )
 
@@ -85,66 +87,103 @@ func (h *Handlers) ReportLowStock(nc *nats.Conn, reg *HeartbeatRegistry) func(*c
 		if err := h.requireAdmin(re); err != nil {
 			return err
 		}
-
-		targets := onlineKiosks(reg, heartbeatFreshness)
-		if kioskCode := re.Request.URL.Query().Get("kiosk_code"); kioskCode != "" {
-			targets = filterToCode(targets, kioskCode)
-		}
-		if len(targets) == 0 {
-			// Empty array (not omitempty) so the SPA can distinguish
-			// "no kiosks online" from "request failed."
-			return re.JSON(http.StatusOK, lowStockResponse{Rows: []lowStockEntry{}})
-		}
-
-		results := fanoutInventorySnapshots(nc, targets)
-
-		// Build item_id → item_code once for the whole report. Ledger
-		// rows carry item_id; the snapshot reply carries item_code. The
-		// controller's `items` catalog is the bridge.
-		idToCode, err := loadItemIDToCodeMap(h.App)
+		rows, errs, err := h.gatherLowStock(nc, reg, re.Request.URL.Query().Get("kiosk_code"))
 		if err != nil {
-			return re.InternalServerError("load items catalog", err)
+			return re.InternalServerError("gather low-stock", err)
 		}
-
-		var (
-			rows   []lowStockEntry
-			errs   []lowStockKioskError
-		)
-		for _, inv := range results {
-			if inv.err != nil {
-				errs = append(errs, lowStockKioskError{
-					KioskCode: inv.kioskCode,
-					Error:     inv.err.Error(),
-				})
-				continue
-			}
-			kioskRows, perr := lowStockRowsForKiosk(h.App, inv.kioskCode, inv.rawData, idToCode)
-			if perr != nil {
-				errs = append(errs, lowStockKioskError{
-					KioskCode: inv.kioskCode,
-					Error:     perr.Error(),
-				})
-				continue
-			}
-			rows = append(rows, kioskRows...)
-		}
-
-		// Deterministic ordering: by item_code then kiosk_code so the
-		// same SKU's kiosks group visually and the table is stable
-		// across refreshes.
-		sort.SliceStable(rows, func(i, j int) bool {
-			if rows[i].ItemCode != rows[j].ItemCode {
-				return rows[i].ItemCode < rows[j].ItemCode
-			}
-			return rows[i].KioskCode < rows[j].KioskCode
-		})
-		sort.SliceStable(errs, func(i, j int) bool { return errs[i].KioskCode < errs[j].KioskCode })
-
 		if rows == nil {
 			rows = []lowStockEntry{}
 		}
 		return re.JSON(http.StatusOK, lowStockResponse{Rows: rows, Errors: errs})
 	}
+}
+
+// ReportLowStockCSV is the CSV companion. The errors set (offline kiosks)
+// is intentionally not embedded — the JSON endpoint already surfaces it for
+// on-screen rendering; the CSV is data-only.
+func (h *Handlers) ReportLowStockCSV(nc *nats.Conn, reg *HeartbeatRegistry) func(*core.RequestEvent) error {
+	return func(re *core.RequestEvent) error {
+		if err := h.requireAdmin(re); err != nil {
+			return err
+		}
+		rows, _, err := h.gatherLowStock(nc, reg, re.Request.URL.Query().Get("kiosk_code"))
+		if err != nil {
+			return re.InternalServerError("gather low-stock", err)
+		}
+		out := make([]exports.LowStockRow, 0, len(rows))
+		for _, r := range rows {
+			out = append(out, exports.LowStockRow{
+				KioskCode:        r.KioskCode,
+				ItemCode:         r.ItemCode,
+				ItemName:         r.ItemName,
+				TrackingMode:     r.TrackingMode,
+				QuantityOnHand:   r.QuantityOnHand,
+				Out:              r.Out,
+				Available:        r.Available,
+				ReorderThreshold: r.ReorderThreshold,
+			})
+		}
+
+		w := re.Response
+		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+		w.Header().Set("Content-Disposition", fmt.Sprintf(
+			"attachment; filename=\"controller-low-stock-%s.csv\"",
+			time.Now().UTC().Format("20060102-150405"),
+		))
+		return exports.WriteLowStockCSV(w, out)
+	}
+}
+
+// gatherLowStock is the shared fan-out + reduce used by both the JSON and
+// CSV endpoints. Returns the deterministically-ordered rows plus the
+// per-kiosk error list; only catalog-load errors are fatal (returned as
+// err) because they mean we couldn't bridge the snapshot codes back to
+// item_ids — any individual kiosk error is just a row in errs.
+func (h *Handlers) gatherLowStock(nc *nats.Conn, reg *HeartbeatRegistry, kioskCodeFilter string) ([]lowStockEntry, []lowStockKioskError, error) {
+	targets := onlineKiosks(reg, heartbeatFreshness)
+	if kioskCodeFilter != "" {
+		targets = filterToCode(targets, kioskCodeFilter)
+	}
+	if len(targets) == 0 {
+		return nil, nil, nil
+	}
+
+	results := fanoutInventorySnapshots(nc, targets)
+	idToCode, err := loadItemIDToCodeMap(h.App)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var (
+		rows []lowStockEntry
+		errs []lowStockKioskError
+	)
+	for _, inv := range results {
+		if inv.err != nil {
+			errs = append(errs, lowStockKioskError{
+				KioskCode: inv.kioskCode,
+				Error:     inv.err.Error(),
+			})
+			continue
+		}
+		kioskRows, perr := lowStockRowsForKiosk(h.App, inv.kioskCode, inv.rawData, idToCode)
+		if perr != nil {
+			errs = append(errs, lowStockKioskError{
+				KioskCode: inv.kioskCode,
+				Error:     perr.Error(),
+			})
+			continue
+		}
+		rows = append(rows, kioskRows...)
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		if rows[i].ItemCode != rows[j].ItemCode {
+			return rows[i].ItemCode < rows[j].ItemCode
+		}
+		return rows[i].KioskCode < rows[j].KioskCode
+	})
+	sort.SliceStable(errs, func(i, j int) bool { return errs[i].KioskCode < errs[j].KioskCode })
+	return rows, errs, nil
 }
 
 // filterToCode reduces the kiosks list to a single code if present. Used

@@ -200,6 +200,10 @@ func main() {
 		e.Router.GET("/api/kiosk/catalog/integrity", h.CatalogIntegrity(cp))
 		e.Router.POST("/api/kiosk/catalog/reconcile", h.CatalogReconcile(cp))
 		e.Router.GET("/api/kiosk/reports/open-checkouts", h.ReportOpenCheckouts)
+		e.Router.GET("/api/kiosk/reports/open-checkouts.csv", h.ReportOpenCheckoutsCSV)
+		e.Router.GET("/api/kiosk/reports/group-activity.csv", h.ReportGroupActivityCSV)
+		e.Router.GET("/api/kiosk/reports/instance-lifecycle.csv", h.ReportLifecycleAuditCSV)
+		e.Router.GET("/api/kiosk/reports/notifications.csv", h.ReportNotificationsCSV)
 
 		// CSV import + downloadable templates. Items lands at the kiosk-side
 		// URL the SPA already uses so the same form works on either binary;
@@ -246,6 +250,8 @@ func main() {
 		// every online kiosk in parallel and joins with the controller's
 		// projected ledger to compute available quantities.
 		e.Router.GET("/api/controller/reports/low-stock", h.ReportLowStock(nc, hbRegistry))
+		e.Router.GET("/api/controller/reports/low-stock.csv", h.ReportLowStockCSV(nc, hbRegistry))
+		e.Router.GET("/api/controller/reports/adjustment-audit.csv", h.ReportAdjustmentAuditCSV)
 
 		// Serve the same embedded Vue SPA the kiosk uses. The SPA detects
 		// role at boot via /api/kiosk/identity and gates its UI accordingly.

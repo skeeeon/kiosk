@@ -180,6 +180,12 @@ the aggregator); three project from dedicated event subjects:
 | Instance lifecycle | `instance_lifecycle_audit` via pb-sdk, paginated | Filters: from / to / action (create/decommission/reactivate/delete) / source; kiosk filter from the page header. Same tab works on standalone kiosks against their local `instance_audit` |
 | Notifications | `notification_send_log` via pb-sdk, rolled up client-side | Per-event success-rate table, recent-failures panel; same tab works on standalone kiosks against their own send log |
 
+Every tab has an **Export CSV** button that respects the same filters the
+table is showing on screen. Server-side endpoints live under
+`/api/kiosk/reports/<name>.csv` (or `/api/controller/reports/<name>.csv`
+for the controller-only fleet variants) — see
+[docs/api.md](api.md) for the full list and query params.
+
 ## NATS provisioning
 
 The controller and kiosks both connect to a `nats-server` you run

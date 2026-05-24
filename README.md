@@ -58,7 +58,9 @@ it via config. See [docs/controller.md](docs/controller.md).
   recent transactions, adjustment audit (projected from
   `inventory.adjust` events), and notifications deliverability.
   Standalone kiosks share the same Reports surface against their
-  local data minus the controller-only tabs.
+  local data minus the controller-only tabs. Every tab has a
+  server-side **Export CSV** affordance that respects the on-screen
+  filters.
 
 ## Architecture
 

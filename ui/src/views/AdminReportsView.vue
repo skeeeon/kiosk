@@ -633,6 +633,71 @@ async function exportCsv() {
   }
 }
 
+// exportReport is the generic CSV downloader for the reports tabs. Each
+// tab's button builds the query string from its own filter state so the
+// downloaded rows match what the table is showing on screen.
+async function exportReport(path: string, params: Record<string, string | number | undefined>) {
+  const qs = new URLSearchParams()
+  for (const [k, v] of Object.entries(params)) {
+    if (v === undefined || v === '') continue
+    qs.set(k, String(v))
+  }
+  const query = qs.toString()
+  try {
+    await download(query ? `${path}?${query}` : path)
+  } catch (e) {
+    toast.error(`Export failed: ${(e as Error).message}`)
+  }
+}
+
+function exportCurrentlyOut() {
+  return exportReport('/api/kiosk/reports/open-checkouts.csv', {
+    kiosk_code: kioskFilter.value,
+  })
+}
+
+function exportLowStock() {
+  // Same query shape; the binary picks its own endpoint based on role
+  // (controller fans out via NATS, kiosk recomputes locally).
+  const path = isController.value
+    ? '/api/controller/reports/low-stock.csv'
+    : '/api/kiosk/reports/low-stock.csv'
+  return exportReport(path, { kiosk_code: kioskFilter.value })
+}
+
+function exportGroupActivity() {
+  return exportReport('/api/kiosk/reports/group-activity.csv', {
+    from: groupActivityFrom.value,
+    to: groupActivityTo.value,
+    kiosk_code: kioskFilter.value,
+  })
+}
+
+function exportAudit() {
+  return exportReport('/api/controller/reports/adjustment-audit.csv', {
+    from: auditFrom.value,
+    to: auditTo.value,
+    kiosk_code: kioskFilter.value,
+    source: auditSourceFilter.value,
+  })
+}
+
+function exportLifecycle() {
+  return exportReport('/api/kiosk/reports/instance-lifecycle.csv', {
+    from: lifecycleFrom.value,
+    to: lifecycleTo.value,
+    action: lifecycleActionFilter.value,
+    source: lifecycleSourceFilter.value,
+    kiosk_code: isController.value ? kioskFilter.value : '',
+  })
+}
+
+function exportNotifications() {
+  return exportReport('/api/kiosk/reports/notifications.csv', {
+    lookback_days: notificationsLookback.value,
+  })
+}
+
 function loadCurrentTab() {
   if (tab.value === 'currently-out') loadCurrentlyOut()
   else if (tab.value === 'low-stock') {
@@ -847,6 +912,13 @@ const lifecycleColumns = computed<ColumnDef[]>(() => {
           />
           days
         </label>
+        <button
+          type="button"
+          class="ml-auto px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm"
+          @click="exportCurrentlyOut"
+        >
+          Export CSV
+        </button>
       </div>
 
       <p v-if="filteredOpen.length > 0" class="text-xs text-slate-500">
@@ -918,6 +990,15 @@ const lifecycleColumns = computed<ColumnDef[]>(() => {
 
     <!-- Low stock (fleet-wide, snapshot fan-out) -->
     <div v-else-if="tab === 'low-stock' && isController" class="flex flex-col gap-3">
+      <div class="flex justify-end">
+        <button
+          type="button"
+          class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm"
+          @click="exportLowStock"
+        >
+          Export CSV
+        </button>
+      </div>
       <p
         v-if="fleetLowStockErrors.length > 0"
         class="rounded-lg bg-amber-950/40 border border-amber-800/60 text-amber-200 text-sm px-4 py-2"
@@ -970,7 +1051,17 @@ const lifecycleColumns = computed<ColumnDef[]>(() => {
     </div>
 
     <!-- Low stock (standalone kiosk, computed locally) -->
-    <div v-else-if="tab === 'low-stock'" class="rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden">
+    <div v-else-if="tab === 'low-stock'" class="flex flex-col gap-3">
+      <div class="flex justify-end">
+        <button
+          type="button"
+          class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm"
+          @click="exportLowStock"
+        >
+          Export CSV
+        </button>
+      </div>
+      <div class="rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden">
       <table class="w-full text-left text-sm">
         <thead class="bg-slate-950/70 text-slate-400">
           <tr>
@@ -1011,6 +1102,7 @@ const lifecycleColumns = computed<ColumnDef[]>(() => {
           </tr>
         </tbody>
       </table>
+      </div>
     </div>
 
     <!-- Group activity -->
@@ -1039,6 +1131,13 @@ const lifecycleColumns = computed<ColumnDef[]>(() => {
           @click="loadGroupActivity"
         >
           Apply
+        </button>
+        <button
+          type="button"
+          class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200"
+          @click="exportGroupActivity"
+        >
+          Export CSV
         </button>
         <span class="text-slate-500 text-xs ml-auto">
           Rolls up by the group code snapshotted on each transaction at commit time;
@@ -1170,6 +1269,13 @@ const lifecycleColumns = computed<ColumnDef[]>(() => {
         >
           Apply
         </button>
+        <button
+          type="button"
+          class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200"
+          @click="exportAudit"
+        >
+          Export CSV
+        </button>
         <span class="text-slate-500 text-xs ml-auto">
           Every stock adjustment fan-out, every kiosk. Append-only audit projected from
           <code class="font-mono text-xs">inventory.adjust</code> events.
@@ -1276,6 +1382,13 @@ const lifecycleColumns = computed<ColumnDef[]>(() => {
         >
           Apply
         </button>
+        <button
+          type="button"
+          class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200"
+          @click="exportLifecycle"
+        >
+          Export CSV
+        </button>
         <span class="text-slate-500 text-xs ml-auto">
           {{ isController
             ? 'Fleet-wide projection from instance.lifecycle events.'
@@ -1357,6 +1470,13 @@ const lifecycleColumns = computed<ColumnDef[]>(() => {
             <option :value="90">Last 90 days</option>
           </select>
         </label>
+        <button
+          type="button"
+          class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200"
+          @click="exportNotifications"
+        >
+          Export CSV
+        </button>
         <span class="text-slate-500 text-xs ml-auto">
           Aggregated from <code class="font-mono text-xs">notification_send_log</code>; see
           <RouterLink :to="{ name: 'admin-notifications-log' }" class="underline">Recent sends</RouterLink>
