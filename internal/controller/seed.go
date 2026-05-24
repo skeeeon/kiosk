@@ -2,19 +2,17 @@ package controller
 
 import (
 	"context"
-	"encoding/csv"
 	"errors"
 	"fmt"
 	"log"
 	"os"
-	"strings"
 
-	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/spf13/cobra"
 
 	"github.com/skeeeon/kiosk/internal/config"
+	"github.com/skeeeon/kiosk/internal/csvimport"
 	"github.com/skeeeon/kiosk/internal/events"
 )
 
@@ -23,22 +21,27 @@ import (
 // connection and catalog publisher hooks before doing its writes, so each
 // record saved fans out to the JetStream KV buckets as it goes.
 //
+// All three CSV kinds the HTTP importer supports are also available here.
+// The row-level work delegates to internal/csvimport so the CLI and HTTP
+// paths can't drift in their validation/upsert behavior.
+//
 // Usage:
 //
-//	./kiosk-controller seed-catalog --items=items.csv --users=users.csv
+//	./kiosk-controller seed-catalog --items=items.csv --users=users.csv --groups=groups.csv
 func RegisterSeedCommand(app *pocketbase.PocketBase, cfg *config.Config) {
 	cmd := &cobra.Command{
 		Use:   "seed-catalog",
-		Short: "Bulk-import items and/or users from CSV into the controller catalog",
-		Long: "Imports items and/or users from CSV files. Existing records are " +
-			"matched by `code` and updated in place; new records are inserted. " +
-			"The same CSV format used by /api/kiosk/csv/import on the kiosks works here.",
+		Short: "Bulk-import items, users, and/or groups from CSV into the controller catalog",
+		Long: "Imports items, users, and/or groups from CSV files. Existing records " +
+			"are matched by `code` and updated in place; new records are inserted. " +
+			"Same row format as the HTTP importer (POST /api/kiosk/<kind>/import).",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			itemsPath, _ := cmd.Flags().GetString("items")
 			usersPath, _ := cmd.Flags().GetString("users")
+			groupsPath, _ := cmd.Flags().GetString("groups")
 			noPublish, _ := cmd.Flags().GetBool("no-publish")
-			if itemsPath == "" && usersPath == "" {
-				return errors.New("at least one of --items or --users is required")
+			if itemsPath == "" && usersPath == "" && groupsPath == "" {
+				return errors.New("at least one of --items, --users, or --groups is required")
 			}
 
 			// Apply migrations explicitly — migratecmd's Automigrate only
@@ -73,13 +76,21 @@ func RegisterSeedCommand(app *pocketbase.PocketBase, cfg *config.Config) {
 				}
 			}
 
+			// Groups go first so user rows that reference a group code
+			// without a pre-existing row land on the just-imported metadata
+			// rather than auto-creating a minimal row.
+			if groupsPath != "" {
+				if err := runSeedFile(app, groupsPath, csvimport.KindGroups); err != nil {
+					return fmt.Errorf("seed groups: %w", err)
+				}
+			}
 			if itemsPath != "" {
-				if err := seedItems(app, itemsPath); err != nil {
+				if err := runSeedFile(app, itemsPath, csvimport.KindItems); err != nil {
 					return fmt.Errorf("seed items: %w", err)
 				}
 			}
 			if usersPath != "" {
-				if err := seedUsers(app, usersPath); err != nil {
+				if err := runSeedFile(app, usersPath, csvimport.KindUsers); err != nil {
 					return fmt.Errorf("seed users: %w", err)
 				}
 			}
@@ -88,223 +99,30 @@ func RegisterSeedCommand(app *pocketbase.PocketBase, cfg *config.Config) {
 	}
 	cmd.Flags().String("items", "", "path to items CSV (columns: code,name,type,tracking_mode,unit,category,active,notes)")
 	cmd.Flags().String("users", "", "path to users CSV (columns: code,name,email,role,group,active)")
+	cmd.Flags().String("groups", "", "path to groups CSV (columns: code,name,contact_email,contact_phone,notes,active)")
 	cmd.Flags().Bool("no-publish", false, "import locally only; skip JetStream KV fan-out")
 	app.RootCmd.AddCommand(cmd)
 }
 
-func seedItems(app core.App, path string) error {
-	rows, err := readCSV(path)
-	if err != nil {
-		return err
-	}
-	if len(rows) < 2 {
-		return fmt.Errorf("%s: needs a header row and at least one data row", path)
-	}
-	headers := normalizeHeaders(rows[0])
-	if _, ok := headers["code"]; !ok {
-		return fmt.Errorf("%s: missing 'code' column", path)
-	}
-
-	col, err := app.FindCollectionByNameOrId("items")
-	if err != nil {
-		return fmt.Errorf("find items collection: %w", err)
-	}
-
-	var inserted, updated, skipped int
-	for i, row := range rows[1:] {
-		code := strings.TrimSpace(csvCol(headers, row, "code"))
-		name := strings.TrimSpace(csvCol(headers, row, "name"))
-		typ := strings.TrimSpace(csvCol(headers, row, "type"))
-		tracking := strings.TrimSpace(csvCol(headers, row, "tracking_mode"))
-		if tracking == "" {
-			tracking = "quantity"
-		}
-		if code == "" || name == "" || (typ != "tool" && typ != "consumable") {
-			log.Printf("seed-catalog items row %d skipped: invalid required fields", i+2)
-			skipped++
-			continue
-		}
-
-		existing, err := app.FindFirstRecordByFilter("items",
-			"code = {:c}", dbx.Params{"c": code})
-		if err != nil && !isNotFound(err) {
-			return fmt.Errorf("lookup item %s: %w", code, err)
-		}
-		var rec *core.Record
-		if existing != nil {
-			rec = existing
-		} else {
-			rec = core.NewRecord(col)
-		}
-		rec.Set("code", code)
-		rec.Set("name", name)
-		rec.Set("type", typ)
-		rec.Set("tracking_mode", tracking)
-		rec.Set("unit", csvCol(headers, row, "unit"))
-		rec.Set("category", csvCol(headers, row, "category"))
-		rec.Set("notes", csvCol(headers, row, "notes"))
-		rec.Set("active", parseCSVBool(csvCol(headers, row, "active"), true))
-
-		if err := app.Save(rec); err != nil {
-			return fmt.Errorf("save item %s: %w", code, err)
-		}
-		if existing != nil {
-			updated++
-		} else {
-			inserted++
-		}
-	}
-	log.Printf("seed-catalog items: %d inserted, %d updated, %d skipped", inserted, updated, skipped)
-	return nil
-}
-
-func seedUsers(app core.App, path string) error {
-	rows, err := readCSV(path)
-	if err != nil {
-		return err
-	}
-	if len(rows) < 2 {
-		return fmt.Errorf("%s: needs a header row and at least one data row", path)
-	}
-	headers := normalizeHeaders(rows[0])
-	if _, ok := headers["code"]; !ok {
-		return fmt.Errorf("%s: missing 'code' column", path)
-	}
-
-	col, err := app.FindCollectionByNameOrId("users")
-	if err != nil {
-		return fmt.Errorf("find users collection: %w", err)
-	}
-
-	var inserted, updated, skipped int
-	for i, row := range rows[1:] {
-		code := strings.TrimSpace(csvCol(headers, row, "code"))
-		name := strings.TrimSpace(csvCol(headers, row, "name"))
-		role := strings.TrimSpace(csvCol(headers, row, "role"))
-		if role == "" {
-			role = "worker"
-		}
-		if code == "" || name == "" {
-			log.Printf("seed-catalog users row %d skipped: missing code or name", i+2)
-			skipped++
-			continue
-		}
-		if role != "worker" && role != "foreman" {
-			log.Printf("seed-catalog users row %d skipped: invalid role %q", i+2, role)
-			skipped++
-			continue
-		}
-
-		existing, err := app.FindFirstRecordByFilter("users",
-			"code = {:c}", dbx.Params{"c": code})
-		if err != nil && !isNotFound(err) {
-			return fmt.Errorf("lookup user %s: %w", code, err)
-		}
-		var rec *core.Record
-		if existing != nil {
-			rec = existing
-		} else {
-			rec = core.NewRecord(col)
-			// PB auth collections require a password; workers don't actually
-			// log in so a strong random one is fine. The catalog projection
-			// to kiosks doesn't carry passwords.
-			pw, err := randomPassword(16)
-			if err != nil {
-				return fmt.Errorf("generate password for %s: %w", code, err)
-			}
-			rec.SetPassword(pw)
-		}
-		rec.Set("code", code)
-		rec.Set("name", name)
-		rec.Set("email", csvCol(headers, row, "email"))
-		rec.Set("role", role)
-		// group column carries the group's code; resolve to FK, auto-creating
-		// the row on first sight so existing CSVs Just Work. Admins enrich
-		// auto-created rows with contact metadata post-import.
-		groupCode := strings.TrimSpace(csvCol(headers, row, "group"))
-		groupID := ""
-		if groupCode != "" {
-			gID, err := ensureGroupByCode(app, groupCode)
-			if err != nil {
-				return fmt.Errorf("resolve group %q for user %s: %w", groupCode, code, err)
-			}
-			groupID = gID
-		}
-		rec.Set("group", groupID)
-		rec.Set("active", parseCSVBool(csvCol(headers, row, "active"), true))
-
-		if err := app.Save(rec); err != nil {
-			return fmt.Errorf("save user %s: %w", code, err)
-		}
-		if existing != nil {
-			updated++
-		} else {
-			inserted++
-		}
-	}
-	log.Printf("seed-catalog users: %d inserted, %d updated, %d skipped", inserted, updated, skipped)
-	return nil
-}
-
-// ensureGroupByCode returns the id of a groups row with the given code,
-// auto-creating it (code=name=code, active=true) if none exists. Used by
-// user-CSV import so existing CSV formats keep working — operators don't
-// have to pre-seed groups.
-func ensureGroupByCode(app core.App, code string) (string, error) {
-	existing, err := app.FindFirstRecordByFilter("groups",
-		"code = {:c}", dbx.Params{"c": code})
-	if err == nil {
-		return existing.Id, nil
-	}
-	if !isNotFound(err) {
-		return "", err
-	}
-	col, err := app.FindCollectionByNameOrId("groups")
-	if err != nil {
-		return "", fmt.Errorf("find groups collection: %w", err)
-	}
-	rec := core.NewRecord(col)
-	rec.Set("code", code)
-	rec.Set("name", code)
-	rec.Set("active", true)
-	if err := app.Save(rec); err != nil {
-		return "", fmt.Errorf("create group %q: %w", code, err)
-	}
-	return rec.Id, nil
-}
-
-func readCSV(path string) ([][]string, error) {
+// runSeedFile opens a CSV and pumps it through csvimport.Run, then logs a
+// summary line. Per-row errors are surfaced as log entries — same outcome
+// the HTTP importer reports in JSON, just emitted to the operator's
+// terminal so they can scroll back through failures.
+func runSeedFile(app core.App, path string, kind csvimport.Kind) error {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer f.Close()
-	return csv.NewReader(f).ReadAll()
-}
 
-func normalizeHeaders(headers []string) map[string]int {
-	out := make(map[string]int, len(headers))
-	for i, h := range headers {
-		out[strings.ToLower(strings.TrimSpace(h))] = i
+	result, err := csvimport.Run(app, kind, f, false)
+	if err != nil {
+		return err
 	}
-	return out
-}
-
-func csvCol(headers map[string]int, row []string, name string) string {
-	i, ok := headers[name]
-	if !ok || i >= len(row) {
-		return ""
+	for _, e := range result.Errors {
+		log.Printf("seed-catalog %s row %d: %s (%s)", kind, e.Row, e.Message, e.Code)
 	}
-	return strings.TrimSpace(row[i])
-}
-
-func parseCSVBool(s string, defaultVal bool) bool {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "":
-		return defaultVal
-	case "true", "1", "yes", "y":
-		return true
-	default:
-		return false
-	}
+	log.Printf("seed-catalog %s: %d inserted, %d updated, %d errors",
+		kind, result.RowsInserted, result.RowsUpdated, len(result.Errors))
+	return nil
 }

@@ -1,49 +1,56 @@
 package handlers
 
 import (
-	"encoding/csv"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
-	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 
+	"github.com/skeeeon/kiosk/internal/csvimport"
 	"github.com/skeeeon/kiosk/internal/exports"
 )
 
 const maxCSVUploadBytes = 10 << 20 // 10 MB — enough for tens of thousands of items
 
-type importError struct {
-	Row     int    `json:"row"`
-	Code    string `json:"code"`
-	Message string `json:"message"`
-}
-
-type importResult struct {
-	DryRun       bool          `json:"dry_run"`
-	RowsTotal    int           `json:"rows_total"`
-	RowsInserted int           `json:"rows_inserted"`
-	RowsUpdated  int           `json:"rows_updated"`
-	Errors       []importError `json:"errors"`
-}
-
-// CSVImport upserts items from a CSV upload. Rows match existing records by
-// `code`. Each row is processed independently: a bad row records an error
-// but doesn't stop the rest. `dry_run=true` validates without writing.
-//
-// Items not present in the CSV are left alone (no auto-deactivation, per
-// the plan).
+// CSVImport upserts items from a CSV upload. Row-level work lives in
+// internal/csvimport so the kiosk and controller share the same logic;
+// this handler only does auth, multipart parsing, and response shaping.
 func (h *Handlers) CSVImport(re *core.RequestEvent) error {
 	if err := h.requireAdmin(re); err != nil {
 		return err
 	}
+	return importCSVHandler(re, h.App, csvimport.KindItems)
+}
 
+// UsersCSVImport / GroupsCSVImport are the workers and groups counterparts.
+// On a managed kiosk these collections are read-only mirrors of the
+// controller's catalog, so the SPA hides the corresponding tabs; the
+// requireAdmin gate is still the trust boundary if someone hits the
+// endpoint directly.
+func (h *Handlers) UsersCSVImport(re *core.RequestEvent) error {
+	if err := h.requireAdmin(re); err != nil {
+		return err
+	}
+	return importCSVHandler(re, h.App, csvimport.KindUsers)
+}
+
+func (h *Handlers) GroupsCSVImport(re *core.RequestEvent) error {
+	if err := h.requireAdmin(re); err != nil {
+		return err
+	}
+	return importCSVHandler(re, h.App, csvimport.KindGroups)
+}
+
+// importCSVHandler is the shared HTTP wrapper around csvimport.Run. The
+// controller's handlers package re-implements this wrapper rather than
+// importing handlers (which would pull in cart/scan/etc.), but the shape
+// — and the response contract the SPA depends on — matches by design.
+func importCSVHandler(re *core.RequestEvent, app core.App, kind csvimport.Kind) error {
 	if err := re.Request.ParseMultipartForm(maxCSVUploadBytes); err != nil {
 		return re.BadRequestError("could not parse upload (max 10 MB)", err)
 	}
-
 	file, _, err := re.Request.FormFile("file")
 	if err != nil {
 		return re.BadRequestError("file field is required", err)
@@ -52,166 +59,52 @@ func (h *Handlers) CSVImport(re *core.RequestEvent) error {
 
 	dryRun := strings.EqualFold(re.Request.FormValue("dry_run"), "true")
 
-	rows, err := csv.NewReader(file).ReadAll()
+	result, err := csvimport.Run(app, kind, file, dryRun)
 	if err != nil {
-		return re.BadRequestError("invalid CSV", err)
+		return re.BadRequestError(err.Error(), err)
 	}
-	if len(rows) == 0 {
-		return re.BadRequestError("CSV is empty", nil)
-	}
-	if len(rows) < 2 {
-		return re.BadRequestError("CSV contains a header row but no data rows", nil)
-	}
-
-	headers := normalizeHeaders(rows[0])
-	if _, ok := headers["code"]; !ok {
-		return re.BadRequestError("CSV must have a 'code' column", nil)
-	}
-
-	itemsCol, err := h.App.FindCollectionByNameOrId("items")
-	if err != nil {
-		return err
-	}
-
-	result := importResult{DryRun: dryRun}
-	for i, row := range rows[1:] {
-		rowNum := i + 2 // 1-based, accounting for header row
-		result.RowsTotal++
-
-		data, rowErrs := validateImportRow(headers, row)
-		if len(rowErrs) > 0 {
-			for _, e := range rowErrs {
-				e.Row = rowNum
-				result.Errors = append(result.Errors, e)
-			}
-			continue
-		}
-
-		if dryRun {
-			continue
-		}
-
-		existing, err := h.App.FindFirstRecordByFilter(
-			"items", "code = {:c}", dbx.Params{"c": data["code"]},
-		)
-		if err != nil && !isNotFound(err) {
-			result.Errors = append(result.Errors, importError{
-				Row: rowNum, Code: "DB_ERROR", Message: err.Error(),
-			})
-			continue
-		}
-
-		if existing != nil {
-			for k, v := range data {
-				existing.Set(k, v)
-			}
-			if err := h.App.Save(existing); err != nil {
-				result.Errors = append(result.Errors, importError{
-					Row: rowNum, Code: "UPDATE_FAILED", Message: err.Error(),
-				})
-				continue
-			}
-			result.RowsUpdated++
-		} else {
-			rec := core.NewRecord(itemsCol)
-			for k, v := range data {
-				rec.Set(k, v)
-			}
-			if err := h.App.Save(rec); err != nil {
-				result.Errors = append(result.Errors, importError{
-					Row: rowNum, Code: "INSERT_FAILED", Message: err.Error(),
-				})
-				continue
-			}
-			result.RowsInserted++
-		}
-	}
-
 	return re.JSON(http.StatusOK, result)
 }
 
-func normalizeHeaders(headers []string) map[string]int {
-	out := make(map[string]int, len(headers))
-	for i, h := range headers {
-		out[strings.ToLower(strings.TrimSpace(h))] = i
+// CSVImportTemplate streams a starter CSV for the items importer. Same
+// columns the importer accepts, with one example tool and one consumable
+// row pre-filled. Admin-gated like the importer itself; admins are the
+// only audience for the download.
+func (h *Handlers) CSVImportTemplate(re *core.RequestEvent) error {
+	if err := h.requireAdmin(re); err != nil {
+		return err
 	}
-	return out
+	return writeCSVTemplate(re, csvimport.KindItems)
 }
 
-func csvCol(headers map[string]int, row []string, name string) string {
-	i, ok := headers[name]
-	if !ok || i >= len(row) {
-		return ""
+func (h *Handlers) UsersCSVImportTemplate(re *core.RequestEvent) error {
+	if err := h.requireAdmin(re); err != nil {
+		return err
 	}
-	return strings.TrimSpace(row[i])
+	return writeCSVTemplate(re, csvimport.KindUsers)
 }
 
-// validateImportRow checks required fields and enum values. It does not check
-// uniqueness across the file or against the database — duplicate codes within
-// the same CSV will simply upsert in order; DB-level uniqueness conflicts
-// surface as INSERT_FAILED on save.
-func validateImportRow(headers map[string]int, row []string) (map[string]any, []importError) {
-	var errs []importError
-
-	code := csvCol(headers, row, "code")
-	if code == "" {
-		errs = append(errs, importError{Code: "MISSING_CODE", Message: "code is required"})
+func (h *Handlers) GroupsCSVImportTemplate(re *core.RequestEvent) error {
+	if err := h.requireAdmin(re); err != nil {
+		return err
 	}
-	name := csvCol(headers, row, "name")
-	if name == "" {
-		errs = append(errs, importError{Code: "MISSING_NAME", Message: "name is required"})
-	}
-	typ := csvCol(headers, row, "type")
-	if typ != "tool" && typ != "consumable" {
-		errs = append(errs, importError{Code: "INVALID_TYPE", Message: "type must be 'tool' or 'consumable'"})
-	}
-	tracking := csvCol(headers, row, "tracking_mode")
-	if tracking == "" {
-		tracking = "quantity"
-	}
-	if tracking != "quantity" && tracking != "serialized" {
-		errs = append(errs, importError{Code: "INVALID_TRACKING_MODE", Message: "tracking_mode must be 'quantity' or 'serialized'"})
-	}
-
-	if len(errs) > 0 {
-		return nil, errs
-	}
-
-	out := map[string]any{
-		"code":          code,
-		"name":          name,
-		"type":          typ,
-		"unit":          csvCol(headers, row, "unit"),
-		"tracking_mode": tracking,
-		"category":      csvCol(headers, row, "category"),
-		"active":        parseCSVActive(csvCol(headers, row, "active")),
-		"notes":         csvCol(headers, row, "notes"),
-	}
-	// Only set quantity fields if the column is present in the CSV — omission
-	// means "leave as-is" on update, "default to 0" on insert (PB's number
-	// field zero-default applies).
-	if _, ok := headers["quantity_on_hand"]; ok {
-		out["quantity_on_hand"] = parseCSVInt(csvCol(headers, row, "quantity_on_hand"))
-	}
-	if _, ok := headers["reorder_threshold"]; ok {
-		out["reorder_threshold"] = parseCSVInt(csvCol(headers, row, "reorder_threshold"))
-	}
-	return out, nil
+	return writeCSVTemplate(re, csvimport.KindGroups)
 }
 
-// parseCSVInt parses a quantity column. Empty or unparseable input becomes 0
-// — the import path is upsert-on-code, so admins typing freeform values
-// shouldn't break the row over a stray space.
-func parseCSVInt(s string) int {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return 0
+// writeCSVTemplate sets headers and delegates to csvimport.TemplateFor.
+// Filename is "<kind>-template.csv" so the operator can spot it in their
+// downloads list.
+func writeCSVTemplate(re *core.RequestEvent, kind csvimport.Kind) error {
+	writer := csvimport.TemplateFor(kind)
+	if writer == nil {
+		return re.NotFoundError(fmt.Sprintf("no template for kind %q", kind), nil)
 	}
-	var n int
-	if _, err := fmt.Sscanf(s, "%d", &n); err != nil {
-		return 0
-	}
-	return n
+	w := re.Response
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(
+		"attachment; filename=\"%s-template.csv\"", kind,
+	))
+	return writer(w)
 }
 
 // TransactionsExportCSV streams completed transactions as CSV. Optional
@@ -264,15 +157,4 @@ func (h *Handlers) ItemsExportCSV(re *core.RequestEvent) error {
 		"attachment; filename=\"items-%s.csv\"", time.Now().UTC().Format("20060102-150405"),
 	))
 	return exports.WriteItemsCSV(h.App, w)
-}
-
-// parseCSVActive treats empty as active=true; only explicit falsy values
-// disable. Accepts true/false/1/0/yes/no/y/n in any case.
-func parseCSVActive(s string) bool {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "false", "0", "no", "n", "f":
-		return false
-	default:
-		return true
-	}
 }

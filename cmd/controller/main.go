@@ -186,6 +186,17 @@ func main() {
 		e.Router.POST("/api/kiosk/catalog/reconcile", h.CatalogReconcile(cp))
 		e.Router.GET("/api/kiosk/reports/open-checkouts", h.ReportOpenCheckouts)
 
+		// CSV import + downloadable templates. Items lands at the kiosk-side
+		// URL the SPA already uses so the same form works on either binary;
+		// users and groups are controller-only since standalone kiosks have
+		// admin CRUD UI for the smaller scale they operate at.
+		e.Router.POST("/api/kiosk/items/import", h.CSVImportItems)
+		e.Router.GET("/api/kiosk/items/import/template", h.CSVImportTemplateItems)
+		e.Router.POST("/api/kiosk/users/import", h.CSVImportUsers)
+		e.Router.GET("/api/kiosk/users/import/template", h.CSVImportTemplateUsers)
+		e.Router.POST("/api/kiosk/groups/import", h.CSVImportGroups)
+		e.Router.GET("/api/kiosk/groups/import/template", h.CSVImportTemplateGroups)
+
 		// Centralized notifications CRUD. Managed kiosks' admin SPA hits
 		// these via /api/controller/notifications/* instead of the kiosk's
 		// local /api/kiosk/notifications/* — the read-only banner on the
