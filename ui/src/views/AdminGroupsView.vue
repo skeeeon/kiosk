@@ -143,10 +143,7 @@ async function onDelete() {
     <header class="flex items-baseline justify-between mb-4">
       <div>
         <h1 class="text-2xl font-semibold">Groups</h1>
-        <p class="text-sm text-slate-400">
-          {{ groups.length }} total — sub-contractors / trades. Workers reference a group via FK; receipts to the
-          group's contact email roll up activity per sub.
-        </p>
+        <p class="text-sm text-slate-400">{{ groups.length }} total</p>
       </div>
       <button
         v-if="!managed"

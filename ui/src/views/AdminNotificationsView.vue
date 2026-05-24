@@ -95,6 +95,13 @@ const drafts = ref<Record<string, NotificationTemplate>>({})
 const loading = ref(false)
 const saving = ref<Record<string, boolean>>({})
 const errors = ref<Record<string, string>>({})
+// Master/detail selection. Persists in component state only — refreshing
+// the page snaps back to the first template, which is fine for a small
+// fixed set of event types.
+const activeEventType = ref<string>('')
+const active = computed(() =>
+  templates.value.find((t) => t.event_type === activeEventType.value) ?? null,
+)
 // Per-template "last edited by" email, resolved once per admin id and cached
 // here so the footer doesn't N+1 against pb.collection('admins').getOne
 // every render. Empty string for rows that haven't been saved since phase 2
@@ -138,6 +145,11 @@ async function load() {
     )
     extrasText.value = Object.fromEntries(list.map((t) => [t.event_type, extrasToText(t.recipients.extras)]))
     errors.value = {}
+    // Pick a sensible default selection: keep the current one if it still
+    // exists in the new list, otherwise jump to the first template.
+    if (!list.some((t) => t.event_type === activeEventType.value)) {
+      activeEventType.value = list[0]?.event_type ?? ''
+    }
     await resolveEditorEmails(list)
   } catch (e) {
     toast.error(`Load failed: ${(e as Error).message}`)
@@ -262,27 +274,9 @@ onMounted(load)
   <main class="p-6 max-w-7xl mx-auto w-full">
     <header class="mb-4">
       <h1 class="text-2xl font-semibold">Notifications</h1>
-      <p class="text-sm text-slate-400 mt-1">
-        Email events the kiosk sends. SMTP credentials live in PocketBase&rsquo;s
-        superuser UI (<code class="text-slate-300">/_/</code> &rarr; Settings &rarr; Mail).
-      </p>
     </header>
 
     <NotificationsTabs />
-
-    <div class="max-w-4xl">
-    <div class="mb-4 flex items-center justify-between gap-4">
-      <p class="text-sm text-slate-400">
-        Customize the email sent for each kiosk event.
-      </p>
-      <button
-        type="button"
-        class="shrink-0 px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm"
-        @click="showHelp = true"
-      >
-        Template syntax & variables
-      </button>
-    </div>
 
     <div
       v-if="managed"
@@ -295,124 +289,182 @@ onMounted(load)
       the actual sends fire from the controller.
     </div>
 
-    <p v-if="loading" class="text-slate-500">Loading…</p>
+    <p v-if="loading && templates.length === 0" class="text-slate-500">Loading…</p>
     <p v-else-if="templates.length === 0" class="text-slate-500">No templates yet.</p>
 
-    <section
-      v-for="t in templates"
-      :key="t.event_type"
-      class="rounded-2xl bg-slate-900 border border-slate-800 p-5 mb-5"
-    >
-      <header class="flex items-baseline justify-between mb-3">
-        <div>
-          <h2 class="text-lg font-semibold">{{ t.name }}</h2>
-          <p class="text-xs text-slate-500 font-mono">{{ t.event_type }}</p>
+    <div v-else class="flex flex-col md:flex-row gap-6 items-start">
+      <!-- Left rail: one entry per event type. Click to select; an amber dot
+           marks unsaved drafts so the operator can switch around without
+           losing track of what they've touched. -->
+      <aside class="w-full md:w-72 md:shrink-0">
+        <div class="flex items-baseline justify-between mb-2 gap-2 px-1">
+          <span class="text-xs uppercase tracking-wider text-slate-500">Events</span>
+          <button
+            type="button"
+            class="text-xs text-slate-400 hover:text-slate-200 hover:underline underline-offset-2"
+            @click="showHelp = true"
+          >
+            Template syntax
+          </button>
         </div>
-        <label class="inline-flex items-center gap-2 text-sm text-slate-300">
+        <nav class="rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden divide-y divide-slate-800">
+          <button
+            v-for="t in templates"
+            :key="t.event_type"
+            type="button"
+            :class="[
+              'w-full text-left px-4 py-3 border-l-2 transition-colors',
+              activeEventType === t.event_type
+                ? 'border-brand-primary bg-brand-primary/10 text-slate-100'
+                : 'border-transparent text-slate-300 hover:bg-slate-800/40',
+            ]"
+            @click="activeEventType = t.event_type"
+          >
+            <div class="flex items-center justify-between gap-2">
+              <span class="font-medium truncate">{{ t.name }}</span>
+              <span
+                v-if="dirty(t.event_type)"
+                class="text-amber-400 text-xs shrink-0"
+                title="Unsaved changes"
+              >●</span>
+            </div>
+            <div class="text-xs text-slate-500 font-mono truncate">{{ t.event_type }}</div>
+            <div
+              class="text-xs mt-1"
+              :class="(drafts[t.event_type]?.enabled ?? t.enabled) ? 'text-emerald-400' : 'text-slate-500'"
+            >
+              {{ (drafts[t.event_type]?.enabled ?? t.enabled) ? 'Enabled' : 'Disabled' }}
+            </div>
+          </button>
+        </nav>
+      </aside>
+
+      <!-- Right pane: editor for the active template. The :key on the editor
+           card forces Vue to remount when the user switches selection, which
+           resets any per-field focus/scroll state — no carryover surprises. -->
+      <section class="flex-1 min-w-0 w-full">
+        <div
+          v-if="active"
+          :key="active.event_type"
+          class="rounded-2xl bg-slate-900 border border-slate-800 p-5"
+        >
+          <header class="flex items-baseline justify-between mb-3 gap-3">
+            <div class="min-w-0">
+              <h2 class="text-lg font-semibold truncate">{{ active.name }}</h2>
+              <p class="text-xs text-slate-500 font-mono truncate">{{ active.event_type }}</p>
+            </div>
+            <label class="inline-flex items-center gap-2 text-sm text-slate-300 shrink-0">
+              <input
+                type="checkbox"
+                :checked="drafts[active.event_type]?.enabled ?? false"
+                :disabled="managed"
+                @change="drafts[active.event_type].enabled = ($event.target as HTMLInputElement).checked"
+              />
+              Enabled
+            </label>
+          </header>
+
+          <label class="block text-sm text-slate-400 mb-1">Subject</label>
           <input
-            type="checkbox"
-            :checked="drafts[t.event_type]?.enabled ?? false"
+            v-model="drafts[active.event_type].subject"
+            type="text"
             :disabled="managed"
-            @change="drafts[t.event_type].enabled = ($event.target as HTMLInputElement).checked"
+            class="w-full rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-slate-100 font-mono text-sm mb-3 disabled:opacity-60"
           />
-          Enabled
-        </label>
-      </header>
 
-      <label class="block text-sm text-slate-400 mb-1">Subject</label>
-      <input
-        v-model="drafts[t.event_type].subject"
-        type="text"
-        :disabled="managed"
-        class="w-full rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-slate-100 font-mono text-sm mb-3 disabled:opacity-60"
-      />
-
-      <label class="block text-sm text-slate-400 mb-1">Body</label>
-      <textarea
-        v-model="drafts[t.event_type].body"
-        :disabled="managed"
-        rows="14"
-        class="w-full rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-slate-100 font-mono text-sm disabled:opacity-60"
-      ></textarea>
-
-      <fieldset class="mt-4 rounded-lg border border-slate-800 p-3">
-        <legend class="px-1 text-sm text-slate-400">Recipients</legend>
-        <label class="flex items-start gap-2 text-sm text-slate-300 mb-2">
-          <input
-            type="checkbox"
-            :checked="drafts[t.event_type].recipients.worker_email"
-            :disabled="managed || !t.supports_worker"
-            class="mt-1 disabled:opacity-50"
-            @change="drafts[t.event_type].recipients.worker_email = ($event.target as HTMLInputElement).checked"
-          />
-          <span class="flex flex-col">
-            <span>Send to the worker who scanned</span>
-            <span v-if="!t.supports_worker" class="text-xs text-slate-500">
-              Not available — this event type doesn&rsquo;t carry a worker identity.
-            </span>
-          </span>
-        </label>
-        <label class="flex items-start gap-2 text-sm text-slate-300 mb-2">
-          <input
-            type="checkbox"
-            :checked="drafts[t.event_type].recipients.all_admins"
-            :disabled="managed"
-            class="mt-1"
-            @change="drafts[t.event_type].recipients.all_admins = ($event.target as HTMLInputElement).checked"
-          />
-          Send to every active admin
-        </label>
-        <label class="block text-sm text-slate-300 mt-3">
-          <span class="block text-slate-400 mb-1">Additional recipients</span>
+          <label class="block text-sm text-slate-400 mb-1">Body</label>
           <textarea
-            v-model="extrasText[t.event_type]"
+            v-model="drafts[active.event_type].body"
             :disabled="managed"
-            rows="3"
-            placeholder="One email per line — commas also work."
-            class="w-full rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-slate-100 text-sm disabled:opacity-60"
+            rows="14"
+            class="w-full rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-slate-100 font-mono text-sm disabled:opacity-60"
           ></textarea>
-        </label>
-      </fieldset>
 
-      <p
-        v-if="errors[t.event_type]"
-        class="mt-2 rounded-lg bg-red-900/40 border border-red-700 text-red-200 px-3 py-2 text-sm"
-      >
-        {{ errors[t.event_type] }}
-      </p>
+          <fieldset class="mt-4 rounded-lg border border-slate-800 p-3">
+            <legend class="px-1 text-sm text-slate-400">Recipients</legend>
+            <label class="flex items-start gap-2 text-sm text-slate-300 mb-2">
+              <input
+                type="checkbox"
+                :checked="drafts[active.event_type].recipients.worker_email"
+                :disabled="managed || !active.supports_worker"
+                class="mt-1 disabled:opacity-50"
+                @change="drafts[active.event_type].recipients.worker_email = ($event.target as HTMLInputElement).checked"
+              />
+              <span class="flex flex-col">
+                <span>Send to the worker who scanned</span>
+                <span v-if="!active.supports_worker" class="text-xs text-slate-500">
+                  Not available — this event type doesn&rsquo;t carry a worker identity.
+                </span>
+              </span>
+            </label>
+            <label class="flex items-start gap-2 text-sm text-slate-300 mb-2">
+              <input
+                type="checkbox"
+                :checked="drafts[active.event_type].recipients.all_admins"
+                :disabled="managed"
+                class="mt-1"
+                @change="drafts[active.event_type].recipients.all_admins = ($event.target as HTMLInputElement).checked"
+              />
+              Send to every active admin
+            </label>
+            <label class="block text-sm text-slate-300 mt-3">
+              <span class="block text-slate-400 mb-1">Additional recipients</span>
+              <textarea
+                v-model="extrasText[active.event_type]"
+                :disabled="managed"
+                rows="3"
+                placeholder="One email per line — commas also work."
+                class="w-full rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-slate-100 text-sm disabled:opacity-60"
+              ></textarea>
+            </label>
+          </fieldset>
 
-      <footer class="mt-4 flex items-center gap-2">
-        <button
-          v-if="!managed"
-          type="button"
-          class="px-4 py-2 rounded-lg bg-brand-primary hover:bg-brand-primary-hover text-white font-medium disabled:opacity-50"
-          :disabled="!dirty(t.event_type) || saving[t.event_type]"
-          @click="save(t.event_type)"
+          <p
+            v-if="errors[active.event_type]"
+            class="mt-2 rounded-lg bg-red-900/40 border border-red-700 text-red-200 px-3 py-2 text-sm"
+          >
+            {{ errors[active.event_type] }}
+          </p>
+
+          <footer class="mt-4 flex items-center gap-2 flex-wrap">
+            <button
+              v-if="!managed"
+              type="button"
+              class="px-4 py-2 rounded-lg bg-brand-primary hover:bg-brand-primary-hover text-white font-medium disabled:opacity-50"
+              :disabled="!dirty(active.event_type) || saving[active.event_type]"
+              @click="save(active.event_type)"
+            >
+              {{ saving[active.event_type] ? 'Saving…' : 'Save' }}
+            </button>
+            <button
+              v-if="!managed"
+              type="button"
+              class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm"
+              :disabled="!dirty(active.event_type) || saving[active.event_type]"
+              @click="revert(active.event_type)"
+            >
+              Revert changes
+            </button>
+            <button
+              v-if="!managed"
+              type="button"
+              class="ml-auto px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm"
+              @click="resetToDefaults(active.event_type)"
+            >
+              Reset to defaults
+            </button>
+            <span class="text-xs text-slate-500">
+              Last updated {{ active.updated }}<span v-if="editorLabel(active)"> {{ editorLabel(active) }}</span>
+            </span>
+          </footer>
+        </div>
+        <div
+          v-else
+          class="rounded-2xl bg-slate-900 border border-slate-800 p-8 text-slate-500 text-center"
         >
-          {{ saving[t.event_type] ? 'Saving…' : 'Save' }}
-        </button>
-        <button
-          v-if="!managed"
-          type="button"
-          class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm"
-          :disabled="!dirty(t.event_type) || saving[t.event_type]"
-          @click="revert(t.event_type)"
-        >
-          Revert changes
-        </button>
-        <button
-          v-if="!managed"
-          type="button"
-          class="ml-auto px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm"
-          @click="resetToDefaults(t.event_type)"
-        >
-          Reset to defaults
-        </button>
-        <span class="text-xs text-slate-500">
-          Last updated {{ t.updated }}<span v-if="editorLabel(t)"> {{ editorLabel(t) }}</span>
-        </span>
-      </footer>
-    </section>
+          Select a template to edit.
+        </div>
+      </section>
     </div>
 
     <AppDialog

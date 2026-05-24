@@ -136,9 +136,6 @@ function onPerPageChange(n: number) {
   <main class="p-6 max-w-7xl mx-auto w-full">
     <header class="mb-4">
       <h1 class="text-2xl font-semibold">Notifications</h1>
-      <p class="text-sm text-slate-400 mt-1">
-        Email events the kiosk sends.
-      </p>
     </header>
 
     <NotificationsTabs />

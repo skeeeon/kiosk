@@ -144,10 +144,7 @@ const filteredCountLabel = computed(() => {
 <template>
   <main class="p-6 max-w-7xl mx-auto w-full">
     <header class="flex items-baseline justify-between mb-4">
-      <div>
-        <h1 class="text-2xl font-semibold">Transactions</h1>
-        <p class="text-sm text-slate-400">Aggregated from across the fleet.</p>
-      </div>
+      <h1 class="text-2xl font-semibold">Transactions</h1>
       <button
         type="button"
         class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm"
