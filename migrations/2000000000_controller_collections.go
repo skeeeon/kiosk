@@ -44,6 +44,10 @@ func RegisterControllerMigrations() {
 		// inventory_audit collection — fleet-wide projection of every
 		// inventory.adjust event for the Adjustment audit Reports tab.
 		RegisterInventoryAuditMigration()
+		// instance_lifecycle_audit collection — fleet-wide projection of
+		// every instance.lifecycle event for the Instance lifecycle
+		// Reports tab.
+		RegisterInstanceLifecycleAuditMigration()
 	})
 }
 

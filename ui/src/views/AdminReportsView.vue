@@ -14,7 +14,7 @@ import type { ItemRecord, KioskRecord } from '../types'
 const { identity } = useKioskIdentity()
 const isController = computed(() => identity.value?.role === 'controller')
 
-type Tab = 'currently-out' | 'aging' | 'low-stock' | 'group-activity' | 'recent' | 'audit' | 'notifications'
+type Tab = 'currently-out' | 'aging' | 'low-stock' | 'group-activity' | 'recent' | 'audit' | 'lifecycle' | 'notifications'
 const tab = ref<Tab>('currently-out')
 const toast = useAdminToast()
 
@@ -88,6 +88,32 @@ interface AdjustmentAuditRow {
   created: string
 }
 
+// LifecycleAuditRow models one row of the instance lifecycle audit. On the
+// controller this comes from the `instance_lifecycle_audit` collection
+// (projected from instance.lifecycle events fleet-wide); on a standalone
+// kiosk it comes from local `instance_audit` (written by the PB hooks).
+// The shapes differ in two columns:
+//   - controller has `kiosk_code` + `instance_code`; kiosk has neither
+//     (kiosk-local rows are implicitly one kiosk, and item_instance is an FK).
+//   - controller's `instance_id` is a string; kiosk's `item_instance` is an FK.
+// LifecycleAuditRow flattens both into one display shape; the loader fills
+// the kiosk-only fields with lookups when reading the FK-rich collection.
+interface LifecycleAuditRow {
+  id: string
+  kiosk_code: string
+  item_code: string
+  item_name: string
+  instance_id: string
+  instance_code: string
+  action: 'create' | 'decommission' | 'reactivate' | 'delete'
+  prev_active: boolean
+  new_active: boolean
+  reason: string
+  admin_id: string
+  source: 'local' | 'controller' | ''
+  created: string
+}
+
 // SendLogRow is one notification_send_log row, used by both the
 // totals tally and the "Recent failures" panel.
 interface SendLogRow {
@@ -145,6 +171,13 @@ const auditTotalPages = ref(1)
 const auditSourceFilter = ref<'' | 'local' | 'controller'>('')
 const auditFrom = ref<string>(defaultFromDate())
 const auditTo = ref<string>(defaultToDate())
+const lifecycleRows = ref<LifecycleAuditRow[]>([])
+const lifecyclePage = ref(1)
+const lifecycleTotalPages = ref(1)
+const lifecycleActionFilter = ref<'' | 'create' | 'decommission' | 'reactivate' | 'delete'>('')
+const lifecycleSourceFilter = ref<'' | 'local' | 'controller'>('')
+const lifecycleFrom = ref<string>(defaultFromDate())
+const lifecycleTo = ref<string>(defaultToDate())
 const notificationsLookback = ref<number>(7)
 const notificationsTotals = ref({ sent: 0, failed: 0, skipped: 0 })
 const notificationsByEvent = ref<SendLogByEvent[]>([])
@@ -435,6 +468,89 @@ async function loadAudit(page = 1) {
   }
 }
 
+// loadLifecycle reads the instance lifecycle audit. On the controller this
+// hits `instance_lifecycle_audit` (projected from instance.lifecycle events
+// fleet-wide); on a standalone kiosk it hits the local `instance_audit`
+// collection (PB-hook-driven). Same UI, different sources — the two
+// collections have slightly different shapes so the controller path uses
+// the row as-is and the kiosk path lifts the FK relations into the display
+// shape via expand + lookups.
+async function loadLifecycle(page = 1) {
+  loading.value = true
+  error.value = null
+  try {
+    const parts: string[] = []
+    if (lifecycleActionFilter.value) {
+      parts.push(`action = "${lifecycleActionFilter.value}"`)
+    }
+    if (lifecycleSourceFilter.value) {
+      parts.push(`source = "${lifecycleSourceFilter.value}"`)
+    }
+    if (lifecycleFrom.value) parts.push(`created >= "${lifecycleFrom.value} 00:00:00.000Z"`)
+    if (lifecycleTo.value) parts.push(`created <= "${lifecycleTo.value} 23:59:59.999Z"`)
+
+    if (isController.value) {
+      if (kioskFilter.value) {
+        parts.push(`kiosk_code = "${kioskFilter.value.replace(/"/g, '\\"')}"`)
+      }
+      const res = await pb.collection('instance_lifecycle_audit').getList<LifecycleAuditRow>(page, 50, {
+        filter: parts.join(' && '),
+        sort: '-created',
+      })
+      lifecycleRows.value = res.items
+      lifecyclePage.value = res.page
+      lifecycleTotalPages.value = res.totalPages
+    } else {
+      // Kiosk-local: expand item + item_instance so we can show item/code
+      // and instance code in the same table layout as the controller view.
+      // The remote collection denormalizes those columns; here we lift them
+      // from expanded FKs at render time.
+      interface KioskInstanceAuditRow {
+        id: string
+        item_instance: string
+        item: string
+        action: LifecycleAuditRow['action']
+        prev_active: boolean
+        new_active: boolean
+        reason: string
+        admin: string
+        source: 'local' | 'controller' | ''
+        created: string
+        expand?: {
+          item?: { code: string; name: string }
+          item_instance?: { code: string }
+        }
+      }
+      const res = await pb.collection('instance_audit').getList<KioskInstanceAuditRow>(page, 50, {
+        filter: parts.join(' && '),
+        sort: '-created',
+        expand: 'item,item_instance',
+      })
+      lifecycleRows.value = res.items.map((r) => ({
+        id: r.id,
+        kiosk_code: '',
+        item_code: r.expand?.item?.code ?? '',
+        item_name: r.expand?.item?.name ?? '',
+        instance_id: r.item_instance,
+        instance_code: r.expand?.item_instance?.code ?? '',
+        action: r.action,
+        prev_active: r.prev_active,
+        new_active: r.new_active,
+        reason: r.reason,
+        admin_id: r.admin,
+        source: r.source,
+        created: r.created,
+      }))
+      lifecyclePage.value = res.page
+      lifecycleTotalPages.value = res.totalPages
+    }
+  } catch (e) {
+    error.value = (e as Error).message
+  } finally {
+    loading.value = false
+  }
+}
+
 // loadNotificationsSummary aggregates notification_send_log over the
 // selected lookback window. Cheap because the table is pruned at 90d
 // retention; we pull every row in window and roll up client-side rather
@@ -572,6 +688,7 @@ function loadCurrentTab() {
   else if (tab.value === 'group-activity') loadGroupActivity()
   else if (tab.value === 'recent') loadTransactions(1)
   else if (tab.value === 'audit') loadAudit(1)
+  else if (tab.value === 'lifecycle') loadLifecycle(1)
   else if (tab.value === 'notifications') loadNotificationsSummary()
 }
 
@@ -696,6 +813,14 @@ function openTxDetail(t: TxRow) {
         @click="tab = 'audit'"
       >
         Adjustment audit
+      </button>
+      <button
+        type="button"
+        class="px-4 py-2 border-b-2 transition-colors"
+        :class="tabClasses('lifecycle')"
+        @click="tab = 'lifecycle'"
+      >
+        Instance lifecycle
       </button>
       <button
         type="button"
@@ -1228,6 +1353,150 @@ function openTxDetail(t: TxRow) {
             class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40"
             :disabled="auditPage >= auditTotalPages || loading"
             @click="loadAudit(auditPage + 1)"
+          >
+            Next
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Instance lifecycle audit -->
+    <div v-else-if="tab === 'lifecycle'" class="flex flex-col gap-3">
+      <div class="flex items-end gap-3 text-sm flex-wrap">
+        <label class="flex flex-col gap-1">
+          <span class="text-slate-400 text-xs">From</span>
+          <input
+            v-model="lifecycleFrom"
+            type="date"
+            class="rounded-lg bg-slate-900 border border-slate-700 px-2 py-1 text-slate-100"
+          />
+        </label>
+        <label class="flex flex-col gap-1">
+          <span class="text-slate-400 text-xs">To</span>
+          <input
+            v-model="lifecycleTo"
+            type="date"
+            class="rounded-lg bg-slate-900 border border-slate-700 px-2 py-1 text-slate-100"
+          />
+        </label>
+        <label class="flex flex-col gap-1">
+          <span class="text-slate-400 text-xs">Action</span>
+          <select
+            v-model="lifecycleActionFilter"
+            class="rounded-lg bg-slate-900 border border-slate-700 px-2 py-1 text-slate-100"
+          >
+            <option value="">All actions</option>
+            <option value="create">Create</option>
+            <option value="decommission">Decommission</option>
+            <option value="reactivate">Reactivate</option>
+            <option value="delete">Delete</option>
+          </select>
+        </label>
+        <label class="flex flex-col gap-1">
+          <span class="text-slate-400 text-xs">Source</span>
+          <select
+            v-model="lifecycleSourceFilter"
+            class="rounded-lg bg-slate-900 border border-slate-700 px-2 py-1 text-slate-100"
+          >
+            <option value="">All sources</option>
+            <option value="local">Local (at kiosk)</option>
+            <option value="controller">Controller (remote)</option>
+          </select>
+        </label>
+        <button
+          type="button"
+          class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200"
+          :disabled="loading"
+          @click="loadLifecycle(1)"
+        >
+          Apply
+        </button>
+        <span class="text-slate-500 text-xs ml-auto">
+          {{ isController
+            ? 'Fleet-wide projection from instance.lifecycle events.'
+            : 'Append-only audit written by the item_instances record hooks.' }}
+        </span>
+      </div>
+
+      <div class="rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden">
+        <table class="w-full text-left text-sm">
+          <thead class="bg-slate-950/70 text-slate-400">
+            <tr>
+              <th class="px-4 py-3 font-medium">When</th>
+              <th v-if="isController" class="px-4 py-3 font-medium">Kiosk</th>
+              <th class="px-4 py-3 font-medium">Item</th>
+              <th class="px-4 py-3 font-medium">Instance</th>
+              <th class="px-4 py-3 font-medium">Action</th>
+              <th class="px-4 py-3 font-medium">Active</th>
+              <th class="px-4 py-3 font-medium">Source</th>
+              <th class="px-4 py-3 font-medium">Reason</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-800">
+            <tr v-if="loading">
+              <td :colspan="isController ? 8 : 7" class="text-center text-slate-500 py-8">Loading…</td>
+            </tr>
+            <tr v-else-if="lifecycleRows.length === 0">
+              <td :colspan="isController ? 8 : 7" class="text-center text-slate-500 py-8">
+                No lifecycle events in the selected window.
+              </td>
+            </tr>
+            <tr v-for="r in lifecycleRows" :key="r.id" class="hover:bg-slate-800/40">
+              <td class="px-4 py-3 text-slate-300">{{ formatDateTime(r.created) }}</td>
+              <td v-if="isController" class="px-4 py-3 font-mono text-slate-400">{{ r.kiosk_code }}</td>
+              <td class="px-4 py-3">
+                <div class="font-medium">{{ r.item_name || '—' }}</div>
+                <div class="text-xs text-slate-500 font-mono">{{ r.item_code }}</div>
+              </td>
+              <td class="px-4 py-3 font-mono text-slate-300 text-xs">{{ r.instance_code || r.instance_id }}</td>
+              <td class="px-4 py-3">
+                <span
+                  class="inline-block px-2 py-0.5 rounded text-xs"
+                  :class="{
+                    'bg-emerald-900/60 text-emerald-200': r.action === 'create' || r.action === 'reactivate',
+                    'bg-amber-900/60 text-amber-200': r.action === 'decommission',
+                    'bg-red-900/60 text-red-200': r.action === 'delete',
+                  }"
+                >
+                  {{ r.action }}
+                </span>
+              </td>
+              <td class="px-4 py-3 text-xs text-slate-400 tabular-nums">
+                {{ r.prev_active ? 'Y' : 'N' }} → {{ r.new_active ? 'Y' : 'N' }}
+              </td>
+              <td class="px-4 py-3">
+                <span
+                  class="inline-block px-2 py-0.5 rounded text-xs"
+                  :class="r.source === 'controller'
+                    ? 'bg-sky-900/60 text-sky-200'
+                    : 'bg-slate-800/80 text-slate-300'"
+                >
+                  {{ r.source || 'local' }}
+                </span>
+              </td>
+              <td class="px-4 py-3 text-slate-400">{{ r.reason || '—' }}</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div
+          v-if="lifecycleTotalPages > 1"
+          class="flex items-center justify-between px-4 py-3 border-t border-slate-800 text-sm"
+        >
+          <button
+            type="button"
+            class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40"
+            :disabled="lifecyclePage <= 1 || loading"
+            @click="loadLifecycle(lifecyclePage - 1)"
+          >
+            Previous
+          </button>
+          <span class="text-slate-400">Page {{ lifecyclePage }} of {{ lifecycleTotalPages }}</span>
+          <button
+            type="button"
+            class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40"
+            :disabled="lifecyclePage >= lifecycleTotalPages || loading"
+            @click="loadLifecycle(lifecyclePage + 1)"
           >
             Next
           </button>

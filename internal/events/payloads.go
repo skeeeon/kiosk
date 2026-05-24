@@ -2,6 +2,17 @@ package events
 
 import "time"
 
+// Adjustment / lifecycle source. Stamped on stock_adjustments, instance_audit,
+// transactions, and the matching wire payloads to disambiguate "the local
+// admin at the touchscreen" from "the central controller forwarded the
+// command over NATS." Lives in this package because the events are where
+// the value crosses the wire; commit/handlers/commands all consume the
+// constants from here.
+const (
+	SourceLocal      = "local"
+	SourceController = "controller"
+)
+
 // TransactionCompleteInput and ItemActionInput are the source-of-truth
 // shapes for the two event payloads the kiosk emits. The commit hook (which
 // has the values in hand at commit time) and the ledger republish handler
@@ -97,6 +108,53 @@ func BuildItemActionPayload(in ItemActionInput) map[string]any {
 	}
 }
 
+// InventoryAdjustInput holds the fields needed to emit an inventory.adjust
+// event. Both kiosk-local admin adjustments and the qty side-effect of an
+// admin_close go through the same builder so the wire shape stays consistent.
+type InventoryAdjustInput struct {
+	AdjustmentID      string
+	KioskCode         string
+	LocationCode      string
+	ItemID            string
+	ItemCode          string
+	ItemName          string
+	Mode              string
+	Value             int
+	Delta             int
+	PrevQuantity      int
+	NewQuantity       int
+	Reason            string
+	Source            string // "local" | "controller"
+	AdminID           string
+	ControllerAdminID string
+	CommandID         string
+	CompletedAt       time.Time
+}
+
+// BuildInventoryAdjustPayload renders the input into the map shape the
+// publisher emits. Keys mirror EventPayload in internal/controller/consumer.go.
+func BuildInventoryAdjustPayload(in InventoryAdjustInput) map[string]any {
+	return map[string]any{
+		"adjustment_id":       in.AdjustmentID,
+		"kiosk_code":          in.KioskCode,
+		"location_code":       in.LocationCode,
+		"item_id":             in.ItemID,
+		"item_code":           in.ItemCode,
+		"item_name":           in.ItemName,
+		"mode":                in.Mode,
+		"value":               in.Value,
+		"delta":               in.Delta,
+		"prev_quantity":       in.PrevQuantity,
+		"new_quantity":        in.NewQuantity,
+		"reason":              in.Reason,
+		"source":              in.Source,
+		"admin_id":            in.AdminID,
+		"controller_admin_id": in.ControllerAdminID,
+		"command_id":          in.CommandID,
+		"completed_at":        in.CompletedAt,
+	}
+}
+
 // AdminCloseInput holds the fields needed to emit a checkout.admin_close
 // event. Source disambiguates the actor population:
 //   - "local" → AdminID is a PB record id in the kiosk's own admins collection.
@@ -158,6 +216,11 @@ func BuildAdminClosePayload(in AdminCloseInput) map[string]any {
 
 // InstanceLifecycleInput holds the fields needed to emit one instance.lifecycle
 // event. Action is "create" / "decommission" / "reactivate" / "delete".
+//
+// SourceAuditID is the kiosk-side instance_audit.id of the row this event
+// corresponds to. It's the idempotency anchor for the controller-side
+// projection — unique-when-non-empty on instance_lifecycle_audit so
+// JetStream redelivery is a no-op.
 type InstanceLifecycleInput struct {
 	InstanceID        string
 	InstanceCode      string
@@ -174,6 +237,7 @@ type InstanceLifecycleInput struct {
 	AdminID           string
 	ControllerAdminID string
 	CommandID         string
+	SourceAuditID     string
 	CompletedAt       time.Time
 }
 
@@ -196,6 +260,7 @@ func BuildInstanceLifecyclePayload(in InstanceLifecycleInput) map[string]any {
 		"admin_id":            in.AdminID,
 		"controller_admin_id": in.ControllerAdminID,
 		"command_id":          in.CommandID,
+		"source_audit_id":     in.SourceAuditID,
 		"completed_at":        in.CompletedAt,
 	}
 }

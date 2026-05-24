@@ -10,6 +10,7 @@ import (
 
 	"github.com/skeeeon/kiosk/internal/cart"
 	"github.com/skeeeon/kiosk/internal/commit"
+	"github.com/skeeeon/kiosk/internal/events"
 )
 
 // ensureAdmin creates an admins record once for AdminClose tests and returns
@@ -87,7 +88,7 @@ func TestAdminClose_NonSerialized_DeletesOpenRowAndWritesLedger(t *testing.T) {
 	result, err := commit.AdminClose(app, commit.AdminCloseInput{
 		OpenCheckoutID: openID,
 		ActorID:        adminID,
-		Source:         commit.SourceLocal,
+		Source:         events.SourceLocal,
 		Reason:         "returned_offline",
 		Notes:          "worker brought it back",
 		Identity:       testIdentity,
@@ -158,7 +159,7 @@ func TestAdminClose_Serialized_PreservesInstanceFK(t *testing.T) {
 	result, err := commit.AdminClose(app, commit.AdminCloseInput{
 		OpenCheckoutID: openID,
 		ActorID:        adminID,
-		Source:         commit.SourceLocal,
+		Source:         events.SourceLocal,
 		Reason:         "damaged",
 		Identity:       testIdentity,
 	}, (&captured{}).publish)
@@ -190,7 +191,7 @@ func TestAdminClose_IdempotentReplay_ReturnsPriorResult(t *testing.T) {
 	in := commit.AdminCloseInput{
 		OpenCheckoutID: openID,
 		ActorID:        adminID,
-		Source:         commit.SourceController,
+		Source:         events.SourceController,
 		CommandID:      "cmd-fixed-uuid",
 		Reason:         "returned_offline",
 		Identity:       testIdentity,
@@ -230,7 +231,7 @@ func TestAdminClose_ConcurrentReplay_OneTransactionRow(t *testing.T) {
 	in := commit.AdminCloseInput{
 		OpenCheckoutID: openID,
 		ActorID:        adminID,
-		Source:         commit.SourceController,
+		Source:         events.SourceController,
 		CommandID:      "cmd-race",
 		Reason:         "other",
 		Identity:       testIdentity,
@@ -273,7 +274,7 @@ func TestAdminClose_InvalidClosureReason_Rejected(t *testing.T) {
 	_, err := commit.AdminClose(app, commit.AdminCloseInput{
 		OpenCheckoutID: openID,
 		ActorID:        adminID,
-		Source:         commit.SourceLocal,
+		Source:         events.SourceLocal,
 		Reason:         "not-a-valid-reason",
 		Identity:       testIdentity,
 	}, (&captured{}).publish)
@@ -293,7 +294,7 @@ func TestAdminClose_MissingOpenCheckout_Errors(t *testing.T) {
 	_, err := commit.AdminClose(app, commit.AdminCloseInput{
 		OpenCheckoutID: "nonexistent-id",
 		ActorID:        adminID,
-		Source:         commit.SourceLocal,
+		Source:         events.SourceLocal,
 		Reason:         "lost",
 		Identity:       testIdentity,
 	}, (&captured{}).publish)
@@ -317,7 +318,7 @@ func TestAdminClose_ControllerSource_NoLocalAdminFK(t *testing.T) {
 	result, err := commit.AdminClose(app, commit.AdminCloseInput{
 		OpenCheckoutID: openID,
 		ActorID:        "controller-admin-id-not-in-kiosk-db",
-		Source:         commit.SourceController,
+		Source:         events.SourceController,
 		CommandID:      "cmd-ctrl-1",
 		Reason:         "returned_offline",
 		Identity:       testIdentity,
@@ -391,7 +392,7 @@ func TestAdminClose_Lost_NonSerialized_DecrementsQtyAndAudits(t *testing.T) {
 	_, err := commit.AdminClose(app, commit.AdminCloseInput{
 		OpenCheckoutID: openID,
 		ActorID:        adminID,
-		Source:         commit.SourceLocal,
+		Source:         events.SourceLocal,
 		Reason:         "lost",
 		Notes:          "left on jobsite",
 		Identity:       testIdentity,
@@ -461,7 +462,7 @@ func TestAdminClose_Damaged_BehavesLikeLost(t *testing.T) {
 	_, err := commit.AdminClose(app, commit.AdminCloseInput{
 		OpenCheckoutID: openID,
 		ActorID:        adminID,
-		Source:         commit.SourceLocal,
+		Source:         events.SourceLocal,
 		Reason:         "damaged",
 		Identity:       testIdentity,
 	}, pub.publish)
@@ -493,7 +494,7 @@ func TestAdminClose_ReturnedOffline_LeavesInventoryAlone(t *testing.T) {
 	_, err := commit.AdminClose(app, commit.AdminCloseInput{
 		OpenCheckoutID: openID,
 		ActorID:        adminID,
-		Source:         commit.SourceLocal,
+		Source:         events.SourceLocal,
 		Reason:         "returned_offline",
 		Identity:       testIdentity,
 	}, pub.publish)
@@ -523,7 +524,7 @@ func TestAdminClose_Other_LeavesInventoryAlone(t *testing.T) {
 	_, err := commit.AdminClose(app, commit.AdminCloseInput{
 		OpenCheckoutID: openID,
 		ActorID:        adminID,
-		Source:         commit.SourceLocal,
+		Source:         events.SourceLocal,
 		Reason:         "other",
 		Identity:       testIdentity,
 	}, (&captured{}).publish)
@@ -551,7 +552,7 @@ func TestAdminClose_Lost_Serialized_DecommissionsInstance(t *testing.T) {
 	_, err := commit.AdminClose(app, commit.AdminCloseInput{
 		OpenCheckoutID: openID,
 		ActorID:        adminID,
-		Source:         commit.SourceLocal,
+		Source:         events.SourceLocal,
 		Reason:         "lost",
 		Identity:       testIdentity,
 	}, pub.publish)
@@ -604,7 +605,7 @@ func TestAdminClose_IdempotentReplay_DoesNotDoubleDecrement(t *testing.T) {
 	in := commit.AdminCloseInput{
 		OpenCheckoutID: openID,
 		ActorID:        adminID,
-		Source:         commit.SourceController,
+		Source:         events.SourceController,
 		CommandID:      "cmd-lost-idempotent",
 		Reason:         "lost",
 		Identity:       testIdentity,

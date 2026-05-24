@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 
@@ -58,7 +59,7 @@ func (h *Handlers) AdminCloseCheckout(re *core.RequestEvent) error {
 	result, err := commit.AdminClose(h.App, commit.AdminCloseInput{
 		OpenCheckoutID: openCheckoutID,
 		ActorID:        re.Auth.Id,
-		Source:         commit.SourceLocal,
+		Source:         events.SourceLocal,
 		Reason:         body.Reason,
 		Notes:          body.Notes,
 		Identity:       kioskctx.Get(),
@@ -67,36 +68,11 @@ func (h *Handlers) AdminCloseCheckout(re *core.RequestEvent) error {
 		if dberr.IsNotFound(err) {
 			return re.NotFoundError("open_checkout not found", nil)
 		}
-		if isValidationLikeError(err) {
-			return re.BadRequestError(err.Error(), err)
+		var verr *commit.ValidationError
+		if errors.As(err, &verr) {
+			return re.BadRequestError(verr.Error(), err)
 		}
 		return re.InternalServerError("admin close failed", err)
 	}
 	return re.JSON(http.StatusOK, result)
-}
-
-// isValidationLikeError keeps the HTTP status hygiene close to other kiosk
-// handlers: the commit.AdminClose function returns plain errors for invalid
-// input (bad reason, missing identity); those should surface as 400 instead
-// of 500. The pattern is a string prefix check to avoid changing
-// commit.AdminClose's API surface for one HTTP handler — if we ever build
-// a third caller, promote these to typed sentinels.
-func isValidationLikeError(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	for _, prefix := range []string{
-		"invalid source",
-		"invalid closure_reason",
-		"open_checkout_id is required",
-		"actor id is required",
-		"command_id is required",
-		"kiosk identity is not set",
-	} {
-		if strings.HasPrefix(msg, prefix) {
-			return true
-		}
-	}
-	return false
 }

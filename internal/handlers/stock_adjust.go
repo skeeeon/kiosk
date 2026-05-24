@@ -15,15 +15,6 @@ import (
 	"github.com/skeeeon/kiosk/internal/kioskctx"
 )
 
-// Adjustment sources. The kiosk distinguishes "the local admin clicked
-// Adjust at the touchscreen" from "the central controller forwarded an
-// inventory.adjust command over NATS" so the audit log answers "who and
-// from where" in one place.
-const (
-	SourceLocal      = "local"
-	SourceController = "controller"
-)
-
 // errIdempotentReplay is a sentinel returned from inside the txn callback
 // when the dispatcher recognises a duplicate command_id. The outer code
 // catches it and returns the prior result — the (empty) txn is rolled back
@@ -67,7 +58,7 @@ func (h *Handlers) AdjustItemStock(re *core.RequestEvent) error {
 
 	// Local path: no command_id (idempotency is browser-side via the SPA's
 	// disabled-button trick — admins aren't retrying CLI requests).
-	result, err := PerformStockAdjustment(h.App, itemID, re.Auth.Id, SourceLocal, "",
+	result, err := PerformStockAdjustment(h.App, itemID, re.Auth.Id, events.SourceLocal, "",
 		body.Mode, body.Value, body.Reason)
 	if err != nil {
 		if isNotFound(err) {
@@ -76,7 +67,7 @@ func (h *Handlers) AdjustItemStock(re *core.RequestEvent) error {
 		return re.InternalServerError("adjustment failed", err)
 	}
 
-	PublishInventoryAdjustEvent(h.App, result, SourceLocal, re.Auth.Id,
+	PublishInventoryAdjustEvent(h.App, result, events.SourceLocal, re.Auth.Id,
 		body.Mode, body.Value, body.Reason)
 
 	return re.JSON(http.StatusOK, result)
@@ -98,14 +89,14 @@ type StockAdjustmentResult struct {
 // controller forwards a remote adjust). The function signature carries:
 //
 //   - actorID: the PB record ID of whoever initiated the change.
-//   - source: SourceLocal (writes actorID to the kiosk's `admin` FK) or
-//     SourceController (writes actorID to controller_admin_id, leaves
+//   - source: events.SourceLocal (writes actorID to the kiosk's `admin` FK) or
+//     events.SourceController (writes actorID to controller_admin_id, leaves
 //     `admin` null because the controller's admin doesn't exist in the
 //     kiosk's PB).
 //   - commandID: idempotency key for remote commands. Empty for local
 //     adjustments; non-empty values are unique-indexed in the schema, so
 //     a replayed command returns the prior result instead of double-
-//     applying. Always empty when source == SourceLocal.
+//     applying. Always empty when source == events.SourceLocal.
 func PerformStockAdjustment(app core.App, itemID, actorID, source, commandID, mode string, value int, reason string) (*StockAdjustmentResult, error) {
 	if mode != "delta" && mode != "absolute" {
 		return nil, fmt.Errorf("invalid mode %q", mode)
@@ -116,7 +107,7 @@ func PerformStockAdjustment(app core.App, itemID, actorID, source, commandID, mo
 	if actorID == "" {
 		return nil, fmt.Errorf("actor id is required")
 	}
-	if source != SourceLocal && source != SourceController {
+	if source != events.SourceLocal && source != events.SourceController {
 		return nil, fmt.Errorf("invalid source %q", source)
 	}
 
@@ -176,9 +167,9 @@ func PerformStockAdjustment(app core.App, itemID, actorID, source, commandID, mo
 		adj.Set("reason", reason)
 		adj.Set("source", source)
 		switch source {
-		case SourceLocal:
+		case events.SourceLocal:
 			adj.Set("admin", actorID)
-		case SourceController:
+		case events.SourceController:
 			adj.Set("controller_admin_id", actorID)
 		}
 		if commandID != "" {
@@ -256,31 +247,31 @@ func PublishInventoryAdjustEvent(app core.App, result *StockAdjustmentResult, so
 		return
 	}
 	id := kioskctx.Get()
-	payload := map[string]any{
-		"adjustment_id": result.AdjustmentID,
-		"kiosk_code":    id.KioskCode,
-		"location_code": id.LocationCode,
-		"item_id":       result.ItemID,
-		"item_code":     item.GetString("code"),
-		"item_name":     item.GetString("name"),
-		"mode":          mode,
-		"value":         value,
-		"delta":         result.Delta,
-		"prev_quantity": result.PrevQuantity,
-		"new_quantity":  result.NewQuantity,
-		"reason":        reason,
-		"source":        source,
-		"completed_at":  time.Now().UTC(),
+	in := events.InventoryAdjustInput{
+		AdjustmentID: result.AdjustmentID,
+		KioskCode:    id.KioskCode,
+		LocationCode: id.LocationCode,
+		ItemID:       result.ItemID,
+		ItemCode:     item.GetString("code"),
+		ItemName:     item.GetString("name"),
+		Mode:         mode,
+		Value:        value,
+		Delta:        result.Delta,
+		PrevQuantity: result.PrevQuantity,
+		NewQuantity:  result.NewQuantity,
+		Reason:       reason,
+		Source:       source,
+		CompletedAt:  time.Now().UTC(),
 	}
 	// admin_id keeps its historic meaning ("the local admin's PB record id")
 	// for back-compat with the controller's existing audit-log handler;
 	// controller_admin_id is only populated for source=controller rows so
 	// downstream consumers can tell which population the ID lives in.
 	switch source {
-	case SourceLocal:
-		payload["admin_id"] = actorID
-	case SourceController:
-		payload["controller_admin_id"] = actorID
+	case events.SourceLocal:
+		in.AdminID = actorID
+	case events.SourceController:
+		in.ControllerAdminID = actorID
 	}
-	events.Publish(events.InventoryAdjustSubject(id.KioskCode), payload)
+	events.Publish(events.InventoryAdjustSubject(id.KioskCode), events.BuildInventoryAdjustPayload(in))
 }

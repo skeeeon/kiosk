@@ -77,7 +77,7 @@ func (d *Dispatcher) handleCheckoutClose(_ context.Context, payload []byte) Repl
 	result, err := commit.AdminClose(d.app, commit.AdminCloseInput{
 		OpenCheckoutID: openCheckoutID,
 		ActorID:        req.ControllerAdminID,
-		Source:         commit.SourceController,
+		Source:         events.SourceController,
 		CommandID:      req.CommandID,
 		Reason:         strings.TrimSpace(req.Reason),
 		Notes:          strings.TrimSpace(req.Notes),

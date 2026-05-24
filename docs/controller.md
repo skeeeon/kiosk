@@ -85,6 +85,27 @@ of truth for catalog plus a unified transaction ledger.
   redelivery is a no-op. Drives the Reports → Adjustment audit tab so
   operators can answer "every stock change, every kiosk, who did it
   and when" without hopping kiosks.
+- **Instance lifecycle audit.** Every `instance.lifecycle` event the
+  aggregator receives is projected into the controller's
+  `instance_lifecycle_audit` collection — denormalized
+  (`kiosk_code`, `item_code`, `instance_id`, `instance_code`, `action`,
+  `prev_active`, `new_active`, `reason`, `source`, `admin_id`).
+  Idempotent via a unique-when-non-empty `source_audit_id` index that
+  carries the kiosk-side `instance_audit.id` of the row that generated
+  the event. Drives the Reports → Instance lifecycle tab; the
+  standalone-kiosk SPA shows the same tab against its local
+  `instance_audit`, so feature parity holds across managed and
+  unmanaged deployments.
+- **Admin force-close forwarding.**
+  `POST /api/controller/kiosks/{code}/checkouts/{source_line_id}/close`
+  forwards a force-close to a remote kiosk over NATS request/reply
+  (`checkout.close` command). The kiosk-side handler converges on
+  `commit.AdminClose`, so the close behaves identically to a locally
+  initiated close: same ledger writes, same qty side-effect for
+  `lost` / `damaged`, same `instance.lifecycle` event when retiring a
+  serialized unit. The controller server-generates the `command_id` so
+  retries are idempotent end-to-end (the kiosk's `transactions.command_id`
+  unique-when-non-empty index catches duplicates).
 - **Fleet-wide low-stock report.**
   `GET /api/controller/reports/low-stock` fans `inventory.snapshot` to
   every currently-online managed kiosk in parallel, joins each kiosk's
@@ -114,18 +135,19 @@ What it **doesn't** do in v1 (deliberately out of scope):
 
 ## Reports surface
 
-The controller's Reports view exposes seven tabs. Five of them work on
+The controller's Reports view exposes eight tabs. Five of them work on
 the projected ledger (`transactions` + `transaction_lines` populated by
-the aggregator); two are new with the audit + fan-out work:
+the aggregator); three project from dedicated event subjects:
 
 | Tab | Source | Notes |
 |---|---|---|
-| Currently out | `GET /api/kiosk/reports/open-checkouts` (controller impl reconstructs via `ledger.ReplayOpenRows`) | Honors `?kiosk_code=` |
-| Aging | Same source as Currently out, bucketed by user with oldest-out-first sort | Per-user rollup; threshold is a display hint, not a filter |
+| Currently out | `GET /api/kiosk/reports/open-checkouts` (controller impl reconstructs via `ledger.ReplayOpenRows`) | Honors `?kiosk_code=`; per-row "Close…" affordance forwards to the remote kiosk via the admin force-close endpoint |
+| Aging | Same source as Currently out, bucketed by user with oldest-out-first sort | Per-user rollup; threshold is a display hint, not a filter; per-row "Close…" affordance same as above |
 | Low stock | `GET /api/controller/reports/low-stock` (snapshot fan-out) | Offline kiosks listed under `errors` for partial-result transparency |
 | Group activity | `transactions` + `transaction_lines` + `groups` via pb-sdk, rolled up client-side | Date range filter |
 | Recent transactions | `transactions` via pb-sdk, paginated | Click to drill into a transaction |
 | Adjustment audit | `inventory_audit` via pb-sdk, paginated | Filters: from / to / source (local vs controller); kiosk filter from the page header |
+| Instance lifecycle | `instance_lifecycle_audit` via pb-sdk, paginated | Filters: from / to / action (create/decommission/reactivate/delete) / source; kiosk filter from the page header. Same tab works on standalone kiosks against their local `instance_audit` |
 | Notifications | `notification_send_log` via pb-sdk, rolled up client-side | Per-event success-rate table, recent-failures panel; same tab works on standalone kiosks against their own send log |
 
 ## NATS provisioning

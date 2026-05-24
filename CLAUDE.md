@@ -134,9 +134,22 @@ Three invariants:
    `<prefix>.{kiosk_code}.item.{action}` from the commit hook;
    `<prefix>.{kiosk_code}.inventory.adjust` from the admin stock-adjust
    handler (both local HTTP and remote command paths emit the same shape
-   via `handlers.PublishInventoryAdjustEvent`);
+   via `handlers.PublishInventoryAdjustEvent`, and `commit.AdminClose`
+   emits the same subject for the qty side-effect of lost/damaged closes);
    `<prefix>.{kiosk_code}.integrity.rebuild` from the open_checkouts
-   rebuild handler. The prefix is `"kiosk"` by default and configurable
+   rebuild handler;
+   `<prefix>.{kiosk_code}.checkout.admin_close` from `commit.AdminClose`
+   (one per row closed; the matching transaction also rides
+   `transaction.complete` and the line rides `item.admin_close`-equivalent
+   via the regular `transaction_lines` projection);
+   `<prefix>.{kiosk_code}.instance.lifecycle` from the `item_instances`
+   PB record hooks (create / decommission / reactivate / delete; cosmetic
+   edits skip) AND from `commit.AdminClose` when a serialized
+   `lost`/`damaged` close decommissions the instance. The
+   `instance.lifecycle` payload carries `source_audit_id` (the kiosk-side
+   `instance_audit.id`) so the controller's projection is idempotent under
+   redelivery — same anchor strategy as `inventory.adjust`'s
+   `adjustment_id`. The prefix is `"kiosk"` by default and configurable
    via `nats.subject_prefix`; subjects are built through shared helpers in
    `internal/events/subjects.go` (single source of truth for both the
    kiosk publisher and the controller's stream/consumer filters) — don't
@@ -287,18 +300,25 @@ the same row.
 
 **Controller seam.** When extending the central service:
 
-- **Aggregation:** `internal/controller/consumer.go`. The `ProjectTransaction`
-  and `ProjectLine` methods are pure-DB functions; `handle` wraps them with
-  JetStream ack/nak. `EventPayload` is a permissive superset of every event
-  shape — new event fields go there and JSON-decode best-effort. Add new
-  event subjects by (1) adding a builder + filter helper in
-  `internal/events/subjects.go`, (2) extending the consumer's `FilterSubjects`
-  via those helpers, and (3) adding a case to the dispatch switch in
-  `handle`. Today `inventory.adjust` and `integrity.rebuild` are
-  ack-and-log only — they reach the controller for future projection
-  without committing the consumer to one. The stream name comes from
-  `cfg.NATS.StreamName` (default `events.DefaultStreamName`) and is
-  passed to `NewAggregator`.
+- **Aggregation:** `internal/controller/consumer.go`. The `ProjectTransaction`,
+  `ProjectLine`, `ProjectInventoryAudit`, and `ProjectInstanceLifecycle`
+  methods are pure-DB functions; `handle` wraps them with JetStream ack/nak.
+  `EventPayload` is a permissive superset of every event shape — new event
+  fields go there and JSON-decode best-effort. Add new event subjects by
+  (1) adding a builder + filter helper in `internal/events/subjects.go`,
+  (2) extending the consumer's `FilterSubjects` via those helpers, and
+  (3) adding a case to the dispatch switch in `handle`. Today the projected
+  events are `transaction.complete` → `transactions`, `item.{action}` →
+  `transaction_lines`, `inventory.adjust` → `inventory_audit`, and
+  `instance.lifecycle` → `instance_lifecycle_audit`. `integrity.rebuild`
+  and `checkout.admin_close` reach the controller but ack-and-log only;
+  the admin_close transaction itself rides `transaction.complete` and is
+  projected normally, so a future projector for the dedicated subject is
+  optional. The audit projections are idempotent against
+  unique-when-non-empty indexes on `source_adjustment_id` /
+  `source_audit_id` — JetStream redelivery is a no-op. The stream name
+  comes from `cfg.NATS.StreamName` (default `events.DefaultStreamName`)
+  and is passed to `NewAggregator`.
 - **Catalog publishing:** `internal/controller/catalog_publisher.go`.
   Items are **not broadcast** — `publishItemToMembers` loops over
   `KiosksForItem` (in `internal/controller/membership.go`) and writes one

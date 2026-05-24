@@ -9,6 +9,7 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 
 	"github.com/skeeeon/kiosk/internal/dberr"
+	"github.com/skeeeon/kiosk/internal/events"
 	"github.com/skeeeon/kiosk/internal/handlers"
 )
 
@@ -75,7 +76,7 @@ func (d *Dispatcher) handleInventoryAdjust(_ context.Context, payload []byte) Re
 	}
 
 	result, err := handlers.PerformStockAdjustment(d.app, item.Id, req.ControllerAdminID,
-		handlers.SourceController, req.CommandID, req.Mode, req.Value, req.Reason)
+		events.SourceController, req.CommandID, req.Mode, req.Value, req.Reason)
 	if err != nil {
 		return Reply{Success: false, Error: "adjustment failed: " + err.Error()}
 	}
@@ -84,7 +85,7 @@ func (d *Dispatcher) handleInventoryAdjust(_ context.Context, payload []byte) Re
 	// the controller's aggregator sees one event type regardless of origin.
 	// Idempotent replays still publish — the event is the audit signal, and
 	// downstream consumers dedupe on adjustment_id if needed.
-	handlers.PublishInventoryAdjustEvent(d.app, result, handlers.SourceController,
+	handlers.PublishInventoryAdjustEvent(d.app, result, events.SourceController,
 		req.ControllerAdminID, req.Mode, req.Value, req.Reason)
 
 	return Reply{Success: true, Data: inventoryAdjustReply{

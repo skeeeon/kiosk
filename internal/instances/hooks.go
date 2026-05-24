@@ -42,11 +42,11 @@ func (natsPublisher) Publish(subject string, payload any) {
 type Hooks struct {
 	pub publisher
 
-	// pendingDelete: item_instances.id → captured snapshot from OnRecordDelete.
-	// Read and removed in OnRecordAfterDeleteSuccess. sync.Map because PB may
-	// fire hooks from any goroutine; lock contention is irrelevant at the
-	// volume this collection sees.
-	pendingDelete sync.Map
+	// pendingDelete: item_instances.id → captured snapshot from OnRecordDelete,
+	// read and removed in OnRecordAfterDeleteSuccess. PB may fire hooks from
+	// any goroutine; a plain mutex is enough at this collection's volume.
+	pendingMu     sync.Mutex
+	pendingDelete map[string]deleteSnapshot
 }
 
 // New constructs a Hooks bound to events.Publish. Use NewWith for tests.
@@ -56,7 +56,28 @@ func New() *Hooks {
 
 // NewWith allows callers (tests) to inject a custom publisher.
 func NewWith(pub publisher) *Hooks {
-	return &Hooks{pub: pub}
+	return &Hooks{pub: pub, pendingDelete: map[string]deleteSnapshot{}}
+}
+
+// storePending captures a snapshot of an item_instance row about to be
+// deleted, keyed by id.
+func (h *Hooks) storePending(id string, snap deleteSnapshot) {
+	h.pendingMu.Lock()
+	h.pendingDelete[id] = snap
+	h.pendingMu.Unlock()
+}
+
+// takePending returns the snapshot for an id and removes it from the map.
+// Returns the zero value + false when the id wasn't captured (anonymous
+// delete with no admin context — see OnRecordDeleteRequest).
+func (h *Hooks) takePending(id string) (deleteSnapshot, bool) {
+	h.pendingMu.Lock()
+	snap, ok := h.pendingDelete[id]
+	if ok {
+		delete(h.pendingDelete, id)
+	}
+	h.pendingMu.Unlock()
+	return snap, ok
 }
 
 // Register binds the hooks on the given app. Safe to call once at boot.
@@ -127,16 +148,15 @@ func (h *Hooks) Register(app core.App) {
 		if snap.adminID == "" {
 			return e.Next()
 		}
-		h.pendingDelete.Store(e.Record.Id, snap)
+		h.storePending(e.Record.Id, snap)
 		return e.Next()
 	})
 
 	app.OnRecordAfterDeleteSuccess("item_instances").BindFunc(func(e *core.RecordEvent) error {
-		v, ok := h.pendingDelete.LoadAndDelete(e.Record.Id)
+		snap, ok := h.takePending(e.Record.Id)
 		if !ok {
 			return e.Next()
 		}
-		snap := v.(deleteSnapshot)
 		// Build the audit row from the snapshot. The record itself is now
 		// stale (PB may have wiped its fields), so we don't pass e.Record
 		// through; we build from snap.
@@ -209,7 +229,7 @@ func (h *Hooks) writeAudit(app core.App, in auditInput) {
 		rec.Set("reason", in.Reason)
 	}
 	rec.Set("admin", in.AdminID)
-	rec.Set("source", "local")
+	rec.Set("source", events.SourceLocal)
 	if err := app.Save(rec); err != nil {
 		slog.Warn("instances.audit.save_failed",
 			"instance_id", in.Record.Id, "action", in.Action, "error", err)
@@ -219,20 +239,21 @@ func (h *Hooks) writeAudit(app core.App, in auditInput) {
 	id := kioskctx.Get()
 	itemCode, itemName := lookupItemCode(app, in.Record.GetString("item"))
 	payload := events.BuildInstanceLifecyclePayload(events.InstanceLifecycleInput{
-		InstanceID:   in.Record.Id,
-		InstanceCode: in.Record.GetString("code"),
-		ItemID:       in.Record.GetString("item"),
-		ItemCode:     itemCode,
-		ItemName:     itemName,
-		KioskCode:    id.KioskCode,
-		LocationCode: id.LocationCode,
-		Action:       in.Action,
-		PrevActive:   in.PrevActive,
-		NewActive:    in.NewActive,
-		Reason:       in.Reason,
-		Source:       "local",
-		AdminID:      in.AdminID,
-		CompletedAt:  time.Now().UTC(),
+		InstanceID:    in.Record.Id,
+		InstanceCode:  in.Record.GetString("code"),
+		ItemID:        in.Record.GetString("item"),
+		ItemCode:      itemCode,
+		ItemName:      itemName,
+		KioskCode:     id.KioskCode,
+		LocationCode:  id.LocationCode,
+		Action:        in.Action,
+		PrevActive:    in.PrevActive,
+		NewActive:     in.NewActive,
+		Reason:        in.Reason,
+		Source:        events.SourceLocal,
+		AdminID:       in.AdminID,
+		SourceAuditID: rec.Id,
+		CompletedAt:   time.Now().UTC(),
 	})
 	h.pub.Publish(events.InstanceLifecycleSubject(id.KioskCode), payload)
 }
@@ -254,7 +275,7 @@ func (h *Hooks) writeAuditFromSnapshot(app core.App, snap deleteSnapshot) {
 		rec.Set("reason", snap.reason)
 	}
 	rec.Set("admin", snap.adminID)
-	rec.Set("source", "local")
+	rec.Set("source", events.SourceLocal)
 	if err := app.Save(rec); err != nil {
 		slog.Warn("instances.audit.save_failed",
 			"instance_id", snap.id, "action", "delete", "error", err)
@@ -264,20 +285,21 @@ func (h *Hooks) writeAuditFromSnapshot(app core.App, snap deleteSnapshot) {
 	id := kioskctx.Get()
 	itemCode, itemName := lookupItemCode(app, snap.itemID)
 	payload := events.BuildInstanceLifecyclePayload(events.InstanceLifecycleInput{
-		InstanceID:   snap.id,
-		InstanceCode: snap.code,
-		ItemID:       snap.itemID,
-		ItemCode:     itemCode,
-		ItemName:     itemName,
-		KioskCode:    id.KioskCode,
-		LocationCode: id.LocationCode,
-		Action:       "delete",
-		PrevActive:   snap.prevActive,
-		NewActive:    false,
-		Reason:       snap.reason,
-		Source:       "local",
-		AdminID:      snap.adminID,
-		CompletedAt:  time.Now().UTC(),
+		InstanceID:    snap.id,
+		InstanceCode:  snap.code,
+		ItemID:        snap.itemID,
+		ItemCode:      itemCode,
+		ItemName:      itemName,
+		KioskCode:     id.KioskCode,
+		LocationCode:  id.LocationCode,
+		Action:        "delete",
+		PrevActive:    snap.prevActive,
+		NewActive:     false,
+		Reason:        snap.reason,
+		Source:        events.SourceLocal,
+		AdminID:       snap.adminID,
+		SourceAuditID: rec.Id,
+		CompletedAt:   time.Now().UTC(),
 	})
 	h.pub.Publish(events.InstanceLifecycleSubject(id.KioskCode), payload)
 }

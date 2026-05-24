@@ -13,15 +13,19 @@ import (
 	"github.com/skeeeon/kiosk/internal/kioskctx"
 )
 
-// SourceLocal / SourceController disambiguate who initiated a close so the
-// audit trail can distinguish "kiosk-local admin in the touchscreen UI" from
-// "central controller forwarded a command over NATS". Mirrors the constants
-// in handlers.SourceLocal / SourceController for symmetry — duplicated here
-// because internal/commit must not depend on internal/handlers.
-const (
-	SourceLocal      = "local"
-	SourceController = "controller"
-)
+// ValidationError signals that the caller's AdminCloseInput is malformed —
+// missing required fields, invalid enum values, unset identity. Handlers
+// translate this to 400 Bad Request via errors.As. Internal/DB errors keep
+// surfacing as plain `error` so they map to 500.
+type ValidationError struct {
+	Msg string
+}
+
+func (e *ValidationError) Error() string { return e.Msg }
+
+func validationErrorf(format string, args ...any) error {
+	return &ValidationError{Msg: fmt.Sprintf(format, args...)}
+}
 
 // validClosureReasons mirrors the select-enum on transaction_lines.closure_reason
 // (see migrations/1789000000_admin_close.go). The list lives here too so the
@@ -45,25 +49,20 @@ func reasonAffectsInventory(reason string) bool {
 	return reason == "lost" || reason == "damaged"
 }
 
-// errAdminCloseIdempotentReplay is the sentinel returned from inside the
-// txn callback when a duplicate command_id is detected. The outer wrapper
-// catches it, rolls back the (empty) txn, and returns the prior result.
-var errAdminCloseIdempotentReplay = errors.New("admin_close idempotent replay")
-
 // AdminCloseInput packages the values a single admin force-close needs.
 // Carrying them as a struct keeps the public signature small and survives
 // when fields are added (callers don't have to update positional args).
 type AdminCloseInput struct {
 	OpenCheckoutID string
 
-	// ActorID is the admin who initiated this close. For SourceLocal it's a
-	// PB record ID in the kiosk's admins collection; for SourceController
+	// ActorID is the admin who initiated this close. For events.SourceLocal it's a
+	// PB record ID in the kiosk's admins collection; for events.SourceController
 	// it's the controller admin's PB record ID (which doesn't exist in the
 	// kiosk's DB, so we store it as plain text in controller_admin_id-ish
 	// fields and leave the FK admin column null).
 	ActorID string
 
-	// Source must be SourceLocal or SourceController. Determines which actor
+	// Source must be events.SourceLocal or events.SourceController. Determines which actor
 	// column on transactions/transaction_lines we populate.
 	Source string
 
@@ -110,22 +109,22 @@ type AdminCloseResult struct {
 // the caller's input.
 func AdminClose(app core.App, in AdminCloseInput, publish PublishFunc) (*AdminCloseResult, error) {
 	if in.OpenCheckoutID == "" {
-		return nil, errors.New("open_checkout_id is required")
+		return nil, validationErrorf("open_checkout_id is required")
 	}
 	if in.ActorID == "" {
-		return nil, errors.New("actor id is required")
+		return nil, validationErrorf("actor id is required")
 	}
-	if in.Source != SourceLocal && in.Source != SourceController {
-		return nil, fmt.Errorf("invalid source %q", in.Source)
+	if in.Source != events.SourceLocal && in.Source != events.SourceController {
+		return nil, validationErrorf("invalid source %q", in.Source)
 	}
-	if in.Source == SourceController && in.CommandID == "" {
-		return nil, errors.New("command_id is required for controller-source closes")
+	if in.Source == events.SourceController && in.CommandID == "" {
+		return nil, validationErrorf("command_id is required for controller-source closes")
 	}
 	if _, ok := validClosureReasons[in.Reason]; !ok {
-		return nil, fmt.Errorf("invalid closure_reason %q", in.Reason)
+		return nil, validationErrorf("invalid closure_reason %q", in.Reason)
 	}
 	if in.Identity.KioskCode == "" || in.Identity.LocationCode == "" {
-		return nil, errors.New("kiosk identity is not set")
+		return nil, validationErrorf("kiosk identity is not set")
 	}
 	if publish == nil {
 		// Default to a no-op so callers in tests can pass nil. Production
@@ -134,6 +133,17 @@ func AdminClose(app core.App, in AdminCloseInput, publish PublishFunc) (*AdminCl
 	}
 
 	completedAt := time.Now().UTC()
+
+	// Fast-path idempotency: a remote command_id that's already produced a
+	// transaction returns the prior result without entering the txn at all.
+	// The slow path (unique-violation on save) is handled after the txn.
+	if in.CommandID != "" {
+		if prior, err := findAdminCloseByCommandID(app, in.CommandID); err != nil {
+			return nil, err
+		} else if prior != nil {
+			return prior, nil
+		}
+	}
 
 	// pendingEvent queues post-commit publishes so we don't fire events for
 	// a rolled-back transaction. We accumulate inside the txn callback and
@@ -149,17 +159,6 @@ func AdminClose(app core.App, in AdminCloseInput, publish PublishFunc) (*AdminCl
 	)
 
 	err := app.RunInTransaction(func(tx core.App) error {
-		// Fast-path idempotency: a remote command_id that's already produced
-		// a transaction returns the prior result without re-doing the work.
-		if in.CommandID != "" {
-			if prior, perr := findPriorAdminClose(tx, in.CommandID); perr != nil {
-				return perr
-			} else if prior != nil {
-				out = *prior
-				return errAdminCloseIdempotentReplay
-			}
-		}
-
 		openRec, err := tx.FindRecordById("open_checkouts", in.OpenCheckoutID)
 		if err != nil {
 			return fmt.Errorf("find open_checkout %s: %w", in.OpenCheckoutID, err)
@@ -204,16 +203,13 @@ func AdminClose(app core.App, in AdminCloseInput, publish PublishFunc) (*AdminCl
 		txRec.Set("completed_at", completedAt)
 		txRec.Set("status", "completed")
 		txRec.Set("lines_count", 1)
-		if in.Source == SourceLocal {
+		if in.Source == events.SourceLocal {
 			txRec.Set("closed_by_admin", in.ActorID)
 		}
 		if in.CommandID != "" {
 			txRec.Set("command_id", in.CommandID)
 		}
 		if err := tx.Save(txRec); err != nil {
-			if in.CommandID != "" && dberr.IsUniqueViolation(err) {
-				return errAdminCloseIdempotentReplay
-			}
 			return fmt.Errorf("save transaction: %w", err)
 		}
 
@@ -233,7 +229,7 @@ func AdminClose(app core.App, in AdminCloseInput, publish PublishFunc) (*AdminCl
 		// parent transaction.user is the same value (admin_close always
 		// closes one worker's row).
 		lineRec.Set("original_checkout_user", userID)
-		if in.Source == SourceLocal {
+		if in.Source == events.SourceLocal {
 			lineRec.Set("closed_by_admin", in.ActorID)
 		}
 		lineRec.Set("closure_reason", in.Reason)
@@ -253,31 +249,6 @@ func AdminClose(app core.App, in AdminCloseInput, publish PublishFunc) (*AdminCl
 		// instance to active=false + write an instance_audit row. All in
 		// the same DB transaction so a partial state is impossible. Events
 		// publish post-commit alongside the close event.
-		if reasonAffectsInventory(in.Reason) {
-			adjID, prevQty, newQty, perr := applyLostOrDamagedQtyAdjust(tx, in, itemRec, completedAt)
-			if perr != nil {
-				return perr
-			}
-			pending = append(pending, pendingEvent{
-				Subject: events.InventoryAdjustSubject(in.Identity.KioskCode),
-				Payload: buildAdminCloseInventoryAdjustPayload(in, itemRec, adjID,
-					prevQty, newQty, completedAt),
-			})
-
-			if instanceID != "" {
-				prevActive, derr := decommissionInstanceForAdminClose(tx, in,
-					instanceID, itemID)
-				if derr != nil {
-					return derr
-				}
-				pending = append(pending, pendingEvent{
-					Subject: events.InstanceLifecycleSubject(in.Identity.KioskCode),
-					Payload: buildAdminCloseInstanceLifecyclePayload(in, itemRec,
-						instanceID, prevActive, completedAt),
-				})
-			}
-		}
-
 		out = AdminCloseResult{
 			TransactionID:  txRec.Id,
 			LineID:         lineRec.Id,
@@ -289,7 +260,7 @@ func AdminClose(app core.App, in AdminCloseInput, publish PublishFunc) (*AdminCl
 			ClosureReason:  in.Reason,
 		}
 
-		input := events.AdminCloseInput{
+		closeInput := events.AdminCloseInput{
 			TransactionID:  txRec.Id,
 			LineID:         lineRec.Id,
 			KioskCode:      in.Identity.KioskCode,
@@ -311,34 +282,62 @@ func AdminClose(app core.App, in AdminCloseInput, publish PublishFunc) (*AdminCl
 			CompletedAt:    completedAt,
 		}
 		switch in.Source {
-		case SourceLocal:
-			input.AdminID = in.ActorID
-		case SourceController:
-			input.ControllerAdminID = in.ActorID
+		case events.SourceLocal:
+			closeInput.AdminID = in.ActorID
+		case events.SourceController:
+			closeInput.ControllerAdminID = in.ActorID
 		}
-		// Prepend the close event so consumers that care about ordering see
-		// "close" before "inventory.adjust" / "instance.lifecycle" — the
-		// close is logically the parent event and the others are its
-		// consequences.
-		pending = append([]pendingEvent{{
+		// Append the close event first so it leads the publish order — it's
+		// the parent event; the qty + lifecycle side-effects below are its
+		// consequences. NATS doesn't promise cross-subject order to
+		// downstream consumers, but matching the publish order to the
+		// causal order keeps logs (and tests) readable.
+		pending = append(pending, pendingEvent{
 			Subject: events.AdminCloseSubject(in.Identity.KioskCode),
-			Payload: events.BuildAdminClosePayload(input),
-		}}, pending...)
+			Payload: events.BuildAdminClosePayload(closeInput),
+		})
+
+		if reasonAffectsInventory(in.Reason) {
+			adjID, prevQty, newQty, perr := applyLostOrDamagedQtyAdjust(tx, in, itemRec, completedAt)
+			if perr != nil {
+				return perr
+			}
+			pending = append(pending, pendingEvent{
+				Subject: events.InventoryAdjustSubject(in.Identity.KioskCode),
+				Payload: buildAdminCloseInventoryAdjustPayload(in, itemRec, adjID,
+					prevQty, newQty, completedAt),
+			})
+
+			if instanceID != "" {
+				prevActive, auditID, derr := decommissionInstanceForAdminClose(tx, in,
+					instanceID, itemID)
+				if derr != nil {
+					return derr
+				}
+				pending = append(pending, pendingEvent{
+					Subject: events.InstanceLifecycleSubject(in.Identity.KioskCode),
+					Payload: buildAdminCloseInstanceLifecyclePayload(in, itemRec,
+						instanceID, auditID, prevActive, completedAt),
+				})
+			}
+		}
 		return nil
 	})
 
-	if errors.Is(err, errAdminCloseIdempotentReplay) {
-		// Slow path may leave out unpopulated; refetch by command_id.
-		if out.TransactionID == "" && in.CommandID != "" {
-			refetch, ferr := fetchAdminCloseByCommandID(app, in.CommandID)
+	if err != nil {
+		// Slow-path idempotency: a concurrent inserter beat us to the
+		// command_id. Re-lookup outside the rolled-back txn and return
+		// the winner. Vanishingly rare with controller-issued UUIDs +
+		// SQLite's single-writer model, but cheap to handle.
+		if in.CommandID != "" && dberr.IsUniqueViolation(err) {
+			prior, ferr := findAdminCloseByCommandID(app, in.CommandID)
 			if ferr != nil {
 				return nil, ferr
 			}
-			out = *refetch
+			if prior != nil {
+				return prior, nil
+			}
 		}
-		return &out, nil
-	}
-	if err != nil {
 		return nil, err
 	}
 
@@ -373,9 +372,9 @@ func applyLostOrDamagedQtyAdjust(tx core.App, in AdminCloseInput, itemRec *core.
 	adj.Set("reason", "admin_close: "+in.Reason)
 	adj.Set("source", in.Source)
 	switch in.Source {
-	case SourceLocal:
+	case events.SourceLocal:
 		adj.Set("admin", in.ActorID)
-	case SourceController:
+	case events.SourceController:
 		adj.Set("controller_admin_id", in.ActorID)
 	}
 	// command_id intentionally NOT propagated: the unique-when-non-empty
@@ -393,28 +392,31 @@ func applyLostOrDamagedQtyAdjust(tx core.App, in AdminCloseInput, itemRec *core.
 // decommissionInstanceForAdminClose flips item_instances.active to false
 // and writes the matching instance_audit row inside the supplied
 // transaction. Returns the previous active state so the caller can build
-// the instance.lifecycle event with the prev/new flag pair.
-func decommissionInstanceForAdminClose(tx core.App, in AdminCloseInput, instanceID, itemID string) (bool, error) {
+// the instance.lifecycle event with the prev/new flag pair. Returns the
+// audit row id so the caller can stamp it on the lifecycle event as the
+// controller-side projection's idempotency anchor; empty when no audit row
+// was written (already decommissioned).
+func decommissionInstanceForAdminClose(tx core.App, in AdminCloseInput, instanceID, itemID string) (prevActive bool, auditID string, err error) {
 	instRec, err := tx.FindRecordById("item_instances", instanceID)
 	if err != nil {
-		return false, fmt.Errorf("find item_instance %s: %w", instanceID, err)
+		return false, "", fmt.Errorf("find item_instance %s: %w", instanceID, err)
 	}
-	prevActive := instRec.GetBool("active")
+	prevActive = instRec.GetBool("active")
 	if !prevActive {
 		// Already decommissioned (rare — would mean someone retired the
 		// instance manually but didn't close its open checkout). Don't
 		// write a no-op audit row, but still report prevActive=false so
 		// the event reflects reality.
-		return false, nil
+		return false, "", nil
 	}
 	instRec.Set("active", false)
 	if err := tx.Save(instRec); err != nil {
-		return false, fmt.Errorf("set instance inactive: %w", err)
+		return false, "", fmt.Errorf("set instance inactive: %w", err)
 	}
 
 	col, err := tx.FindCollectionByNameOrId("instance_audit")
 	if err != nil {
-		return false, fmt.Errorf("find instance_audit collection: %w", err)
+		return false, "", fmt.Errorf("find instance_audit collection: %w", err)
 	}
 	audit := core.NewRecord(col)
 	audit.Set("item_instance", instanceID)
@@ -425,95 +427,90 @@ func decommissionInstanceForAdminClose(tx core.App, in AdminCloseInput, instance
 	audit.Set("reason", "admin_close: "+in.Reason)
 	audit.Set("source", in.Source)
 	switch in.Source {
-	case SourceLocal:
+	case events.SourceLocal:
 		audit.Set("admin", in.ActorID)
-	case SourceController:
+	case events.SourceController:
 		audit.Set("controller_admin_id", in.ActorID)
 	}
 	if err := tx.Save(audit); err != nil {
-		return false, fmt.Errorf("save instance_audit: %w", err)
+		return false, "", fmt.Errorf("save instance_audit: %w", err)
 	}
-	return true, nil
+	return true, audit.Id, nil
 }
 
 // buildAdminCloseInventoryAdjustPayload renders the inventory.adjust event
-// payload using the same shape PerformStockAdjustment + PublishInventoryAdjustEvent
-// emit, so the controller's existing aggregator picks these up without a
-// new code path. Keys mirror EventPayload in internal/controller/consumer.go.
+// payload using the same builder PerformStockAdjustment + PublishInventoryAdjustEvent
+// use, so the controller's existing aggregator picks these up without a
+// new code path.
 func buildAdminCloseInventoryAdjustPayload(in AdminCloseInput, itemRec *core.Record, adjID string, prevQty, newQty int, completedAt time.Time) map[string]any {
-	payload := map[string]any{
-		"adjustment_id": adjID,
-		"kiosk_code":    in.Identity.KioskCode,
-		"location_code": in.Identity.LocationCode,
-		"item_id":       itemRec.Id,
-		"item_code":     itemRec.GetString("code"),
-		"item_name":     itemRec.GetString("name"),
-		"mode":          "delta",
-		"value":         -1,
-		"delta":         -1,
-		"prev_quantity": prevQty,
-		"new_quantity":  newQty,
-		"reason":        "admin_close: " + in.Reason,
-		"source":        in.Source,
-		"completed_at":  completedAt,
-	}
-	switch in.Source {
-	case SourceLocal:
-		payload["admin_id"] = in.ActorID
-	case SourceController:
-		payload["controller_admin_id"] = in.ActorID
-	}
-	return payload
-}
-
-// buildAdminCloseInstanceLifecyclePayload renders the instance.lifecycle
-// event payload for the decommission caused by an admin close. Reuses the
-// existing builder so the wire shape matches hook-driven events.
-func buildAdminCloseInstanceLifecyclePayload(in AdminCloseInput, itemRec *core.Record, instanceID string, prevActive bool, completedAt time.Time) map[string]any {
-	input := events.InstanceLifecycleInput{
-		InstanceID:   instanceID,
+	input := events.InventoryAdjustInput{
+		AdjustmentID: adjID,
+		KioskCode:    in.Identity.KioskCode,
+		LocationCode: in.Identity.LocationCode,
 		ItemID:       itemRec.Id,
 		ItemCode:     itemRec.GetString("code"),
 		ItemName:     itemRec.GetString("name"),
-		KioskCode:    in.Identity.KioskCode,
-		LocationCode: in.Identity.LocationCode,
-		Action:       "decommission",
-		PrevActive:   prevActive,
-		NewActive:    false,
+		Mode:         "delta",
+		Value:        -1,
+		Delta:        -1,
+		PrevQuantity: prevQty,
+		NewQuantity:  newQty,
 		Reason:       "admin_close: " + in.Reason,
 		Source:       in.Source,
 		CompletedAt:  completedAt,
 	}
 	switch in.Source {
-	case SourceLocal:
+	case events.SourceLocal:
 		input.AdminID = in.ActorID
-	case SourceController:
+	case events.SourceController:
+		input.ControllerAdminID = in.ActorID
+	}
+	return events.BuildInventoryAdjustPayload(input)
+}
+
+// buildAdminCloseInstanceLifecyclePayload renders the instance.lifecycle
+// event payload for the decommission caused by an admin close. Reuses the
+// existing builder so the wire shape matches hook-driven events. auditID is
+// the kiosk-side instance_audit row id that backs this event; threaded
+// through as SourceAuditID so the controller projection is idempotent.
+func buildAdminCloseInstanceLifecyclePayload(in AdminCloseInput, itemRec *core.Record, instanceID, auditID string, prevActive bool, completedAt time.Time) map[string]any {
+	input := events.InstanceLifecycleInput{
+		InstanceID:    instanceID,
+		ItemID:        itemRec.Id,
+		ItemCode:      itemRec.GetString("code"),
+		ItemName:      itemRec.GetString("name"),
+		KioskCode:     in.Identity.KioskCode,
+		LocationCode:  in.Identity.LocationCode,
+		Action:        "decommission",
+		PrevActive:    prevActive,
+		NewActive:     false,
+		Reason:        "admin_close: " + in.Reason,
+		Source:        in.Source,
+		SourceAuditID: auditID,
+		CompletedAt:   completedAt,
+	}
+	switch in.Source {
+	case events.SourceLocal:
+		input.AdminID = in.ActorID
+	case events.SourceController:
 		input.ControllerAdminID = in.ActorID
 	}
 	return events.BuildInstanceLifecyclePayload(input)
 }
 
-// findPriorAdminClose returns the AdminCloseResult for an already-processed
-// command_id, or nil if not found.
-func findPriorAdminClose(tx core.App, commandID string) (*AdminCloseResult, error) {
-	txRec, err := tx.FindFirstRecordByFilter("transactions",
+// findAdminCloseByCommandID returns the AdminCloseResult for an
+// already-processed command_id, or (nil, nil) if no transaction is stamped
+// with that id yet. Callers from the fast path (pre-txn) and the slow path
+// (post-unique-violation re-lookup) both use this — there's no behavioral
+// difference between the two, only timing.
+func findAdminCloseByCommandID(app core.App, commandID string) (*AdminCloseResult, error) {
+	txRec, err := app.FindFirstRecordByFilter("transactions",
 		"command_id = {:c}", dbx.Params{"c": commandID})
 	if err != nil {
 		if dberr.IsNotFound(err) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("idempotency lookup: %w", err)
-	}
-	return loadAdminCloseFromTx(tx, txRec)
-}
-
-// fetchAdminCloseByCommandID reads the result outside the rolled-back
-// transaction in the slow-path race case (concurrent insert collision).
-func fetchAdminCloseByCommandID(app core.App, commandID string) (*AdminCloseResult, error) {
-	txRec, err := app.FindFirstRecordByFilter("transactions",
-		"command_id = {:c}", dbx.Params{"c": commandID})
-	if err != nil {
-		return nil, fmt.Errorf("idempotent replay re-fetch: %w", err)
 	}
 	return loadAdminCloseFromTx(app, txRec)
 }

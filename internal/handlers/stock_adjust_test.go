@@ -7,6 +7,7 @@ import (
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
 
+	"github.com/skeeeon/kiosk/internal/events"
 	"github.com/skeeeon/kiosk/internal/handlers"
 
 	// Register migrations so the runner picks them up.
@@ -89,7 +90,7 @@ func TestPerformStockAdjustment_Delta(t *testing.T) {
 	app := setupApp(t)
 	s := seedItemAndAdmin(t, app, 10)
 
-	r, err := handlers.PerformStockAdjustment(app, s.ItemID, s.AdminID, handlers.SourceLocal, "", "delta", 5, "restock from PO-42")
+	r, err := handlers.PerformStockAdjustment(app, s.ItemID, s.AdminID, events.SourceLocal, "", "delta", 5, "restock from PO-42")
 	if err != nil {
 		t.Fatalf("adjust: %v", err)
 	}
@@ -121,7 +122,7 @@ func TestPerformStockAdjustment_Absolute(t *testing.T) {
 	app := setupApp(t)
 	s := seedItemAndAdmin(t, app, 12)
 
-	r, err := handlers.PerformStockAdjustment(app, s.ItemID, s.AdminID, handlers.SourceLocal, "", "absolute", 50, "physical count")
+	r, err := handlers.PerformStockAdjustment(app, s.ItemID, s.AdminID, events.SourceLocal, "", "absolute", 50, "physical count")
 	if err != nil {
 		t.Fatalf("adjust: %v", err)
 	}
@@ -143,7 +144,7 @@ func TestPerformStockAdjustment_DownToNegative_Allowed(t *testing.T) {
 	app := setupApp(t)
 	s := seedItemAndAdmin(t, app, 2)
 
-	_, err := handlers.PerformStockAdjustment(app, s.ItemID, s.AdminID, handlers.SourceLocal, "", "delta", -5, "found broken box")
+	_, err := handlers.PerformStockAdjustment(app, s.ItemID, s.AdminID, events.SourceLocal, "", "delta", -5, "found broken box")
 	if err != nil {
 		t.Fatalf("adjust: %v", err)
 	}
@@ -157,7 +158,7 @@ func TestPerformStockAdjustment_EmptyReason_Rejected(t *testing.T) {
 	app := setupApp(t)
 	s := seedItemAndAdmin(t, app, 10)
 
-	_, err := handlers.PerformStockAdjustment(app, s.ItemID, s.AdminID, handlers.SourceLocal, "", "delta", 1, "")
+	_, err := handlers.PerformStockAdjustment(app, s.ItemID, s.AdminID, events.SourceLocal, "", "delta", 1, "")
 	if err == nil {
 		t.Fatal("expected error for empty reason")
 	}
@@ -167,7 +168,7 @@ func TestPerformStockAdjustment_ItemNotFound(t *testing.T) {
 	app := setupApp(t)
 	s := seedItemAndAdmin(t, app, 10)
 
-	_, err := handlers.PerformStockAdjustment(app, "no-such-item", s.AdminID, handlers.SourceLocal, "", "delta", 1, "x")
+	_, err := handlers.PerformStockAdjustment(app, "no-such-item", s.AdminID, events.SourceLocal, "", "delta", 1, "x")
 	if err == nil {
 		t.Fatal("expected error for missing item")
 	}
@@ -184,7 +185,7 @@ func TestPerformStockAdjustment_ControllerSource(t *testing.T) {
 	const cmdID = "cmd-abc-123"
 
 	r, err := handlers.PerformStockAdjustment(app, s.ItemID, ctrlAdminID,
-		handlers.SourceController, cmdID, "delta", 7, "remote restock")
+		events.SourceController, cmdID, "delta", 7, "remote restock")
 	if err != nil {
 		t.Fatalf("adjust: %v", err)
 	}
@@ -199,8 +200,8 @@ func TestPerformStockAdjustment_ControllerSource(t *testing.T) {
 	if adj.GetString("controller_admin_id") != ctrlAdminID {
 		t.Errorf("controller_admin_id: want %q, got %q", ctrlAdminID, adj.GetString("controller_admin_id"))
 	}
-	if adj.GetString("source") != handlers.SourceController {
-		t.Errorf("source: want %q, got %q", handlers.SourceController, adj.GetString("source"))
+	if adj.GetString("source") != events.SourceController {
+		t.Errorf("source: want %q, got %q", events.SourceController, adj.GetString("source"))
 	}
 	if adj.GetString("command_id") != cmdID {
 		t.Errorf("command_id: want %q, got %q", cmdID, adj.GetString("command_id"))
@@ -219,7 +220,7 @@ func TestPerformStockAdjustment_IdempotentReplay(t *testing.T) {
 	const cmdID = "cmd-idempotent-1"
 
 	first, err := handlers.PerformStockAdjustment(app, s.ItemID, ctrlAdminID,
-		handlers.SourceController, cmdID, "delta", 5, "first attempt")
+		events.SourceController, cmdID, "delta", 5, "first attempt")
 	if err != nil {
 		t.Fatalf("first call: %v", err)
 	}
@@ -227,7 +228,7 @@ func TestPerformStockAdjustment_IdempotentReplay(t *testing.T) {
 	// Same command_id, different mode/value/reason — the result must be
 	// the prior result, and the item must not have moved a second time.
 	second, err := handlers.PerformStockAdjustment(app, s.ItemID, ctrlAdminID,
-		handlers.SourceController, cmdID, "delta", 999, "would-be retry")
+		events.SourceController, cmdID, "delta", 999, "would-be retry")
 	if err != nil {
 		t.Fatalf("replay: %v", err)
 	}

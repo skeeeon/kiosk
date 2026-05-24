@@ -85,11 +85,14 @@ type EventPayload struct {
 	ClosureReason  string `json:"closure_reason,omitempty"`
 	Notes          string `json:"notes,omitempty"`
 
-	// instance.lifecycle fields.
-	InstanceID   string `json:"instance_id,omitempty"`
-	InstanceCode string `json:"instance_code,omitempty"`
-	PrevActive   bool   `json:"prev_active,omitempty"`
-	NewActive    bool   `json:"new_active,omitempty"`
+	// instance.lifecycle fields. SourceAuditID carries the kiosk-side
+	// instance_audit.id so the controller's projection is idempotent under
+	// JetStream redelivery (same pattern as AdjustmentID for inventory_audit).
+	InstanceID    string `json:"instance_id,omitempty"`
+	InstanceCode  string `json:"instance_code,omitempty"`
+	PrevActive    bool   `json:"prev_active,omitempty"`
+	NewActive     bool   `json:"new_active,omitempty"`
+	SourceAuditID string `json:"source_audit_id,omitempty"`
 }
 
 // Aggregator owns the JetStream consumer lifecycle. One per controller
@@ -317,21 +320,7 @@ func (a *Aggregator) handle(ctx context.Context, msg jetstream.Msg) {
 			"controller_admin_id", payload.ControllerAdminID)
 		_ = msg.Ack()
 	case strings.HasSuffix(subject, ".instance.lifecycle"):
-		// Audit-only today. Same reasoning as integrity.rebuild — record the
-		// event so an operator-facing surface can pick it up later.
-		slog.Info("controller.aggregator.instance_lifecycle",
-			"subject", subject,
-			"kiosk_code", payload.KioskCode,
-			"instance_id", payload.InstanceID,
-			"instance_code", payload.InstanceCode,
-			"item_code", payload.ItemCode,
-			"action", payload.Action,
-			"prev_active", payload.PrevActive,
-			"new_active", payload.NewActive,
-			"source", payload.Source,
-			"admin_id", payload.AdminID,
-			"controller_admin_id", payload.ControllerAdminID)
-		_ = msg.Ack()
+		a.handleInstanceLifecycle(msg, payload)
 	default:
 		// Stream subjects we don't recognize — ack so we don't pile up
 		// redeliveries, but log so the operator sees the drift.
@@ -423,6 +412,96 @@ func (a *Aggregator) findInventoryAuditByAdjustmentID(adjustmentID string) (*cor
 	rec, err := a.app.FindFirstRecordByFilter("inventory_audit",
 		"source_adjustment_id = {:id}",
 		dbx.Params{"id": adjustmentID})
+	if err != nil {
+		if isNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return rec, nil
+}
+
+// handleInstanceLifecycle is the JetStream-side dispatcher for
+// instance.lifecycle. Splits to ProjectInstanceLifecycle (pure projection +
+// outcome) so tests can drive the side effect without a real message.
+func (a *Aggregator) handleInstanceLifecycle(msg jetstream.Msg, p EventPayload) {
+	switch a.ProjectInstanceLifecycle(p) {
+	case projectAck:
+		_ = msg.Ack()
+	case projectRetry:
+		_ = msg.Nak()
+	}
+}
+
+// ProjectInstanceLifecycle upserts the audit row for one instance.lifecycle
+// event. Idempotent via the unique source_audit_id index — a JetStream
+// redelivery finds the existing row and returns projectAck without writing.
+func (a *Aggregator) ProjectInstanceLifecycle(p EventPayload) projectOutcome {
+	if p.SourceAuditID == "" {
+		// Older kiosks (pre source_audit_id) don't carry the idempotency
+		// anchor. Without it we can't safely dedupe redeliveries, so ack
+		// rather than write a row that might duplicate later. A warn surfaces
+		// the drift so the operator knows to update kiosks.
+		slog.Warn("controller.aggregator.instance_lifecycle.missing_source_audit_id",
+			"kiosk_code", p.KioskCode, "instance_id", p.InstanceID)
+		return projectAck
+	}
+
+	existing, err := a.findInstanceLifecycleAuditBySourceID(p.SourceAuditID)
+	if err != nil {
+		slog.Warn("controller.aggregator.instance_lifecycle_audit.lookup_failed", "error", err)
+		return projectRetry
+	}
+	if existing != nil {
+		return projectAck
+	}
+
+	col, err := a.app.FindCollectionByNameOrId("instance_lifecycle_audit")
+	if err != nil {
+		slog.Warn("controller.aggregator.instance_lifecycle_audit.collection_missing", "error", err)
+		return projectRetry
+	}
+
+	rec := core.NewRecord(col)
+	rec.Set("kiosk_code", p.KioskCode)
+	rec.Set("item_code", p.ItemCode)
+	rec.Set("item_name", p.ItemName)
+	rec.Set("instance_id", p.InstanceID)
+	rec.Set("instance_code", p.InstanceCode)
+	rec.Set("action", p.Action)
+	rec.Set("prev_active", p.PrevActive)
+	rec.Set("new_active", p.NewActive)
+	rec.Set("reason", p.Reason)
+	// Same collapse-into-one-column treatment as inventory_audit so the
+	// report table doesn't need to coalesce two fields on render.
+	switch p.Source {
+	case events.SourceController:
+		rec.Set("admin_id", p.ControllerAdminID)
+	default:
+		rec.Set("admin_id", p.AdminID)
+	}
+	if p.Source != "" {
+		rec.Set("source", p.Source)
+	}
+	rec.Set("command_id", p.CommandID)
+	rec.Set("source_audit_id", p.SourceAuditID)
+	if !p.CompletedAt.IsZero() {
+		rec.Set("occurred_at", p.CompletedAt)
+	}
+	if err := a.app.Save(rec); err != nil {
+		if isUniqueViolation(err) {
+			return projectAck
+		}
+		slog.Warn("controller.aggregator.instance_lifecycle_audit.save_failed", "error", err)
+		return projectRetry
+	}
+	return projectAck
+}
+
+func (a *Aggregator) findInstanceLifecycleAuditBySourceID(sourceAuditID string) (*core.Record, error) {
+	rec, err := a.app.FindFirstRecordByFilter("instance_lifecycle_audit",
+		"source_audit_id = {:id}",
+		dbx.Params{"id": sourceAuditID})
 	if err != nil {
 		if isNotFound(err) {
 			return nil, nil

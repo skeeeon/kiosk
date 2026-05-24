@@ -88,6 +88,31 @@ These started as deferred roadmap items and are now live in the binary:
   binaries summarizes the local `notification_send_log` (totals,
   per-event success-rate table, recent failures) so deliverability
   regressions surface without clicking through individual rows.
+- **Admin force-close (lost / damaged / returned offline).** Admins
+  can now resolve stale `open_checkouts` rows without bypassing the
+  ledger. New `action="admin_close"` on `transaction_lines` plus a
+  `closure_reason` enum; `lost` / `damaged` also write a
+  `stock_adjustments` row and (for serialized items) decommission the
+  instance — atomic with the close. The kiosk endpoint and the
+  controller's NATS-forwarded `checkout.close` command both converge
+  on `commit.AdminClose`, so a controller-driven close on a remote
+  kiosk behaves identically to a local one (including the qty + audit
+  side-effects).
+- **Instance lifecycle audit + parity.** New `instance_audit`
+  collection on each kiosk, written by PB record hooks on
+  `item_instances` (create / decommission / reactivate / delete;
+  cosmetic edits skip). Lifecycle changes also publish
+  `instance.lifecycle` events; the controller projects them into a
+  fleet-wide `instance_lifecycle_audit` collection (idempotent via
+  `source_audit_id`). The SPA's Instance lifecycle Reports tab is
+  visible on both binaries against the appropriate collection so a
+  managed kiosk's admin gets the same visibility a standalone
+  kiosk's admin does.
+- **Worker self-service ("What you have out").** The `/api/kiosk/scan`
+  response now hydrates the scanned worker's outstanding
+  `open_checkouts`; the CheckoutView surfaces a collapsible panel
+  above the cart so a worker reviewing their tally doesn't need an
+  admin to look up "what does this user have out right now?"
 
 ## Roadmap
 

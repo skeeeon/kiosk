@@ -20,12 +20,14 @@ PB's `/api/collections/*` is used for PB-native CRUD.
 | `POST` | `/api/kiosk/ledger/republish` | admin | Re-emit transaction.complete + item.{action} events for completed transactions in an optional `{from, to}` ISO8601 window. Aggregator is idempotent so safe to re-run. |
 | `POST` | `/api/kiosk/items/import` | admin | Multipart CSV upload, upsert by `code` |
 | `POST` | `/api/kiosk/items/{id}/adjust` | admin | Change `quantity_on_hand` + write a `stock_adjustments` audit row in one transaction |
+| `POST` | `/api/kiosk/checkouts/by-line/{transaction_line_id}/close` | admin | Admin force-close one `open_checkouts` row. Body: `{reason: "lost"\|"returned_offline"\|"damaged"\|"other", notes?}`. Writes one `transactions` row + one `transaction_lines` row (`action="admin_close"`) and deletes the open row, all in one DB transaction. `lost` / `damaged` also decrement `quantity_on_hand`, write a `stock_adjustments` row, and (for serialized items) flip `item_instances.active=false` plus an `instance_audit` decommission row. |
 | `GET` | `/api/kiosk/transactions.csv` | admin | Export completed transactions as CSV (optional `from=` / `to=` ISO8601 query params) |
 | `GET` | `/api/kiosk/catalog/integrity` | admin | **Controller only.** Diff catalog DB vs JetStream KV; returns `missing_in_kv` + `extra_in_kv` per bucket |
 | `POST` | `/api/kiosk/catalog/reconcile` | admin | **Controller only.** Push DB → KV (always); delete orphaned KV keys when body `{delete_orphans: true}` |
 | `GET` | `/api/controller/kiosks/heartbeats` | admin | **Controller only.** Returns `{controller_started_at, kiosks: {code: lastSeenISO}}` — the SPA polls every 10s to render online/stale/offline badges |
 | `GET` | `/api/controller/kiosks/{code}/inventory` | admin | **Controller only.** Fires the `inventory.snapshot` command over NATS request/reply; returns the kiosk's live on-hand for every stocked item. 503 `{error: "kiosk_offline", kiosk_code}` when stale heartbeat or NATS timeout. |
 | `POST` | `/api/controller/kiosks/{code}/inventory/adjust` | admin | **Controller only.** Server-generates a `command_id`, fires `inventory.adjust` to the kiosk over NATS request/reply. Body: `{item_code, mode, value, reason}`. Idempotent via `command_id`; 503 on offline. |
+| `POST` | `/api/controller/kiosks/{code}/checkouts/{source_line_id}/close` | admin | **Controller only.** Forwards an admin force-close to a remote kiosk over NATS request/reply (`checkout.close` command). `source_line_id` is the kiosk-side `transaction_lines.id` from the projected ledger. Body: `{reason, notes?}`. Server-generates `command_id` for idempotent replay; 503 `{error: "kiosk_offline"}` when the kiosk is offline. Kiosk-side converges on `commit.AdminClose` so behavior is identical to a local close. |
 | `GET` | `/api/controller/reports/low-stock` | admin | **Controller only.** Fleet-wide low-stock report. Fans `inventory.snapshot` to every online managed kiosk in parallel, joins each kiosk's snapshot with `out` counts derived from the controller's projected ledger, and returns rows whose `available ≤ reorder_threshold`. Optional `?kiosk_code=` scopes to one kiosk. Response shape: `{rows: [...], errors: [{kiosk_code, error}]}` — offline kiosks appear in `errors` so partial results are explicit. |
 | `GET` | `/api/controller/notifications` | admin | **Controller only.** List notification templates. Same DTO as the kiosk's `/api/kiosk/notifications`. |
 | `PATCH` | `/api/controller/notifications/{event_type}` | admin | **Controller only.** Update subject/body/enabled/recipients on a template. |
@@ -53,7 +55,9 @@ resolves to a `users` record.
 | `transaction_lines` | admin | forbidden via API |
 | `open_checkouts` | admin | forbidden via API |
 | `stock_adjustments` | admin | forbidden via API; written by `/items/{id}/adjust` only |
+| `instance_audit` | admin | forbidden via API; written by the `item_instances` record hooks (and by `commit.AdminClose` for serialized retire-on-close) |
 | `inventory_audit` | admin | **Controller only.** Forbidden via API; written by the aggregator from `inventory.adjust` events |
+| `instance_lifecycle_audit` | admin | **Controller only.** Forbidden via API; written by the aggregator from `instance.lifecycle` events |
 
 The kiosk checkout flow never touches PB's REST API. Every operation
 goes through a custom `/api/kiosk/*` endpoint that runs in-process and
