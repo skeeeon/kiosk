@@ -129,7 +129,7 @@ func main() {
 		if !cfg.NATS.Enabled {
 			return fmt.Errorf("nats.enabled must be true for the controller — set nats.url and enable")
 		}
-		pub, err := events.Connect(cfg.NATS)
+		pub, err := events.Connect(cfg.NATS, "kiosk-controller")
 		if err != nil {
 			return fmt.Errorf("nats connect: %w", err)
 		}

@@ -166,6 +166,36 @@ const totalExtra = computed(() => {
 
       <p v-if="error" class="text-red-300 mb-4">{{ error }}</p>
 
+      <!-- Skeleton placeholders shown only on first load (no report yet).
+           Re-fetches after a reconcile keep the previous report visible so
+           there's no flicker. -->
+      <div v-if="!report && loading" class="space-y-6" aria-hidden="true">
+        <section
+          v-for="i in 3"
+          :key="`skel-${i}`"
+          class="rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden"
+        >
+          <header class="px-5 py-3 border-b border-slate-800 flex items-baseline gap-3">
+            <div class="h-5 w-28 bg-slate-800 rounded animate-pulse"></div>
+            <div class="h-3 w-32 bg-slate-800 rounded animate-pulse"></div>
+            <div class="ml-auto h-3 w-24 bg-slate-800 rounded animate-pulse"></div>
+          </header>
+          <div class="grid grid-cols-1 md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-slate-800">
+            <div class="p-5 space-y-2">
+              <div class="h-4 w-24 bg-slate-800 rounded animate-pulse"></div>
+              <div class="h-3 w-3/4 bg-slate-800 rounded animate-pulse"></div>
+              <div class="h-3 w-2/3 bg-slate-800 rounded animate-pulse"></div>
+              <div class="h-3 w-1/2 bg-slate-800 rounded animate-pulse"></div>
+            </div>
+            <div class="p-5 space-y-2">
+              <div class="h-4 w-24 bg-slate-800 rounded animate-pulse"></div>
+              <div class="h-3 w-3/4 bg-slate-800 rounded animate-pulse"></div>
+              <div class="h-3 w-1/2 bg-slate-800 rounded animate-pulse"></div>
+            </div>
+          </div>
+        </section>
+      </div>
+
       <div v-if="report" class="space-y-6">
         <!-- Items bucket -->
         <section class="rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden">

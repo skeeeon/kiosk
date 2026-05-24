@@ -47,7 +47,10 @@ type Dispatcher struct {
 	handlers  map[string]Handler
 	logger    *slog.Logger
 	sub       *nats.Subscription
-	prefixLen int // cached length of the command-subject prefix for fast suffix extraction
+	// prefix is the literal command-subject prefix for this kiosk, e.g.
+	// "kiosk.K01.command.". Cached at construction so subjectSuffix is a
+	// single TrimPrefix with no allocation per message.
+	prefix string
 }
 
 // NewDispatcher constructs a dispatcher with the built-in command handlers
@@ -58,11 +61,8 @@ func NewDispatcher(app core.App, kioskCode string) *Dispatcher {
 		kioskCode: kioskCode,
 		handlers:  make(map[string]Handler),
 		logger:    slog.Default(),
+		prefix:    events.CommandSubject(kioskCode, ""),
 	}
-	// commandSubjectPrefix is the literal prefix of every accepted subject,
-	// e.g. "kiosk.K01.command.". Cached at construction so suffix extraction
-	// in onMessage is a single TrimPrefix with no allocation.
-	d.prefixLen = len(events.CommandSubject(kioskCode, ""))
 
 	d.handlers["inventory.adjust"] = d.handleInventoryAdjust
 	d.handlers["inventory.snapshot"] = d.handleInventorySnapshot
@@ -154,8 +154,7 @@ func (d *Dispatcher) onMessage(msg *nats.Msg) {
 func (d *Dispatcher) subjectSuffix(subject string) string {
 	// Subject is "<prefix>.<code>.command.<name>". TrimPrefix on the cached
 	// "<prefix>.<code>.command." piece gives us "<name>" directly.
-	prefix := events.CommandSubject(d.kioskCode, "")
-	return strings.TrimPrefix(subject, prefix)
+	return strings.TrimPrefix(subject, d.prefix)
 }
 
 func (d *Dispatcher) reply(msg *nats.Msg, r Reply) {

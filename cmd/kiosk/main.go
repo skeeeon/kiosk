@@ -63,7 +63,7 @@ func main() {
 	// Connect itself doesn't fail on unreachable servers — it returns a
 	// buffering connection. Errors here are structural (empty URL, bad
 	// creds file, etc.); log and proceed without a publisher.
-	pub, err := events.Connect(cfg.NATS)
+	pub, err := events.Connect(cfg.NATS, "kiosk-"+cfg.Kiosk.Code)
 	if err != nil {
 		log.Printf("nats: continuing without event publishing — %v", err)
 	}

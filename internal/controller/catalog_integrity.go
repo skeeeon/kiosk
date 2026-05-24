@@ -8,6 +8,7 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/pocketbase/pocketbase/core"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/skeeeon/kiosk/internal/catalog"
 )
@@ -211,60 +212,80 @@ func diffKeys(expected map[string][]byte, actual map[string]struct{}) (missing, 
 
 // Integrity diffs the controller's catalog DB against the live KV buckets.
 // Read-only — does not modify KV.
+//
+// The three buckets are diffed in parallel because each kv.ListKeys() pays
+// a fixed ephemeral-consumer setup cost (a few hundred ms even for empty
+// buckets). Sequentially that adds up to a perceptible delay on the admin
+// view; in parallel the wall-clock collapses to the slowest of the three.
+// Each goroutine writes to a distinct field of `report`, so no
+// synchronization beyond errgroup.Wait is needed.
 func (p *CatalogPublisher) Integrity(ctx context.Context) (CatalogIntegrityReport, error) {
 	var report CatalogIntegrityReport
+	g, gctx := errgroup.WithContext(ctx)
 
-	expectedItems, err := expectedItemKeys(p.app)
-	if err != nil {
+	g.Go(func() error {
+		expected, err := expectedItemKeys(p.app)
+		if err != nil {
+			return err
+		}
+		actual, err := actualKVKeys(gctx, p.items)
+		if err != nil {
+			return fmt.Errorf("enumerate items KV: %w", err)
+		}
+		missing, extra := diffKeys(expected, actual)
+		report.Items = CatalogIntegrityBucket{
+			Bucket:       p.items.Bucket(),
+			ExpectedKeys: len(expected),
+			ActualKeys:   len(actual),
+			MissingInKV:  missing,
+			ExtraInKV:    extra,
+		}
+		return nil
+	})
+
+	g.Go(func() error {
+		expected, err := expectedUserKeys(p.app)
+		if err != nil {
+			return err
+		}
+		actual, err := actualKVKeys(gctx, p.users)
+		if err != nil {
+			return fmt.Errorf("enumerate users KV: %w", err)
+		}
+		missing, extra := diffKeys(expected, actual)
+		report.Users = CatalogIntegrityBucket{
+			Bucket:       p.users.Bucket(),
+			ExpectedKeys: len(expected),
+			ActualKeys:   len(actual),
+			MissingInKV:  missing,
+			ExtraInKV:    extra,
+		}
+		return nil
+	})
+
+	g.Go(func() error {
+		expected, err := expectedGroupKeys(p.app)
+		if err != nil {
+			return err
+		}
+		actual, err := actualKVKeys(gctx, p.groups)
+		if err != nil {
+			return fmt.Errorf("enumerate groups KV: %w", err)
+		}
+		missing, extra := diffKeys(expected, actual)
+		report.Groups = CatalogIntegrityBucket{
+			Bucket:       p.groups.Bucket(),
+			ExpectedKeys: len(expected),
+			ActualKeys:   len(actual),
+			MissingInKV:  missing,
+			ExtraInKV:    extra,
+		}
+		return nil
+	})
+
+	if err := g.Wait(); err != nil {
 		return report, err
 	}
-	actualItems, err := actualKVKeys(ctx, p.items)
-	if err != nil {
-		return report, fmt.Errorf("enumerate items KV: %w", err)
-	}
-	missingItems, extraItems := diffKeys(expectedItems, actualItems)
-	report.Items = CatalogIntegrityBucket{
-		Bucket:       p.items.Bucket(),
-		ExpectedKeys: len(expectedItems),
-		ActualKeys:   len(actualItems),
-		MissingInKV:  missingItems,
-		ExtraInKV:    extraItems,
-	}
-
-	expectedUsers, err := expectedUserKeys(p.app)
-	if err != nil {
-		return report, err
-	}
-	actualUsers, err := actualKVKeys(ctx, p.users)
-	if err != nil {
-		return report, fmt.Errorf("enumerate users KV: %w", err)
-	}
-	missingUsers, extraUsers := diffKeys(expectedUsers, actualUsers)
-	report.Users = CatalogIntegrityBucket{
-		Bucket:       p.users.Bucket(),
-		ExpectedKeys: len(expectedUsers),
-		ActualKeys:   len(actualUsers),
-		MissingInKV:  missingUsers,
-		ExtraInKV:    extraUsers,
-	}
-
-	expectedGroups, err := expectedGroupKeys(p.app)
-	if err != nil {
-		return report, err
-	}
-	actualGroups, err := actualKVKeys(ctx, p.groups)
-	if err != nil {
-		return report, fmt.Errorf("enumerate groups KV: %w", err)
-	}
-	missingGroups, extraGroups := diffKeys(expectedGroups, actualGroups)
-	report.Groups = CatalogIntegrityBucket{
-		Bucket:       p.groups.Bucket(),
-		ExpectedKeys: len(expectedGroups),
-		ActualKeys:   len(actualGroups),
-		MissingInKV:  missingGroups,
-		ExtraInKV:    extraGroups,
-	}
-
 	return report, nil
 }
 
@@ -277,38 +298,59 @@ func (p *CatalogPublisher) Integrity(ctx context.Context) (CatalogIntegrityRepor
 // One-directional: the DB is always authoritative. Reverse direction (KV
 // teaches the DB) is deliberately not supported — that would let an
 // operator's `nats kv put` override the controller's source of truth.
+//
+// The three buckets are reconciled in parallel — same rationale as
+// Integrity(): each bucket pays a fixed ListKeys setup cost, and the
+// per-key Put/Delete loops within a bucket are independent across
+// buckets. Per-key ops within a single bucket stay sequential (pipelining
+// KV ops complicates ack handling without a clear payoff at catalog
+// scale). Each goroutine writes to a distinct field of `report`.
 func (p *CatalogPublisher) Reconcile(ctx context.Context, deleteOrphans bool) (CatalogReconcileReport, error) {
 	var report CatalogReconcileReport
+	g, gctx := errgroup.WithContext(ctx)
 
-	expectedItems, err := expectedItemKeys(p.app)
-	if err != nil {
+	g.Go(func() error {
+		expected, err := expectedItemKeys(p.app)
+		if err != nil {
+			return err
+		}
+		actual, err := actualKVKeys(gctx, p.items)
+		if err != nil {
+			return fmt.Errorf("enumerate items KV: %w", err)
+		}
+		report.Items = p.reconcileBucket(gctx, p.items, expected, actual, deleteOrphans)
+		return nil
+	})
+
+	g.Go(func() error {
+		expected, err := expectedUserKeys(p.app)
+		if err != nil {
+			return err
+		}
+		actual, err := actualKVKeys(gctx, p.users)
+		if err != nil {
+			return fmt.Errorf("enumerate users KV: %w", err)
+		}
+		report.Users = p.reconcileBucket(gctx, p.users, expected, actual, deleteOrphans)
+		return nil
+	})
+
+	g.Go(func() error {
+		expected, err := expectedGroupKeys(p.app)
+		if err != nil {
+			return err
+		}
+		actual, err := actualKVKeys(gctx, p.groups)
+		if err != nil {
+			return fmt.Errorf("enumerate groups KV: %w", err)
+		}
+		report.Groups = p.reconcileBucket(gctx, p.groups, expected, actual, deleteOrphans)
+		return nil
+	})
+
+	if err := g.Wait(); err != nil {
 		return report, err
 	}
-	actualItems, err := actualKVKeys(ctx, p.items)
-	if err != nil {
-		return report, fmt.Errorf("enumerate items KV: %w", err)
-	}
-	report.Items = p.reconcileBucket(ctx, p.items, expectedItems, actualItems, deleteOrphans)
-
-	expectedUsers, err := expectedUserKeys(p.app)
-	if err != nil {
-		return report, err
-	}
-	actualUsers, err := actualKVKeys(ctx, p.users)
-	if err != nil {
-		return report, fmt.Errorf("enumerate users KV: %w", err)
-	}
-	report.Users = p.reconcileBucket(ctx, p.users, expectedUsers, actualUsers, deleteOrphans)
-
-	expectedGroups, err := expectedGroupKeys(p.app)
-	if err != nil {
-		return report, err
-	}
-	actualGroups, err := actualKVKeys(ctx, p.groups)
-	if err != nil {
-		return report, fmt.Errorf("enumerate groups KV: %w", err)
-	}
-	report.Groups = p.reconcileBucket(ctx, p.groups, expectedGroups, actualGroups, deleteOrphans)
 
 	slog.Info("controller.catalog.reconcile_complete",
 		"items_published", report.Items.Published,

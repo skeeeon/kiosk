@@ -42,6 +42,12 @@ func CurrentPublisher() Publisher {
 // post-DB-transaction) cannot meaningfully recover, and we don't want to
 // bake retry logic into write paths. Publish failures land in slog at
 // warn level.
+//
+// The payload is marshaled exactly once and the resulting bytes flow to
+// both the slog line (as a json.RawMessage so the log encoder inlines it
+// instead of re-quoting) and the publisher. Hot paths like
+// ledger.republish emit many events back-to-back; a single marshal pays
+// off there without changing behavior anywhere else.
 func Publish(subject string, payload any) {
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -51,7 +57,7 @@ func Publish(subject string, payload any) {
 	slog.Info("kiosk.event", "subject", subject, "payload", json.RawMessage(raw))
 
 	if p := CurrentPublisher(); p != nil {
-		if err := p.PublishJSON(subject, payload); err != nil {
+		if err := p.PublishBytes(subject, raw); err != nil {
 			slog.Warn("kiosk.event.publish_failed", "subject", subject, "error", err)
 		}
 	}

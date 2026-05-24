@@ -59,7 +59,7 @@ func RegisterSeedCommand(app *pocketbase.PocketBase, cfg *config.Config) {
 			// seeding when the broker isn't reachable yet; the publisher
 			// hooks bound at the next normal startup will re-emit on edit).
 			if !noPublish {
-				pub, err := events.Connect(cfg.NATS)
+				pub, err := events.Connect(cfg.NATS, "kiosk-controller-seed")
 				if err != nil {
 					return fmt.Errorf("nats connect: %w", err)
 				}

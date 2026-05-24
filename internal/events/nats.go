@@ -2,7 +2,6 @@ package events
 
 import (
 	"crypto/tls"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -17,24 +16,25 @@ import (
 // Publisher is the interface SetPublisher accepts. The production
 // implementation wraps a nats.Conn; tests inject their own to capture
 // calls. Kept tiny on purpose — we only publish, we never consume.
+//
+// PublishBytes takes the already-marshaled JSON so events.Publish can
+// marshal once and reuse the bytes for both the slog line and the wire
+// publish. Callers shouldn't need to know what the bytes mean — the
+// publisher just forwards them to NATS.
 type Publisher interface {
-	PublishJSON(subject string, payload any) error
+	PublishBytes(subject string, data []byte) error
 	Close()
 }
 
-// natsPublisher is the production implementation. It marshals each payload
-// once and hands it to nats.Conn.Publish, which buffers internally. Errors
-// are returned to the caller, which logs them; we don't retry — the NATS
+// natsPublisher is the production implementation. PublishBytes is a thin
+// wrapper around nats.Conn.Publish, which buffers internally. Errors are
+// returned to the caller, which logs them; we don't retry — the NATS
 // client's own reconnect logic handles transient disconnects.
 type natsPublisher struct {
 	nc *nats.Conn
 }
 
-func (p *natsPublisher) PublishJSON(subject string, payload any) error {
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("marshal payload: %w", err)
-	}
+func (p *natsPublisher) PublishBytes(subject string, data []byte) error {
 	return p.nc.Publish(subject, data)
 }
 
@@ -96,6 +96,12 @@ func Conn(p Publisher) (*nats.Conn, error) {
 // (nil, nil) when cfg.Enabled is false — main.go treats nil as a no-op
 // publisher.
 //
+// name is the client identifier reported to nats-server (visible in its
+// connection logs and `nats server connections` output). Pass
+// "kiosk-<kiosk_code>" from the kiosk binary and "kiosk-controller" from
+// the controller binary so a shared NATS server can tell them apart.
+// Empty string falls back to "kiosk".
+//
 // Network unreachability is NOT an error: with RetryOnFailedConnect, the
 // returned *nats.Conn enters a connecting/buffering state and dials in
 // the background. The kiosk's primary job is local checkout against the
@@ -103,7 +109,7 @@ func Conn(p Publisher) (*nats.Conn, error) {
 // and should never block the kiosk from starting. An (nil, err) return
 // here means a structural config problem (empty URL, malformed URL,
 // unloadable creds) that won't fix itself by waiting.
-func Connect(cfg config.NATSConfig) (Publisher, error) {
+func Connect(cfg config.NATSConfig, name string) (Publisher, error) {
 	if !cfg.Enabled {
 		return nil, nil
 	}
@@ -111,7 +117,7 @@ func Connect(cfg config.NATSConfig) (Publisher, error) {
 		return nil, errors.New("nats.enabled=true but nats.url is empty")
 	}
 
-	opts := buildNATSOptions(cfg)
+	opts := buildNATSOptions(cfg, name)
 	nc, err := nats.Connect(cfg.URL, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("connect %s: %w", cfg.URL, err)
@@ -128,11 +134,14 @@ func Connect(cfg config.NATSConfig) (Publisher, error) {
 
 // buildNATSOptions translates the config struct into nats.Options. Auth
 // knobs compose so an operator can mix (e.g., TLS + nkey).
-func buildNATSOptions(cfg config.NATSConfig) []nats.Option {
+func buildNATSOptions(cfg config.NATSConfig, name string) []nats.Option {
 	var opts []nats.Option
 
 	// Identify ourselves for nats-server logs.
-	opts = append(opts, nats.Name("kiosk"))
+	if name == "" {
+		name = "kiosk"
+	}
+	opts = append(opts, nats.Name(name))
 
 	// Reconnect aggressively but quietly — kiosks live in flaky shop
 	// networks and we'd rather buffer-and-retry than fail-fast.
