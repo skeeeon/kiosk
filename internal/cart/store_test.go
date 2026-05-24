@@ -15,8 +15,8 @@ func newTestStore() (*Store, *time.Time) {
 
 func TestStartReturnsExistingCartForSameUser(t *testing.T) {
 	s, _ := newTestStore()
-	c1 := s.Start("u1", "EMP-1", "Alice")
-	c2 := s.Start("u1", "EMP-1", "Alice")
+	c1 := s.Start("u1", "EMP-1", "Alice", "worker")
+	c2 := s.Start("u1", "EMP-1", "Alice", "worker")
 	if c1.ID != c2.ID {
 		t.Fatalf("expected same cart id, got %s vs %s", c1.ID, c2.ID)
 	}
@@ -24,8 +24,8 @@ func TestStartReturnsExistingCartForSameUser(t *testing.T) {
 
 func TestStartReturnsNewCartForDifferentUser(t *testing.T) {
 	s, _ := newTestStore()
-	c1 := s.Start("u1", "EMP-1", "Alice")
-	c2 := s.Start("u2", "EMP-2", "Bob")
+	c1 := s.Start("u1", "EMP-1", "Alice", "worker")
+	c2 := s.Start("u2", "EMP-2", "Bob", "worker")
 	if c1.ID == c2.ID {
 		t.Fatalf("expected different cart ids")
 	}
@@ -33,7 +33,7 @@ func TestStartReturnsNewCartForDifferentUser(t *testing.T) {
 
 func TestExpiredCartIsDeletedOnAccess(t *testing.T) {
 	s, now := newTestStore()
-	c := s.Start("u1", "EMP-1", "Alice")
+	c := s.Start("u1", "EMP-1", "Alice", "worker")
 	*now = now.Add(6 * time.Minute)
 	if _, err := s.Get(c.ID); err != ErrNotFound {
 		t.Fatalf("expected ErrNotFound, got %v", err)
@@ -45,7 +45,7 @@ func TestExpiredCartIsDeletedOnAccess(t *testing.T) {
 
 func TestStackingForNonSerializedSameAction(t *testing.T) {
 	s, _ := newTestStore()
-	c := s.Start("u1", "EMP-1", "Alice")
+	c := s.Start("u1", "EMP-1", "Alice", "worker")
 	_, _, _ = s.AddLine(c.ID, &Line{
 		ItemID: "item-1", ItemCode: "SCREW", ItemName: "Screws",
 		ItemType: "consumable", TrackingMode: "quantity",
@@ -66,7 +66,7 @@ func TestStackingForNonSerializedSameAction(t *testing.T) {
 
 func TestNoStackingForSerializedItems(t *testing.T) {
 	s, _ := newTestStore()
-	c := s.Start("u1", "EMP-1", "Alice")
+	c := s.Start("u1", "EMP-1", "Alice", "worker")
 	_, _, _ = s.AddLine(c.ID, &Line{
 		ItemID: "item-a", ItemType: "tool", TrackingMode: "serialized",
 		Action: "checkout", Qty: 1, Serial: "SN-1",
@@ -86,7 +86,7 @@ func TestNoStackingForSerializedItems(t *testing.T) {
 // opaque error. AddLine catches it up front instead.
 func TestDuplicateInstanceRejected(t *testing.T) {
 	s, _ := newTestStore()
-	c := s.Start("u1", "EMP-1", "Alice")
+	c := s.Start("u1", "EMP-1", "Alice", "worker")
 	_, _, err := s.AddLine(c.ID, &Line{
 		ItemID: "item-a", ItemType: "tool", TrackingMode: "serialized",
 		Action: "checkout", Qty: 1, Serial: "SN-1",
@@ -112,7 +112,7 @@ func TestDuplicateInstanceRejected(t *testing.T) {
 // the duplicate guard only rejects exact ItemInstanceID matches.
 func TestDifferentInstancesSameSKUStillSeparate(t *testing.T) {
 	s, _ := newTestStore()
-	c := s.Start("u1", "EMP-1", "Alice")
+	c := s.Start("u1", "EMP-1", "Alice", "worker")
 	_, _, _ = s.AddLine(c.ID, &Line{
 		ItemID: "item-a", ItemType: "tool", TrackingMode: "serialized",
 		Action: "checkout", Qty: 1, Serial: "SN-1",
@@ -131,9 +131,33 @@ func TestDifferentInstancesSameSKUStillSeparate(t *testing.T) {
 	}
 }
 
+// A foreman-return line carries OriginalCheckoutUserID to identify whose
+// open_checkout it closes. Stacking it onto a same-item self-return would
+// silently strip that signal, so the commit-time foreman+group gate would
+// not fire. AddLine must treat OriginalCheckoutUserID as part of the merge
+// key.
+func TestNoStackingWhenOriginalCheckoutUserDiffers(t *testing.T) {
+	s, _ := newTestStore()
+	c := s.Start("u1", "EMP-1", "Alice", "foreman")
+	_, _, _ = s.AddLine(c.ID, &Line{
+		ItemID: "item-1", ItemType: "tool", TrackingMode: "quantity",
+		Action: "return", Qty: 1,
+		// self-return: OriginalCheckoutUserID unset
+	})
+	_, _, _ = s.AddLine(c.ID, &Line{
+		ItemID: "item-1", ItemType: "tool", TrackingMode: "quantity",
+		Action: "return", Qty: 1,
+		OriginalCheckoutUserID:   "u2",
+		OriginalCheckoutUserName: "Bob",
+	})
+	if len(c.Lines) != 2 {
+		t.Fatalf("expected 2 lines (self-return + foreman-return), got %d", len(c.Lines))
+	}
+}
+
 func TestNoStackingWhenActionDiffers(t *testing.T) {
 	s, _ := newTestStore()
-	c := s.Start("u1", "EMP-1", "Alice")
+	c := s.Start("u1", "EMP-1", "Alice", "worker")
 	_, _, _ = s.AddLine(c.ID, &Line{
 		ItemID: "item-1", ItemType: "tool", TrackingMode: "quantity",
 		Action: "checkout", Qty: 1,
@@ -149,7 +173,7 @@ func TestNoStackingWhenActionDiffers(t *testing.T) {
 
 func TestUpdateLineSetsQtyAndAction(t *testing.T) {
 	s, _ := newTestStore()
-	c := s.Start("u1", "EMP-1", "Alice")
+	c := s.Start("u1", "EMP-1", "Alice", "worker")
 	_, line, _ := s.AddLine(c.ID, &Line{
 		ItemID: "item-1", ItemType: "tool", TrackingMode: "quantity",
 		Action: "checkout", Qty: 1,
@@ -170,7 +194,7 @@ func TestUpdateLineSetsQtyAndAction(t *testing.T) {
 
 func TestUpdateLineRejectsInvalidAction(t *testing.T) {
 	s, _ := newTestStore()
-	c := s.Start("u1", "EMP-1", "Alice")
+	c := s.Start("u1", "EMP-1", "Alice", "worker")
 	_, line, _ := s.AddLine(c.ID, &Line{
 		ItemID: "item-1", ItemType: "tool", TrackingMode: "quantity",
 		Action: "checkout", Qty: 1,
@@ -183,7 +207,7 @@ func TestUpdateLineRejectsInvalidAction(t *testing.T) {
 
 func TestAddLineRejectsQtyOverMax(t *testing.T) {
 	s, _ := newTestStore()
-	c := s.Start("u1", "EMP-1", "Alice")
+	c := s.Start("u1", "EMP-1", "Alice", "worker")
 	if _, _, err := s.AddLine(c.ID, &Line{
 		ItemID: "item-1", ItemType: "consumable", TrackingMode: "quantity",
 		Action: "consume", Qty: MaxQty + 1,
@@ -194,7 +218,7 @@ func TestAddLineRejectsQtyOverMax(t *testing.T) {
 
 func TestAddLineStackingRespectsMaxQty(t *testing.T) {
 	s, _ := newTestStore()
-	c := s.Start("u1", "EMP-1", "Alice")
+	c := s.Start("u1", "EMP-1", "Alice", "worker")
 	if _, _, err := s.AddLine(c.ID, &Line{
 		ItemID: "item-1", ItemType: "consumable", TrackingMode: "quantity",
 		Action: "consume", Qty: MaxQty,
@@ -211,7 +235,7 @@ func TestAddLineStackingRespectsMaxQty(t *testing.T) {
 
 func TestDeleteLineRemovesIt(t *testing.T) {
 	s, _ := newTestStore()
-	c := s.Start("u1", "EMP-1", "Alice")
+	c := s.Start("u1", "EMP-1", "Alice", "worker")
 	_, line, _ := s.AddLine(c.ID, &Line{
 		ItemID: "item-1", ItemType: "consumable", TrackingMode: "quantity",
 		Action: "consume", Qty: 1,
@@ -226,7 +250,7 @@ func TestDeleteLineRemovesIt(t *testing.T) {
 
 func TestAddLineExtendsExpiry(t *testing.T) {
 	s, now := newTestStore()
-	c := s.Start("u1", "EMP-1", "Alice")
+	c := s.Start("u1", "EMP-1", "Alice", "worker")
 	originalExpiry := c.ExpiresAt
 
 	*now = now.Add(2 * time.Minute)
@@ -241,7 +265,7 @@ func TestAddLineExtendsExpiry(t *testing.T) {
 
 func TestDeleteCancelsTheCart(t *testing.T) {
 	s, _ := newTestStore()
-	c := s.Start("u1", "EMP-1", "Alice")
+	c := s.Start("u1", "EMP-1", "Alice", "worker")
 	if err := s.Delete(c.ID); err != nil {
 		t.Fatalf("delete failed: %v", err)
 	}

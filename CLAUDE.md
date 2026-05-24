@@ -206,26 +206,62 @@ store; commit drops the cart after successfully promoting to a transaction.
 **Action defaulting is in the handler, not commit.** When a worker scans an
 item, `handlers.defaultActionFor` (in `internal/handlers/cart.go`) picks the
 action: consumable → `consume`; tool already out to this user → `return`;
-tool out to someone else → `return` + cross_user_return warning; otherwise →
-`checkout`. The cart freely accepts overrides; `commit.Commit` enforces only
-structural rules (serialized item must have qty=1, etc.). Returns-policy flags
-from config (`returns.allow_cross_user`, `allow_uncorrelated`) are not currently
-enforced server-side at commit time — keep this in mind if touching that area.
+otherwise → `checkout`. The cart freely accepts overrides; `commit.Commit`
+enforces only structural rules (serialized item must have qty=1, etc.).
+Returns-policy flags from config (`returns.allow_cross_user`,
+`allow_uncorrelated`) are not currently enforced server-side at commit time
+except when explicitly false — keep this in mind if touching that area.
+
+Scanning a tool another worker has out **does not** implicitly become a
+cross-user return: for quantity-tracked tools the natural reading of "Bob has
+one out, I scan the SKU" is "give me one too," and even for serialized the
+action of taking over someone else's open checkout deserves explicit intent.
+Foreman-on-behalf-of returns live on a dedicated pair of endpoints in
+`internal/handlers/cart.go`:
+
+- `GET /api/kiosk/cart/foreman-return/options?cart_id=…`
+  (`Handlers.CartForemanReturnOptions`) — picker payload for the dialog.
+  Lists workers in the cart user's group with **≥1 open checkout**,
+  hydrated with their `open_checkouts` rows. Inactive workers are
+  deliberately included; the whole point of the dialog is closing out
+  absent workers' items, which often correlates with "inactive."
+- `POST /api/kiosk/cart/foreman-return` (`Handlers.CartForemanReturn`) —
+  the sole writer of `Line.OriginalCheckoutUserID`. Two input shapes:
+  `target_user_code` set (worker-pick path) or omitted (scan-shortcut
+  path: only valid when `item_code` resolves to a serialized instance,
+  whose open_checkouts row uniquely identifies the holder). Either way
+  the endpoint pre-flights the same rules `commit.Commit` re-enforces
+  (cart user is a foreman, has a group, target shares that group). The
+  pre-flight is UX only; commit is still the trust boundary.
 
 **Trust invariant: `OriginalCheckoutUserID` is server-resolved, never
-client-supplied.** It is populated only by `defaultActionFor` (when the
-scanned item is held by someone other than the cart's user) and is the marker
-that triggers the foreman+group cross-user gate in `commit.Commit`. Today
-this holds because the sole cart-write API path (`/api/kiosk/cart/add`)
-rebuilds the `*cart.Line` from server-side lookups and does not read the field
-from the request body. The PATCH path only updates `qty` and `action`. If you
-ever add a second cart-write path (rescan-to-update, batch import, bulk
-edit), it MUST also re-resolve through `defaultActionFor` — accepting an
-`OriginalCheckoutUserID` from the client would let a worker close another
-worker's open checkout without the foreman gate firing. Serialized returns
-are the sensitive case: `closeCheckoutsForLine` for serialized items targets
-the `item_instance` row globally, so a missing/forged `OriginalCheckoutUserID`
-on a serialized return would silently bypass the cross-user check.
+client-supplied.** It is populated only by `CartForemanReturn` — either
+from `target_user_code` looked up against `users` server-side, or
+derived from the resolved instance's open_checkouts row — and is the
+marker that triggers the foreman+group cross-user gate in
+`commit.Commit`. The ordinary cart-write API paths —
+`POST /api/kiosk/cart/add` and the PATCH update path — do NOT touch this
+field, by design. If you ever add another cart-write path (rescan-to-
+update, batch import, bulk edit), it MUST NOT accept
+`OriginalCheckoutUserID` from the request body; route any on-behalf-of
+intent through `CartForemanReturn`. Serialized returns are the sensitive
+case: `closeCheckoutsForLine` for serialized items targets the
+`item_instance` row globally, so a missing/forged
+`OriginalCheckoutUserID` on a serialized return would silently bypass
+the cross-user check.
+
+One related cart-store invariant: `cart.Store.AddLine` includes
+`OriginalCheckoutUserID` in its non-serialized merge key, so a
+foreman-return-for-Bob never stacks onto a same-item self-return — merging
+would strip the cross-user signal that commit's gate depends on.
+
+`Cart.UserRole` is a denormalized snapshot taken at `Start` time and
+refreshed when a cart is resumed within the idle window. The SPA reads
+it to gate the "Return on behalf of…" button visibility. The server
+re-reads role from the DB at both the foreman-return endpoint and at
+commit, so a stale snapshot is at worst a UI hint that fails late — never
+an auth bypass. Don't grow more decisions on top of this snapshot
+without that property in mind.
 
 **Scan resolution lives in its own package** (`internal/scan`) with the
 data-access functions injected as `Lookups`. The resolver order encodes

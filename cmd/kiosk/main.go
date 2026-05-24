@@ -225,6 +225,8 @@ func main() {
 		e.Router.GET("/branding/custom.css", h.CustomCSS)
 		e.Router.POST("/api/kiosk/cart/start", h.CartStart)
 		e.Router.POST("/api/kiosk/cart/add", h.CartAdd)
+		e.Router.GET("/api/kiosk/cart/foreman-return/options", h.CartForemanReturnOptions)
+		e.Router.POST("/api/kiosk/cart/foreman-return", h.CartForemanReturn)
 		e.Router.PATCH("/api/kiosk/cart/lines/{id}", h.CartUpdateLine)
 		e.Router.DELETE("/api/kiosk/cart/lines/{id}", h.CartDeleteLine)
 		e.Router.POST("/api/kiosk/cart/cancel", h.CartCancel)

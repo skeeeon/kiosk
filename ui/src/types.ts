@@ -42,9 +42,28 @@ export interface OpenCheckoutDetail {
   item_code: string
   item_name: string
   item_instance_id?: string
+  // The scannable code on the physical unit (what the resolver matches).
+  // The foreman-return dialog uses this when adding a serialized line so
+  // the server lands on the correct instance.
+  item_instance_code?: string
   instance_serial?: string
   qty: number
   checked_out_at: string
+}
+
+// Payload returned by GET /api/kiosk/cart/foreman-return/options. Workers
+// are filtered to members of the foreman's group who have at least one
+// open checkout (empty entries are not included).
+export interface ForemanReturnWorker {
+  user_id: string
+  user_code: string
+  user_name: string
+  open_checkouts: OpenCheckoutDetail[]
+}
+
+export interface ForemanReturnOptions {
+  group_code: string
+  workers: ForemanReturnWorker[]
 }
 
 export interface Item {
@@ -106,6 +125,11 @@ export interface Cart {
   user_id: string
   user_code: string
   user_name: string
+  // Denormalized snapshot from the active user record. The SPA reads this
+  // to gate foreman-only affordances (e.g. the "Return on behalf of…"
+  // button). Server re-reads role from the DB at commit time, so a stale
+  // value here is at worst a UI hint that fails late.
+  user_role: 'worker' | 'foreman'
   started_at: string
   expires_at: string
   lines: CartLine[]

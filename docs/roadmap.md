@@ -113,6 +113,17 @@ These started as deferred roadmap items and are now live in the binary:
   `open_checkouts`; the CheckoutView surfaces a collapsible panel
   above the cart so a worker reviewing their tally doesn't need an
   admin to look up "what does this user have out right now?"
+- **Explicit foreman returns.** Scanning a tool another worker has
+  out no longer implicitly switches the action to a cross-user
+  return — the natural reading for quantity-tracked tools is "give
+  me one too," not "close someone else's checkout." Foremen now
+  initiate cross-user returns through a dedicated "Return on behalf
+  of…" dialog that lists workers in their group with at least one
+  open checkout (hydrated via
+  `GET /api/kiosk/cart/foreman-return/options`) and accepts a
+  serialized-instance scan as a one-step shortcut. The dialog is the
+  sole writer of `Line.original_checkout_user_id`; the commit-time
+  foreman+same-group gate stays as the trust boundary.
 
 ## Roadmap
 

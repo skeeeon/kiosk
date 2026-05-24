@@ -14,6 +14,7 @@ import (
 	"github.com/skeeeon/kiosk/internal/events"
 	"github.com/skeeeon/kiosk/internal/kioskctx"
 	"github.com/skeeeon/kiosk/internal/notifications"
+	"github.com/skeeeon/kiosk/internal/scan"
 )
 
 // CartStart begins (or resumes) a cart for the badged-in user.
@@ -39,7 +40,7 @@ func (h *Handlers) CartStart(re *core.RequestEvent) error {
 		return re.BadRequestError("user is inactive", nil)
 	}
 
-	c := h.Carts.Start(user.Id, user.GetString("code"), user.GetString("name"))
+	c := h.Carts.Start(user.Id, user.GetString("code"), user.GetString("name"), user.GetString("role"))
 	return re.JSON(http.StatusOK, map[string]any{"cart": c})
 }
 
@@ -84,8 +85,249 @@ func (h *Handlers) CartAdd(re *core.RequestEvent) error {
 		return re.BadRequestError("instance is inactive", nil)
 	}
 
-	action, origUserID, origUserName, warnings, err := h.defaultActionFor(item, instance, c.UserID)
+	action, err := h.defaultActionFor(item, instance, c.UserID)
 	if err != nil {
+		return err
+	}
+
+	lineCode := item.GetString("code")
+	var lineSerial, instanceID, instanceCode string
+	if instance != nil {
+		lineCode = instance.GetString("code")
+		lineSerial = instance.GetString("serial")
+		instanceID = instance.Id
+		instanceCode = instance.GetString("code")
+	}
+
+	line := &cart.Line{
+		ItemID:           item.Id,
+		ItemCode:         lineCode,
+		ItemName:         item.GetString("name"),
+		ItemType:         item.GetString("type"),
+		TrackingMode:     item.GetString("tracking_mode"),
+		Action:           action,
+		Qty:              1,
+		Serial:           lineSerial,
+		ItemInstanceID:   instanceID,
+		ItemInstanceCode: instanceCode,
+	}
+
+	c, added, err := h.Carts.AddLine(body.CartID, line)
+	if err == nil {
+		// Recompute low-stock against the stacked total qty (AddLine may have
+		// merged into an existing line). Warning is informational only —
+		// commit doesn't reject on it.
+		if w, werr := lowStockWarning(h.App, item, added.Action, added.Qty); werr == nil && w != "" {
+			added.Warnings = setLowStockWarning(added.Warnings, w)
+		}
+	}
+	if err != nil {
+		switch {
+		case errors.Is(err, cart.ErrQtyOutOfRange):
+			return re.BadRequestError(fmt.Sprintf("qty per line is capped at %d", cart.MaxQty), nil)
+		case errors.Is(err, cart.ErrInvalidAction):
+			return re.BadRequestError("action is not valid for this item type", nil)
+		case errors.Is(err, cart.ErrDuplicateInstance):
+			return re.BadRequestError("this unit is already in your cart", nil)
+		}
+		return re.NotFoundError("cart not found or expired", nil)
+	}
+	return re.JSON(http.StatusOK, map[string]any{"cart": c, "line": added})
+}
+
+// ForemanReturnWorker is one entry in the picker the SPA renders for the
+// "Return on behalf of…" dialog. Only workers with at least one open
+// checkout are included — empty rows are dead UI.
+type ForemanReturnWorker struct {
+	UserID        string                    `json:"user_id"`
+	UserCode      string                    `json:"user_code"`
+	UserName      string                    `json:"user_name"`
+	OpenCheckouts []scan.OpenCheckoutDetail `json:"open_checkouts"`
+}
+
+// CartForemanReturnOptions powers the picker for the
+// "Return on behalf of…" dialog: the list of workers in the foreman's
+// group who have at least one open checkout, each hydrated with their
+// outstanding items. The SPA renders this directly — no follow-up
+// per-worker fetch.
+//
+// Pre-flight is the same as CartForemanReturn (cart user is a foreman with
+// a non-empty group). The cart user themselves is excluded from the list;
+// a foreman returning their own item uses the normal scan path.
+func (h *Handlers) CartForemanReturnOptions(re *core.RequestEvent) error {
+	cartID := re.Request.URL.Query().Get("cart_id")
+	if cartID == "" {
+		return re.BadRequestError("cart_id is required", nil)
+	}
+
+	c, err := h.Carts.Get(cartID)
+	if err != nil {
+		return re.NotFoundError("cart not found or expired", nil)
+	}
+
+	cartUser, err := h.App.FindRecordById("users", c.UserID)
+	if err != nil {
+		return re.NotFoundError("cart user not found", nil)
+	}
+	if cartUser.GetString("role") != "foreman" {
+		return re.ForbiddenError("only a foreman can access return-on-behalf options", nil)
+	}
+	groupID := cartUser.GetString("group")
+	if groupID == "" {
+		return re.ForbiddenError("foreman has no group set", nil)
+	}
+
+	group, err := h.App.FindRecordById("groups", groupID)
+	if err != nil {
+		return re.InternalServerError("find group", err)
+	}
+
+	// Inactive workers are deliberately *included*: the dialog's whole
+	// purpose is closing out absent workers' items, and "absent" often
+	// correlates with "inactive."
+	members, err := h.App.FindRecordsByFilter("users",
+		"group = {:g} && id != {:self}",
+		"name", 0, 0,
+		dbx.Params{"g": groupID, "self": c.UserID})
+	if err != nil {
+		return re.InternalServerError("find group members", err)
+	}
+
+	workers := make([]ForemanReturnWorker, 0, len(members))
+	for _, m := range members {
+		details := h.openCheckoutsForUser(m.Id)
+		if len(details) == 0 {
+			continue
+		}
+		workers = append(workers, ForemanReturnWorker{
+			UserID:        m.Id,
+			UserCode:      m.GetString("code"),
+			UserName:      m.GetString("name"),
+			OpenCheckouts: details,
+		})
+	}
+
+	return re.JSON(http.StatusOK, map[string]any{
+		"group_code": group.GetString("code"),
+		"workers":    workers,
+	})
+}
+
+// CartForemanReturn adds a return line on behalf of another worker. This is
+// the *only* path that populates Line.OriginalCheckoutUserID — keeping the
+// trust invariant documented in CLAUDE.md tight: the cart never reads that
+// id from the client, only from a server-side resolve of target_user_code.
+//
+// Pre-flight enforces the same rules commit.go enforces at transaction time
+// (cart user is a foreman, has a group, and the target shares that group)
+// so a confused foreman gets an immediate error instead of a cryptic
+// failure five scans later. Commit remains the trust boundary; this is just
+// good UX.
+func (h *Handlers) CartForemanReturn(re *core.RequestEvent) error {
+	var body struct {
+		CartID         string `json:"cart_id"`
+		ItemCode       string `json:"item_code"`
+		TargetUserCode string `json:"target_user_code"`
+	}
+	if err := re.BindBody(&body); err != nil {
+		return re.BadRequestError("invalid request body", err)
+	}
+	if body.CartID == "" || body.ItemCode == "" {
+		return re.BadRequestError("cart_id and item_code are required", nil)
+	}
+
+	c, err := h.Carts.Get(body.CartID)
+	if err != nil {
+		return re.NotFoundError("cart not found or expired", nil)
+	}
+
+	cartUser, err := h.App.FindRecordById("users", c.UserID)
+	if err != nil {
+		return re.NotFoundError("cart user not found", nil)
+	}
+	if cartUser.GetString("role") != "foreman" {
+		return re.ForbiddenError("only a foreman can return items on behalf of another worker", nil)
+	}
+	cartUserGroup := cartUser.GetString("group")
+	if cartUserGroup == "" {
+		return re.ForbiddenError("foreman has no group set; cross-user returns require a group", nil)
+	}
+
+	item, instance, err := h.resolveScannableForCart(body.ItemCode)
+	if err != nil {
+		if isNotFound(err) {
+			return re.NotFoundError("item not found", nil)
+		}
+		return err
+	}
+	if !item.GetBool("active") {
+		return re.BadRequestError("item is inactive", nil)
+	}
+	if item.GetString("type") == "consumable" {
+		return re.BadRequestError("consumables cannot be returned", nil)
+	}
+	if item.GetString("tracking_mode") == "serialized" && instance == nil {
+		return re.BadRequestError("select a specific unit (instance) for this serialized item", nil)
+	}
+
+	// Two input shapes:
+	//   - target_user_code provided → caller picked from the workers list
+	//     (or supplied a known code). Validate as before.
+	//   - target_user_code omitted  → "I have the physical tool in hand"
+	//     shortcut. Only valid for serialized items: the instance's open
+	//     checkout uniquely identifies the holder, so we can derive
+	//     target_user_code server-side from the open_checkouts row.
+	//
+	// Either way the same-group check applies, and the open_checkouts row
+	// must exist (no uncorrelated returns from this endpoint).
+	var target *core.Record
+	if body.TargetUserCode != "" {
+		target, err = h.App.FindFirstRecordByFilter("users", "code = {:code}", dbx.Params{"code": body.TargetUserCode})
+		if isNotFound(err) {
+			return re.NotFoundError("target worker not found", nil)
+		}
+		if err != nil {
+			return err
+		}
+	} else {
+		if instance == nil {
+			return re.BadRequestError("target_user_code is required when the item is not serialized", nil)
+		}
+		open, err := h.App.FindFirstRecordByFilter("open_checkouts",
+			"item_instance = {:inst}", dbx.Params{"inst": instance.Id})
+		if isNotFound(err) {
+			return re.NotFoundError(fmt.Sprintf("%s is not currently checked out", instance.GetString("code")), nil)
+		}
+		if err != nil {
+			return err
+		}
+		target, err = h.App.FindRecordById("users", open.GetString("user"))
+		if err != nil {
+			return re.InternalServerError("resolve holder", err)
+		}
+	}
+
+	if target.Id == c.UserID {
+		return re.BadRequestError("this unit is checked out to you; scan it normally to return your own", nil)
+	}
+	if target.GetString("group") != cartUserGroup {
+		return re.ForbiddenError(fmt.Sprintf("%s is held by %s in a different group; an admin must handle cross-group returns", item.GetString("name"), target.GetString("name")), nil)
+	}
+
+	// Confirm the target actually has this item/instance out. For the
+	// derive-from-instance path above this is a redundant check on the
+	// instance's row, but it also covers the worker-pick path's case where
+	// the row may have been returned between the picker fetch and submit.
+	openFilter := "item = {:item} && user = {:user}"
+	openParams := dbx.Params{"item": item.Id, "user": target.Id}
+	if instance != nil {
+		openFilter = "item_instance = {:inst} && user = {:user}"
+		openParams = dbx.Params{"inst": instance.Id, "user": target.Id}
+	}
+	if _, err := h.App.FindFirstRecordByFilter("open_checkouts", openFilter, openParams); err != nil {
+		if isNotFound(err) {
+			return re.NotFoundError(fmt.Sprintf("%s does not have %s out", target.GetString("name"), item.GetString("name")), nil)
+		}
 		return err
 	}
 
@@ -104,25 +346,16 @@ func (h *Handlers) CartAdd(re *core.RequestEvent) error {
 		ItemName:                 item.GetString("name"),
 		ItemType:                 item.GetString("type"),
 		TrackingMode:             item.GetString("tracking_mode"),
-		Action:                   action,
+		Action:                   "return",
 		Qty:                      1,
 		Serial:                   lineSerial,
 		ItemInstanceID:           instanceID,
 		ItemInstanceCode:         instanceCode,
-		OriginalCheckoutUserID:   origUserID,
-		OriginalCheckoutUserName: origUserName,
-		Warnings:                 warnings,
+		OriginalCheckoutUserID:   target.Id,
+		OriginalCheckoutUserName: target.GetString("name"),
 	}
 
 	c, added, err := h.Carts.AddLine(body.CartID, line)
-	if err == nil {
-		// Recompute low-stock against the stacked total qty (AddLine may have
-		// merged into an existing line). Warning is informational only —
-		// commit doesn't reject on it.
-		if w, werr := lowStockWarning(h.App, item, added.Action, added.Qty); werr == nil && w != "" {
-			added.Warnings = setLowStockWarning(added.Warnings, w)
-		}
-	}
 	if err != nil {
 		switch {
 		case errors.Is(err, cart.ErrQtyOutOfRange):
@@ -378,20 +611,22 @@ func (notFoundErr) Is(target error) bool {
 //
 //   - consumable → consume
 //   - tool checked out to the cart's user → return
-//   - tool checked out to another user → return + cross_user_return warning
-//   - tool not checked out → checkout
+//   - tool not checked out (by this user) → checkout
 //
 // When an instance is supplied (serialized scan), open-checkout lookups are
 // scoped to that exact instance — Bob's drill SN-B doesn't count against
 // Alice scanning drill SN-A.
 //
-// Cross-user and uncorrelated policy toggles in config aren't enforced here —
-// the cart freely accepts any action; the commit hook enforces them.
-func (h *Handlers) defaultActionFor(item, instance *core.Record, cartUserID string) (
-	action, origUserID, origUserName string, warnings []string, err error,
-) {
+// Returning a tool another worker has out is *not* an implicit default — for
+// quantity-tracked tools the natural read of "Bob has one out, I scan the
+// SKU" is "give me one too," and even for serialized the action of taking
+// over someone else's open checkout deserves explicit intent. That path
+// lives in CartForemanReturn, which is the sole writer of
+// OriginalCheckoutUserID on cart lines (preserving the trust invariant
+// documented in CLAUDE.md).
+func (h *Handlers) defaultActionFor(item, instance *core.Record, cartUserID string) (string, error) {
 	if item.GetString("type") == "consumable" {
-		return "consume", "", "", nil, nil
+		return "consume", nil
 	}
 
 	filter := "item = {:item} && user = {:user}"
@@ -403,32 +638,10 @@ func (h *Handlers) defaultActionFor(item, instance *core.Record, cartUserID stri
 
 	self, err := h.App.FindFirstRecordByFilter("open_checkouts", filter, params)
 	if err != nil && !isNotFound(err) {
-		return "", "", "", nil, err
+		return "", err
 	}
 	if self != nil {
-		return "return", "", "", nil, nil
+		return "return", nil
 	}
-
-	// To someone else?
-	otherFilter := "item = {:item}"
-	otherParams := dbx.Params{"item": item.Id}
-	if instance != nil {
-		otherFilter = "item_instance = {:inst}"
-		otherParams = dbx.Params{"inst": instance.Id}
-	}
-	other, err := h.App.FindFirstRecordByFilter("open_checkouts", otherFilter, otherParams)
-	if err != nil && !isNotFound(err) {
-		return "", "", "", nil, err
-	}
-	if other != nil {
-		holderID := other.GetString("user")
-		var holderName string
-		if u, e := h.App.FindRecordById("users", holderID); e == nil && u != nil {
-			holderName = u.GetString("name")
-		}
-		return "return", holderID, holderName,
-			[]string{"cross_user_return:" + holderName}, nil
-	}
-
-	return "checkout", "", "", nil, nil
+	return "checkout", nil
 }

@@ -46,7 +46,7 @@ func openCheckoutCountForItem(app core.App, itemID string) (int, error) {
 
 // setLowStockWarning returns the warnings slice with any prior low_stock:*
 // entry replaced by the given one (or removed when w is ""). Other warnings
-// (cross_user_return:*, etc.) are preserved in their original order.
+// are preserved in their original order.
 func setLowStockWarning(warnings []string, w string) []string {
 	out := warnings[:0:0]
 	for _, x := range warnings {
@@ -65,8 +65,8 @@ func setLowStockWarning(warnings []string, w string) []string {
 // requested qty for the given action would exceed available stock, or "" if
 // no warning is needed. Returns are exempt: returning a tool can't reduce
 // availability of that tool. Serialized items are exempt too — the action
-// defaulting already produces a return / cross_user_return warning when the
-// scanned instance is out, which is the more useful signal for this case.
+// defaulting already produces a return when the scanned instance is out to
+// the cart user, and serialized lines never stack to qty>1.
 func lowStockWarning(app core.App, item *core.Record, action string, qty int) (string, error) {
 	if qty <= 0 || action == "return" {
 		return "", nil

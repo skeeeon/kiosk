@@ -26,16 +26,19 @@ type User struct {
 
 // OpenCheckoutDetail is one row in User.OpenCheckouts. Mirrors the
 // open_checkouts.id + item + (optional) instance shape the SPA needs to
-// render the panel.
+// render the panel. ItemInstanceCode is the scannable code on the
+// physical unit (what the resolver matches against), distinct from
+// InstanceSerial which is the human-readable label printed on the tool.
 type OpenCheckoutDetail struct {
-	ID             string `json:"id"`
-	ItemID         string `json:"item_id"`
-	ItemCode       string `json:"item_code"`
-	ItemName       string `json:"item_name"`
-	ItemInstanceID string `json:"item_instance_id,omitempty"`
-	InstanceSerial string `json:"instance_serial,omitempty"`
-	Qty            int    `json:"qty"`
-	CheckedOutAt   string `json:"checked_out_at"`
+	ID               string `json:"id"`
+	ItemID           string `json:"item_id"`
+	ItemCode         string `json:"item_code"`
+	ItemName         string `json:"item_name"`
+	ItemInstanceID   string `json:"item_instance_id,omitempty"`
+	ItemInstanceCode string `json:"item_instance_code,omitempty"`
+	InstanceSerial   string `json:"instance_serial,omitempty"`
+	Qty              int    `json:"qty"`
+	CheckedOutAt     string `json:"checked_out_at"`
 }
 
 type Item struct {

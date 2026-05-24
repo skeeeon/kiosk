@@ -5,12 +5,14 @@ import ScanInput from '../components/ScanInput.vue'
 import CartTable from '../components/CartTable.vue'
 import ItemBrowseDialog from '../components/ItemBrowseDialog.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
+import ForemanReturnDialog from '../components/ForemanReturnDialog.vue'
 import IdentifyPanel from '../components/IdentifyPanel.vue'
 import { useCart } from '../composables/useCart'
 import { useKioskIdentity } from '../composables/useKioskIdentity'
 import { useSessionStore } from '../stores/session'
 import { ApiError } from '../lib/api'
 import type {
+  Cart,
   CartAction,
   CartLine,
   CommitResult,
@@ -48,6 +50,7 @@ const success = ref<Receipt | null>(null)
 const committing = ref(false)
 const browseOpen = ref(false)
 const browsePending = ref(false)
+const foremanReturnOpen = ref(false)
 const crossUserConfirmOpen = ref(false)
 const cancelConfirmOpen = ref(false)
 
@@ -156,12 +159,15 @@ function handleApiError(e: unknown, fallbackPrefix?: string) {
   session.setFlash('error', fallbackPrefix ? `${fallbackPrefix}: ${msg}` : msg)
 }
 
+// Cart lines created via the explicit foreman-return endpoint carry the
+// target worker's id. The commit confirm uses this to remind the foreman
+// what they're about to close on someone else's behalf.
 const crossUserLines = computed<CartLine[]>(() => {
   if (!cart.value) return []
-  return cart.value.lines.filter((l) =>
-    (l.warnings ?? []).some((w) => w.startsWith('cross_user_return:')),
-  )
+  return cart.value.lines.filter((l) => !!l.original_checkout_user_id)
 })
+
+const isForeman = computed(() => cart.value?.user_role === 'foreman')
 
 const ACTION_LABEL: Record<CartAction, string> = {
   checkout: 'Checked out',
@@ -239,13 +245,7 @@ async function onScan(raw: string) {
       ? (result.record as InstanceMatch).instance.code
       : (result.record as Item).code
     try {
-      const line = await c.addItem(code)
-      if (line.warnings && line.warnings.length > 0) {
-        const first = line.warnings[0]
-        if (first.startsWith('cross_user_return:')) {
-          session.setFlash('warn', `Returning ${first.slice('cross_user_return:'.length)}'s ${line.item_name}`)
-        }
-      }
+      await c.addItem(code)
       await scrollCartToBottom()
     } catch (e) {
       handleApiError(e)
@@ -300,20 +300,22 @@ async function onBrowsePick(code: string) {
   browsePending.value = true
   try {
     const line = await c.addItem(code)
-    if (line.warnings && line.warnings.length > 0) {
-      const first = line.warnings[0]
-      if (first.startsWith('cross_user_return:')) {
-        session.setFlash('warn', `Returning ${first.slice('cross_user_return:'.length)}'s ${line.item_name}`)
-      }
-    } else {
-      session.setFlash('info', `Added ${line.item_name}`)
-    }
+    session.setFlash('info', `Added ${line.item_name}`)
     await scrollCartToBottom()
   } catch (e) {
     handleApiError(e)
   } finally {
     browsePending.value = false
   }
+}
+
+function onForemanReturnAdded(payload: { cart: Cart; line: CartLine }) {
+  session.setCart(payload.cart)
+  session.setFlash(
+    'warn',
+    `Foreman return queued: ${payload.line.original_checkout_user_name ?? 'worker'} · ${payload.line.item_name}`,
+  )
+  void scrollCartToBottom()
 }
 
 function onCommit() {
@@ -352,11 +354,7 @@ function onConfirmCrossUser() {
 
 const crossUserSummary = computed(() =>
   crossUserLines.value
-    .map((l) => {
-      const w = (l.warnings ?? []).find((x) => x.startsWith('cross_user_return:'))
-      const who = w ? w.slice('cross_user_return:'.length) : 'someone else'
-      return `${l.item_code} — ${who}`
-    })
+    .map((l) => `${l.item_code} — ${l.original_checkout_user_name ?? 'another worker'}`)
     .join('\n'),
 )
 
@@ -608,13 +606,21 @@ const flashClasses = {
 
     <!-- Pinned to the bottom of the main so the commit button sits in a
          predictable place regardless of how many lines are in the cart. -->
-    <div class="mt-8 flex gap-3 justify-end shrink-0">
+    <div class="mt-8 flex gap-3 justify-end shrink-0 flex-wrap">
       <button
         type="button"
         class="px-6 py-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-lg mr-auto"
         @click="browseOpen = true"
       >
         Browse items
+      </button>
+      <button
+        v-if="isForeman"
+        type="button"
+        class="px-6 py-4 rounded-xl bg-amber-700/80 hover:bg-amber-700 text-white text-lg"
+        @click="foremanReturnOpen = true"
+      >
+        Return on behalf of…
       </button>
       <button
         type="button"
@@ -644,6 +650,14 @@ const flashClasses = {
     @update:open="browseOpen = $event"
     @pick="onBrowsePick"
     @error="session.setFlash('error', $event)"
+  />
+
+  <ForemanReturnDialog
+    v-if="cart"
+    :open="foremanReturnOpen"
+    :cart-id="cart.id"
+    @update:open="foremanReturnOpen = $event"
+    @added="onForemanReturnAdded"
   />
 
   <ConfirmDialog

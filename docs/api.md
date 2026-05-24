@@ -10,7 +10,9 @@ PB's `/api/collections/*` is used for PB-native CRUD.
 | `GET` | `/api/kiosk/identity` | none | Returns `{kiosk_code, location_code, branding, max_qty, managed}` — `managed` is true when this kiosk is opted into central control |
 | `POST` | `/api/kiosk/scan` | none | Resolves a raw scan to `user`, `item`, or `unknown` |
 | `POST` | `/api/kiosk/cart/start` | none | Returns existing or new cart for a user code |
-| `POST` | `/api/kiosk/cart/add` | none | Appends or stacks a line; computes default action |
+| `POST` | `/api/kiosk/cart/add` | none | Appends or stacks a line; computes default action. Defaults: consumable → `consume`; tool already out to the cart's user → `return`; otherwise → `checkout`. Never sets `original_checkout_user_id` — cross-user returns flow through the dedicated endpoint below. |
+| `GET` | `/api/kiosk/cart/foreman-return/options` | none | Returns the picker payload for the "Return on behalf of…" dialog: workers in the cart user's group who have ≥1 open checkout, hydrated with their outstanding rows. Requires the cart user to be a `foreman` with a non-empty group. Query: `?cart_id=…`. |
+| `POST` | `/api/kiosk/cart/foreman-return` | none | Adds a return line on behalf of another worker. Body: `{cart_id, item_code, target_user_code?}`. `target_user_code` is optional only when `item_code` resolves to a **serialized** instance — the server derives the holder from the instance's open_checkouts row. Pre-flights cart user is a `foreman` with a group and target is in the same group; same checks the commit gate re-enforces. **Only writer of `Line.original_checkout_user_id`.** |
 | `PATCH` | `/api/kiosk/cart/lines/{id}` | none | Update qty and/or action on a line |
 | `DELETE` | `/api/kiosk/cart/lines/{id}` | none | Remove a line |
 | `POST` | `/api/kiosk/cart/cancel` | none | Discard an in-progress cart |

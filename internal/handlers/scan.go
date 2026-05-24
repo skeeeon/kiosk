@@ -116,6 +116,7 @@ func (h *Handlers) openCheckoutsForUser(userID string) []scan.OpenCheckoutDetail
 		if instID := r.GetString("item_instance"); instID != "" {
 			d.ItemInstanceID = instID
 			if inst := instanceByID[instID]; inst != nil {
+				d.ItemInstanceCode = inst.GetString("code")
 				d.InstanceSerial = inst.GetString("serial")
 			}
 		}

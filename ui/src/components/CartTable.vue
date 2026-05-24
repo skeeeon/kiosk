@@ -42,9 +42,6 @@ function actionClasses(line: CartLine, action: CartAction): string {
 }
 
 function warningLabel(w: string): string {
-  if (w.startsWith('cross_user_return:')) {
-    return `Currently checked out to ${w.slice('cross_user_return:'.length)}`
-  }
   if (w.startsWith('low_stock:available=')) {
     const n = w.slice('low_stock:available='.length)
     return n === '0'
@@ -131,8 +128,17 @@ function warningClasses(w: string): string {
         </button>
       </div>
 
-      <!-- Warnings stay full-width below; cross-user returns especially need
-           to be obvious before commit. -->
+      <!-- Foreman-return chip: a line carrying original_checkout_user_id is
+           an explicit "I'm closing this on behalf of X" action — make that
+           visible before commit so the foreman sees what they queued up. -->
+      <div
+        v-if="line.original_checkout_user_id"
+        class="rounded-lg bg-amber-900/40 border border-amber-700/60 text-amber-200 text-sm px-3 py-2"
+      >
+        Foreman return: {{ line.original_checkout_user_name || 'another worker' }}
+      </div>
+
+      <!-- Other warnings stay full-width below. -->
       <div
         v-for="w in line.warnings ?? []"
         :key="w"

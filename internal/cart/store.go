@@ -39,10 +39,16 @@ type Line struct {
 }
 
 type Cart struct {
-	ID        string    `json:"id"`
-	UserID    string    `json:"user_id"`
-	UserCode  string    `json:"user_code"`
-	UserName  string    `json:"user_name"`
+	ID       string `json:"id"`
+	UserID   string `json:"user_id"`
+	UserCode string `json:"user_code"`
+	UserName string `json:"user_name"`
+	// UserRole is a denormalized snapshot used by the SPA to gate
+	// foreman-only affordances (e.g. the "Return on behalf of…" button).
+	// The server re-reads role from the DB at commit and at the
+	// foreman-return endpoint, so a stale snapshot here is at worst a UI
+	// hint that fails late, never an auth bypass.
+	UserRole  string    `json:"user_role"`
 	StartedAt time.Time `json:"started_at"`
 	ExpiresAt time.Time `json:"expires_at"`
 	Lines     []*Line   `json:"lines"`
@@ -92,7 +98,9 @@ func NewStore(idleTimeout time.Duration) *Store {
 
 // Start returns the user's existing non-expired cart if one exists; otherwise
 // creates a new cart. Idempotent for the same user within the idle window.
-func (s *Store) Start(userID, userCode, userName string) *Cart {
+// Resuming refreshes the role snapshot so a role change between scans is
+// picked up without forcing the worker to cancel and re-badge.
+func (s *Store) Start(userID, userCode, userName, userRole string) *Cart {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -103,6 +111,7 @@ func (s *Store) Start(userID, userCode, userName string) *Cart {
 			continue
 		}
 		if c.UserID == userID {
+			c.UserRole = userRole
 			c.ExpiresAt = now.Add(s.idleTimeout)
 			return c
 		}
@@ -113,6 +122,7 @@ func (s *Store) Start(userID, userCode, userName string) *Cart {
 		UserID:    userID,
 		UserCode:  userCode,
 		UserName:  userName,
+		UserRole:  userRole,
 		StartedAt: now,
 		ExpiresAt: now.Add(s.idleTimeout),
 		Lines:     []*Line{},
@@ -146,7 +156,14 @@ func (s *Store) AddLine(cartID string, in *Line) (*Cart, *Line, error) {
 
 	if in.TrackingMode == "quantity" {
 		for _, existing := range c.Lines {
-			if existing.ItemID == in.ItemID && existing.Action == in.Action {
+			// OriginalCheckoutUserID is part of the merge key: a foreman-return
+			// for Bob's hammer and a self-return for the foreman's own hammer
+			// look identical otherwise but mean different things, and merging
+			// them would mask the cross-user signal that the commit gate
+			// depends on.
+			if existing.ItemID == in.ItemID &&
+				existing.Action == in.Action &&
+				existing.OriginalCheckoutUserID == in.OriginalCheckoutUserID {
 				if existing.Qty+in.Qty > MaxQty {
 					return nil, nil, ErrQtyOutOfRange
 				}

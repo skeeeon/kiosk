@@ -25,7 +25,8 @@ scanning:
   item_barcode_prefix: ""      # Optional. Same idea for items.
 
 returns:
-  allow_cross_user: true       # Bob can return Alice's tool (with UI warning).
+  allow_cross_user: true       # Allow foremen to return another worker's tool
+                               # via the "Return on behalf of…" dialog (same-group only).
   allow_uncorrelated: true     # Accept returns of items not currently checked out.
 
 controller:                    # Optional. Opt-in to central catalog sync.
@@ -76,6 +77,17 @@ commit time:
 These rules apply regardless of the kill-switch flags; setting
 `allow_cross_user: false` simply short-circuits the foreman check by
 rejecting any cross-user return outright.
+
+Cross-user returns are an **explicit** kiosk action: scanning a tool
+another worker has out defaults to `checkout` (for quantity-tracked tools
+the natural reading is "give me one too"; for serialized the resolver
+still routes to `return` only when the cart user owns the open checkout).
+A foreman initiates a cross-user return through the on-screen "Return on
+behalf of…" dialog, which lists workers in the foreman's group who have
+items out and accepts a serialized scan as a one-step shortcut. The
+dialog is the only client surface that populates
+`original_checkout_user_id` on a cart line; the regular `/cart/add`
+endpoint never does. See [api.md](api.md) for the endpoint signatures.
 
 ### NATS
 
