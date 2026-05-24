@@ -64,6 +64,17 @@ of truth for catalog plus a unified transaction ledger.
   endpoints fast-fail with **503 `{error: "kiosk_offline",
   kiosk_code, command_id}`** when the kiosk's heartbeat is stale, so
   the SPA doesn't wait 5 s for a NATS timeout to render "offline."
+- **Instance management commands** mirror the inventory family for
+  serialized units: `instance.snapshot` (read), `instance.create`,
+  `instance.edit` (cosmetic — no audit, no lifecycle event),
+  `instance.decommission`, `instance.reactivate`. Mutations write to
+  the kiosk's `item_instances` + `instance_audit` and emit the same
+  `instance.lifecycle` event the SPA-driven PB-hook path emits; the
+  controller's existing projection (`instance_lifecycle_audit`) can't
+  tell where the mutation originated except via the `source` field
+  (`local` vs `controller`). Idempotency anchor is the unique-when-non-
+  empty `command_id` index on `instance_audit`. The Instances tab on
+  the controller's per-kiosk detail page drives all five.
 - **Notifications, centralized.** Managed kiosks publish two
   notification subjects on the same JetStream stream —
   `receipt.transaction` (one per commit) and `alert.lowstock` (one per
@@ -130,9 +141,10 @@ What it **doesn't** do in v1 (deliberately out of scope):
 - Tightening PB collection rules on managed kiosks (the projector uses
   the DAO, so rules don't matter; UI gating handles the admin
   experience).
-- Other remote admin commands — only inventory adjust + snapshot ship
-  in v1. The dispatcher's `HandleFunc` registry makes adding a new
-  command a one-handler change.
+- Other remote admin commands — only inventory adjust + snapshot,
+  checkout close, and instance management (create / edit / decommission /
+  reactivate / snapshot) ship today. The dispatcher's `HandleFunc`
+  registry makes adding a new command a one-handler change.
 
 ## Reports surface
 
@@ -238,7 +250,7 @@ The controller's PocketBase admin UI lives at the same paths as a
 kiosk's: `/_/` for the PB superuser, `/admin/login` for the kiosk
 admin. The Kiosks list view (`/admin/kiosks`) shows the fleet with
 online badges; clicking a row opens the per-kiosk detail view at
-`/admin/kiosks/<code>`, which has three tabs:
+`/admin/kiosks/<code>`, which has four tabs:
 
 - **Overview** — editable location, status, and notes; the live online
   indicator and last-transaction timestamp.
@@ -248,6 +260,10 @@ online badges; clicking a row opens the per-kiosk detail view at
   the kiosk via the `inventory.snapshot` NATS command, with a per-row
   Adjust button that drives the corresponding `inventory.adjust`
   command.
+- **Instances** — the serialized-unit roster fetched via
+  `instance.snapshot`. Create, edit (cosmetic), decommission, and
+  reactivate each map to a matching NATS command. Decommission +
+  reactivate require a reason that lands in the audit log.
 
 Use the Items view to add/edit items globally; user edits fan out to
 every managed kiosk. Item edits fan out only to the kiosks that stock

@@ -227,6 +227,15 @@ func main() {
 		e.Router.POST("/api/controller/kiosks/{code}/inventory/adjust", h.InventoryAdjust(nc, hbRegistry))
 		e.Router.POST("/api/controller/kiosks/{code}/checkouts/{source_line_id}/close", h.CheckoutClose(nc, hbRegistry))
 
+		// Remote item-instance management. Mirrors the inventory family of
+		// commands; idempotency is on the kiosk side via instance_audit's
+		// unique-when-non-empty command_id index.
+		e.Router.GET("/api/controller/kiosks/{code}/instances", h.InstanceSnapshot(nc, hbRegistry))
+		e.Router.POST("/api/controller/kiosks/{code}/instances", h.InstanceCreate(nc, hbRegistry))
+		e.Router.PATCH("/api/controller/kiosks/{code}/instances/{instance_code}", h.InstanceEdit(nc, hbRegistry))
+		e.Router.POST("/api/controller/kiosks/{code}/instances/{instance_code}/decommission", h.InstanceDecommission(nc, hbRegistry))
+		e.Router.POST("/api/controller/kiosks/{code}/instances/{instance_code}/reactivate", h.InstanceReactivate(nc, hbRegistry))
+
 		// Fleet-wide reports. Low-stock fans out inventory.snapshot to
 		// every online kiosk in parallel and joins with the controller's
 		// projected ledger to compute available quantities.

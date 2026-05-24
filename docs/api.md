@@ -35,6 +35,11 @@ PB's `/api/collections/*` is used for PB-native CRUD.
 | `GET` | `/api/controller/kiosks/{code}/inventory` | admin | **Controller only.** Fires the `inventory.snapshot` command over NATS request/reply; returns the kiosk's live on-hand for every stocked item. 503 `{error: "kiosk_offline", kiosk_code}` when stale heartbeat or NATS timeout. |
 | `POST` | `/api/controller/kiosks/{code}/inventory/adjust` | admin | **Controller only.** Server-generates a `command_id`, fires `inventory.adjust` to the kiosk over NATS request/reply. Body: `{item_code, mode, value, reason}`. Idempotent via `command_id`; 503 on offline. |
 | `POST` | `/api/controller/kiosks/{code}/checkouts/{source_line_id}/close` | admin | **Controller only.** Forwards an admin force-close to a remote kiosk over NATS request/reply (`checkout.close` command). `source_line_id` is the kiosk-side `transaction_lines.id` from the projected ledger. Body: `{reason, notes?}`. Server-generates `command_id` for idempotent replay; 503 `{error: "kiosk_offline"}` when the kiosk is offline. Kiosk-side converges on `commit.AdminClose` so behavior is identical to a local close. |
+| `GET` | `/api/controller/kiosks/{code}/instances` | admin | **Controller only.** Fires the `instance.snapshot` command. Optional `?item_code=` filters. Returns `{instances: [{instance_id, instance_code, item_code, item_name, serial, rfid_epc, active, notes, created, updated}]}`. 503 on offline. |
+| `POST` | `/api/controller/kiosks/{code}/instances` | admin | **Controller only.** Fires `instance.create`. Body: `{item_code, code, serial?, rfid_epc?, notes?, active?}`. Idempotent via server-generated `command_id`. 503 on offline. |
+| `PATCH` | `/api/controller/kiosks/{code}/instances/{instance_code}` | admin | **Controller only.** Fires `instance.edit` — cosmetic-only (no audit, no lifecycle event). Body: any subset of `{code, serial, rfid_epc, notes}`. 503 on offline. |
+| `POST` | `/api/controller/kiosks/{code}/instances/{instance_code}/decommission` | admin | **Controller only.** Fires `instance.decommission`. Body: `{reason}` (required). Writes audit + emits `instance.lifecycle`. Idempotent via `command_id`; 503 on offline. |
+| `POST` | `/api/controller/kiosks/{code}/instances/{instance_code}/reactivate` | admin | **Controller only.** Fires `instance.reactivate`. Same body + idempotency shape as decommission. |
 | `GET` | `/api/controller/reports/low-stock` | admin | **Controller only.** Fleet-wide low-stock report. Fans `inventory.snapshot` to every online managed kiosk in parallel, joins each kiosk's snapshot with `out` counts derived from the controller's projected ledger, and returns rows whose `available ≤ reorder_threshold`. Optional `?kiosk_code=` scopes to one kiosk. Response shape: `{rows: [...], errors: [{kiosk_code, error}]}` — offline kiosks appear in `errors` so partial results are explicit. |
 | `GET` | `/api/controller/notifications` | admin | **Controller only.** List notification templates. Same DTO as the kiosk's `/api/kiosk/notifications`. |
 | `PATCH` | `/api/controller/notifications/{event_type}` | admin | **Controller only.** Update subject/body/enabled/recipients on a template. |
@@ -106,7 +111,7 @@ don't ride JetStream:
 | Subject | Direction | Transport |
 |---|---|---|
 | `{prefix}.{kiosk_code}.heartbeat` | kiosk → controller | Core NATS publish, 45s cadence. No persistence — last-write-wins is the entire signal. |
-| `{prefix}.{kiosk_code}.command.<name>` | controller → kiosk | Core NATS request/reply, ≤5 s reply timeout. Today: `inventory.adjust`, `inventory.snapshot`. |
+| `{prefix}.{kiosk_code}.command.<name>` | controller → kiosk | Core NATS request/reply, ≤5 s reply timeout. Today: `inventory.adjust`, `inventory.snapshot`, `checkout.close`, `instance.create`, `instance.edit`, `instance.decommission`, `instance.reactivate`, `instance.snapshot`. |
 
 The `KIOSK_EVENTS` stream's `FilterSubjects` deliberately excludes both
 — heartbeats and commands should never be replayed from a durable

@@ -189,6 +189,33 @@ func InventorySnapshotCommandSubject(kioskCode string) string {
 	return CommandSubject(kioskCode, "inventory.snapshot")
 }
 
+// Instance command subjects mirror the inventory family. Mutations
+// (create, edit, decommission, reactivate) are idempotent via command_id;
+// the snapshot read is unconditionally safe to replay. The kiosk's
+// dispatcher routes on the suffix — adding a new one means adding a
+// handler in internal/commands and (optionally) a builder here for the
+// controller side to call by name rather than CommandSubject() with a
+// literal.
+func InstanceCreateCommandSubject(kioskCode string) string {
+	return CommandSubject(kioskCode, "instance.create")
+}
+
+func InstanceEditCommandSubject(kioskCode string) string {
+	return CommandSubject(kioskCode, "instance.edit")
+}
+
+func InstanceDecommissionCommandSubject(kioskCode string) string {
+	return CommandSubject(kioskCode, "instance.decommission")
+}
+
+func InstanceReactivateCommandSubject(kioskCode string) string {
+	return CommandSubject(kioskCode, "instance.reactivate")
+}
+
+func InstanceSnapshotCommandSubject(kioskCode string) string {
+	return CommandSubject(kioskCode, "instance.snapshot")
+}
+
 // HeartbeatSubject is the subject a kiosk publishes a periodic liveness
 // beacon on. Core NATS publish (no JetStream) — last-write-wins, no
 // persistence. The controller subscribes plainly and tracks the most recent

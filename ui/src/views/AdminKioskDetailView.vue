@@ -1,9 +1,11 @@
 <!-- AdminKioskDetailView is the controller's per-kiosk admin surface. Lifted
-     out of KioskDialog so each tab gets real estate to grow. Three tabs:
+     out of KioskDialog so each tab gets real estate to grow. Four tabs:
 
        Overview  — fields + heartbeat-derived online indicator
        Items     — KioskItemsPanel (catalog membership)
        Inventory — KioskInventoryPanel (live qty, remote adjust)
+       Instances — KioskInstancesPanel (serialized-unit roster + remote
+                   create / edit / decommission / reactivate)
 
      Path: /admin/kiosks/:code. The :code param is the kiosk_code, not the
      PB record ID, so deep-links are stable across re-registrations. -->
@@ -15,6 +17,7 @@ import { api } from '../lib/api'
 import { useAdminToast } from '../composables/useAdminToast'
 import KioskItemsPanel from '../components/KioskItemsPanel.vue'
 import KioskInventoryPanel from '../components/KioskInventoryPanel.vue'
+import KioskInstancesPanel from '../components/KioskInstancesPanel.vue'
 import type { HeartbeatsResponse, KioskRecord } from '../types'
 
 const props = defineProps<{ code: string }>()
@@ -26,7 +29,7 @@ const loading = ref(false)
 const error = ref<string | null>(null)
 const saving = ref(false)
 
-type TabId = 'overview' | 'items' | 'inventory'
+type TabId = 'overview' | 'items' | 'inventory' | 'instances'
 const activeTab = ref<TabId>('overview')
 
 // editable mirror of kiosk fields. kiosk_code is identity once persisted —
@@ -198,7 +201,7 @@ function back() {
 
     <div v-if="kiosk" class="flex gap-1 mb-4 border-b border-slate-800">
       <button
-        v-for="t in (['overview','items','inventory'] as TabId[])"
+        v-for="t in (['overview','items','inventory','instances'] as TabId[])"
         :key="t"
         type="button"
         class="px-4 py-2 text-sm border-b-2 -mb-px"
@@ -207,7 +210,7 @@ function back() {
           : 'border-transparent text-slate-400 hover:text-slate-200'"
         @click="activeTab = t"
       >
-        {{ t === 'overview' ? 'Overview' : t === 'items' ? 'Items' : 'Inventory' }}
+        {{ t === 'overview' ? 'Overview' : t === 'items' ? 'Items' : t === 'inventory' ? 'Inventory' : 'Instances' }}
       </button>
     </div>
 
@@ -271,6 +274,10 @@ function back() {
 
     <div v-if="kiosk && activeTab === 'inventory'">
       <KioskInventoryPanel :kiosk-code="kiosk.kiosk_code" />
+    </div>
+
+    <div v-if="kiosk && activeTab === 'instances'">
+      <KioskInstancesPanel :kiosk-code="kiosk.kiosk_code" />
     </div>
   </main>
 </template>

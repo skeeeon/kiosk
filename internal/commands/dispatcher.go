@@ -67,6 +67,11 @@ func NewDispatcher(app core.App, kioskCode string) *Dispatcher {
 	d.handlers["inventory.adjust"] = d.handleInventoryAdjust
 	d.handlers["inventory.snapshot"] = d.handleInventorySnapshot
 	d.handlers["checkout.close"] = d.handleCheckoutClose
+	d.handlers["instance.create"] = d.handleInstanceCreate
+	d.handlers["instance.edit"] = d.handleInstanceEdit
+	d.handlers["instance.decommission"] = d.handleInstanceDecommission
+	d.handlers["instance.reactivate"] = d.handleInstanceReactivate
+	d.handlers["instance.snapshot"] = d.handleInstanceSnapshot
 	return d
 }
 
