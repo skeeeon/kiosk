@@ -28,6 +28,7 @@ import (
 	"github.com/skeeeon/kiosk/internal/events"
 	"github.com/skeeeon/kiosk/internal/notifications"
 	"github.com/skeeeon/kiosk/internal/scheduler"
+	"github.com/skeeeon/kiosk/internal/ui"
 
 	"github.com/skeeeon/kiosk/migrations"
 )
@@ -246,9 +247,9 @@ func main() {
 		// projected ledger to compute available quantities.
 		e.Router.GET("/api/controller/reports/low-stock", h.ReportLowStock(nc, hbRegistry))
 
-		// Serve the same Vue SPA the kiosk uses. The SPA detects role at
-		// boot via /api/kiosk/identity and gates its UI accordingly.
-		e.Router.GET("/{path...}", apis.Static(os.DirFS("./pb_public"), true))
+		// Serve the same embedded Vue SPA the kiosk uses. The SPA detects
+		// role at boot via /api/kiosk/identity and gates its UI accordingly.
+		e.Router.GET("/{path...}", apis.Static(ui.FS(), true))
 
 		return e.Next()
 	})

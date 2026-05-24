@@ -6,8 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A self-service tool/consumable checkout kiosk. One Go binary (`cmd/kiosk`) that
 embeds PocketBase (REST API + SQLite + admin UI at `/_/`) and serves a Vue 3
-SPA from `pb_public/`. No separate API server, no separate database, no
-external runtime dependencies. Designed to run on a mini-PC with a touchscreen
+SPA compiled into the binary via `//go:embed` (see `internal/ui/embed.go`).
+No separate API server, no separate database, no external runtime
+dependencies — the binary is a single self-contained artifact. Designed to run on a mini-PC with a touchscreen
 and USB HID barcode scanner; the SPA listens to window-level keydown to read
 scans.
 
@@ -42,7 +43,7 @@ go build -o kiosk-controller ./cmd/controller
 
 # Frontend
 npm install --prefix ui
-npm run build --prefix ui                # outputs to pb_public/ (served by Go binary)
+npm run build --prefix ui                # outputs to internal/ui/dist/ (embedded into Go binary at build)
 npm run dev --prefix ui                  # Vite dev server on :5173, proxies /api + /_ to :8090
 ```
 
@@ -60,9 +61,19 @@ The same row logic backs the HTTP importer at
 binaries expose it, sharing `internal/csvimport.Run`.
 
 Frontend dev loop: run both the Go binary and `npm run dev` — Vite proxies
-`/api` and `/_` to the Go process. Frontend build emits to `pb_public/` (not
-`ui/dist/`); the Go binary serves that directory via `apis.Static` with
-`indexFallback=true` so client-side routes resolve.
+`/api` and `/_` to the Go process. Frontend build emits to `internal/ui/dist/`,
+which `internal/ui/embed.go` pulls into both binaries via `//go:embed all:dist`.
+Production binaries serve the embedded FS via `apis.Static(ui.FS(), true)` with
+`indexFallback=true` so client-side routes resolve. **Build order matters:**
+`go build` will fail with an embed error if `internal/ui/dist/` is empty, so
+run `npm run build --prefix ui` first on a fresh clone.
+
+Branding overrides (`branding.logo_path`, `branding.custom_css_path` in
+config) are read from disk at request time by separate handlers
+(`internal/handlers/branding.go`) — they intentionally stay outside the
+embed so a single binary can be re-skinned per deployment without rebuilding.
+That's the **only** thing that needs to sit next to the binary; `pb_data/`
+and `pb_data_controller/` are created on first run.
 
 ## Tests
 

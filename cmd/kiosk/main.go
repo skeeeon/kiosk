@@ -24,6 +24,7 @@ import (
 	"github.com/skeeeon/kiosk/internal/kioskctx"
 	"github.com/skeeeon/kiosk/internal/notifications"
 	"github.com/skeeeon/kiosk/internal/scheduler"
+	"github.com/skeeeon/kiosk/internal/ui"
 
 	// Register schema migrations via init() side effects.
 	_ "github.com/skeeeon/kiosk/migrations"
@@ -227,10 +228,10 @@ func main() {
 		e.Router.PATCH("/api/kiosk/notifications/{event_type}", h.UpdateNotificationTemplate)
 		e.Router.GET("/api/kiosk/notifications/{event_type}/defaults", h.GetNotificationTemplateDefaults)
 
-		// Serve the Vue SPA from pb_public. indexFallback=true means unknown
+		// Serve the embedded Vue SPA. indexFallback=true means unknown
 		// paths return index.html so client-side routes (/admin/*) resolve.
 		// PocketBase's own /api/* and /_/* routes win on specificity.
-		e.Router.GET("/{path...}", apis.Static(os.DirFS("./pb_public"), true))
+		e.Router.GET("/{path...}", apis.Static(ui.FS(), true))
 
 		return e.Next()
 	})

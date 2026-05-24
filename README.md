@@ -71,7 +71,7 @@ it via config. See [docs/controller.md](docs/controller.md).
 │         kiosk-app (Go binary)                   │
 │         ├── PocketBase (REST API, hooks, /_/)   │
 │         ├── /api/kiosk/* custom routes          │
-│         └── Vue SPA served from pb_public/      │
+│         └── Vue SPA (embedded via //go:embed)   │
 │                                                 │
 │              ↑                                  │
 │      USB Barcode Scanner (HID keyboard)         │
@@ -99,7 +99,7 @@ on the SKU.
 | Routing | Vue Router |
 | Styling | Tailwind 4 |
 | Headless components | Reka UI (accessibility primitives) |
-| Build | Vite 6 → `pb_public/` |
+| Build | Vite 6 → `internal/ui/dist/` → `//go:embed` into Go binary |
 | API client | PocketBase JS SDK 0.21 (admin CRUD); plain `fetch` (kiosk flow) |
 | Messaging | NATS JetStream (optional) — durable streams for event aggregation, KV buckets for catalog distribution |
 
@@ -127,7 +127,8 @@ kiosk/
 ├── ui/                          Vue 3 SPA source (Vite project)
 ├── pb_data/                     Kiosk SQLite (gitignored, created on first run)
 ├── pb_data_controller/          Controller SQLite (gitignored; controller binary uses this)
-├── pb_public/                   Built SPA (gitignored, created by Vite)
+├── internal/ui/                 //go:embed seam: dist/ holds the Vite output, embedded into both binaries at build time
+├── branding/                    Optional on-disk branding overrides (logo, custom CSS) — sit next to the binary, not embedded
 ├── kiosk.yaml                   Kiosk config (gitignored)
 ├── kiosk.yaml.example           Kiosk config template
 ├── controller.yaml.example      Controller config template
@@ -140,11 +141,11 @@ kiosk/
 # 1. Clone, then from the project root:
 go mod download
 
-# 2. Build the SPA into pb_public/
+# 2. Build the SPA — emits to internal/ui/dist/, which is embedded into the Go binary
 npm install --prefix ui
 npm run build --prefix ui
 
-# 3. Build the Go binary
+# 3. Build the Go binary (must run step 2 first — //go:embed will fail on an empty dist/)
 go build -o kiosk-app.exe ./cmd/kiosk     # on Linux/Mac: go build -o kiosk-app ./cmd/kiosk
 
 # 4. Copy and customize the config

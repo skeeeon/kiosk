@@ -2,9 +2,14 @@
 
 ## `localhost:8090` returns `{"message":"The requested resource wasn't found."}`
 
-The Go binary didn't find `pb_public/`. Run `npm run build --prefix ui`
-and restart. The build outputs the SPA into `pb_public/` next to the
-binary.
+The binary's embedded SPA bundle is empty. This happens when `go build`
+ran against an empty `internal/ui/dist/` (e.g., a fresh clone without
+`npm run build`). Rebuild in order:
+
+```
+npm run build --prefix ui      # populates internal/ui/dist/
+go build ./cmd/kiosk           # //go:embed picks up the new dist
+```
 
 ## "scan didn't trigger anything" during development
 

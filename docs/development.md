@@ -34,10 +34,13 @@ npm run dev --prefix ui                   # opens http://localhost:5173
 The Vite config proxies `/api` and `/_` to `http://127.0.0.1:8090`, so the
 dev server hits your local Go binary for everything dynamic.
 
-To produce a production SPA bundle for the binary to serve:
+To produce a production SPA bundle, run the npm build then re-run `go build`.
+Vite writes to `internal/ui/dist/`, which `internal/ui/embed.go` pulls into
+both binaries at compile time via `//go:embed`:
 
 ```powershell
-npm run build --prefix ui                 # writes to pb_public/
+npm run build --prefix ui                 # writes to internal/ui/dist/
+go build -o kiosk-app.exe ./cmd/kiosk     # embeds the dist/ bundle
 ```
 
 ## Resetting the database
