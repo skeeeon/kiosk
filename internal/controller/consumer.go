@@ -47,15 +47,22 @@ type EventPayload struct {
 	Returned   int       `json:"returned,omitempty"`
 	Consumed   int       `json:"consumed,omitempty"`
 
-	// item.{action} fields.
-	LineID       string `json:"line_id,omitempty"`
-	ItemID       string `json:"item_id,omitempty"`
-	ItemCode     string `json:"item_code,omitempty"`
-	ItemName     string `json:"item_name,omitempty"`
-	Action       string `json:"action,omitempty"`
-	Qty          int    `json:"qty,omitempty"`
-	Serial       string `json:"serial,omitempty"`
-	Uncorrelated bool   `json:"uncorrelated,omitempty"`
+	// item.{action} fields. OriginalCheckoutUserCode populates the
+	// projected line's original_checkout_user FK (looked up against the
+	// controller's catalog-synced users by code, since IDs differ across
+	// binaries); ItemInstanceID is opaque text matching the kiosk's
+	// item_instances.id, used to pair serialized checkout/return rows
+	// during open_checkouts projection.
+	LineID                   string `json:"line_id,omitempty"`
+	ItemID                   string `json:"item_id,omitempty"`
+	ItemCode                 string `json:"item_code,omitempty"`
+	ItemName                 string `json:"item_name,omitempty"`
+	Action                   string `json:"action,omitempty"`
+	Qty                      int    `json:"qty,omitempty"`
+	Serial                   string `json:"serial,omitempty"`
+	Uncorrelated             bool   `json:"uncorrelated,omitempty"`
+	OriginalCheckoutUserCode string `json:"original_checkout_user_code,omitempty"`
+	ItemInstanceID           string `json:"item_instance_id,omitempty"`
 
 	// inventory.adjust fields. AdminID is shared with integrity.rebuild;
 	// ControllerAdminID is populated only when source=controller so the
@@ -306,13 +313,12 @@ func (a *Aggregator) handle(ctx context.Context, msg jetstream.Msg) {
 			"inserted", payload.Inserted)
 		_ = msg.Ack()
 	case strings.HasSuffix(subject, ".checkout.admin_close"):
-		// Audit-only today. The kiosk emits one of these per admin-driven
-		// close; the projected transaction_lines row (which arrives via the
-		// regular item.{action} → ProjectLine path doesn't exist for
-		// admin_close because the kiosk doesn't publish an item.admin_close
-		// event — only checkout.admin_close). The matching transaction
-		// itself rides the transaction.complete subject. For now we just
-		// log; a future projector can light up by reading the same payload.
+		// Log first so the audit trail survives even if the deletion path
+		// retries. The kiosk emits one of these per admin-driven close; the
+		// transaction_line row itself rides transaction.complete (the kiosk
+		// doesn't publish item.admin_close as an item action), so this is
+		// the only subject that can close out the projected open_checkouts
+		// row on the controller's side.
 		slog.Info("controller.aggregator.checkout_admin_close",
 			"subject", subject,
 			"kiosk_code", payload.KioskCode,
@@ -322,7 +328,7 @@ func (a *Aggregator) handle(ctx context.Context, msg jetstream.Msg) {
 			"source", payload.Source,
 			"admin_id", payload.AdminID,
 			"controller_admin_id", payload.ControllerAdminID)
-		_ = msg.Ack()
+		a.handleCheckoutAdminClose(msg, payload)
 	case strings.HasSuffix(subject, ".instance.lifecycle"):
 		a.handleInstanceLifecycle(msg, payload)
 	default:
@@ -591,12 +597,24 @@ func (a *Aggregator) ProjectTransaction(p EventPayload) projectOutcome {
 }
 
 func (a *Aggregator) handleItemAction(msg jetstream.Msg, p EventPayload) {
+	// ProjectLine must come first — the open_checkouts projector needs the
+	// projected line FK in hand. Both projectors are idempotent against
+	// redelivery, so a partial success on the first attempt (line written,
+	// open_checkouts row not) just means the next redelivery skips ProjectLine
+	// and retries the open_checkouts side.
 	switch a.ProjectLine(p) {
 	case projectAck:
-		_ = msg.Ack()
+		// proceed
 	case projectRetry:
 		// For "parent not yet here", a delay is better than immediate
 		// redelivery so the transaction.complete has time to land.
+		_ = msg.NakWithDelay(2 * time.Second)
+		return
+	}
+	switch a.projectOpenCheckoutsForItemAction(p) {
+	case projectAck:
+		_ = msg.Ack()
+	case projectRetry:
 		_ = msg.NakWithDelay(2 * time.Second)
 	}
 }
@@ -658,6 +676,19 @@ func (a *Aggregator) ProjectLine(p EventPayload) projectOutcome {
 	if p.Uncorrelated {
 		rec.Set("uncorrelated", true)
 	}
+	if p.OriginalCheckoutUserCode != "" {
+		// Best-effort: an unknown user_code (catalog drift) drops the FK
+		// rather than failing projection. Same posture as the unknown-item
+		// branch above.
+		if u, err := a.findUserByCode(p.OriginalCheckoutUserCode); err == nil && u != nil {
+			rec.Set("original_checkout_user", u.Id)
+		}
+	}
+	// We deliberately don't write the item_instance RelationField on the
+	// controller's transaction_lines — instances are kiosk-local, so the
+	// FK would fail to resolve. The serialized-return matching that needs
+	// the instance identifier lives on open_checkouts via the parallel
+	// source_item_instance_id text column.
 	rec.Set("source_line_id", p.LineID)
 	if err := a.app.Save(rec); err != nil {
 		if isUniqueViolation(err) {
@@ -741,7 +772,19 @@ func (a *Aggregator) findLine(sourceLineID string) (*core.Record, error) {
 }
 
 func (a *Aggregator) findUserByCode(code string) (*core.Record, error) {
-	rec, err := a.app.FindFirstRecordByFilter("users",
+	return findUserByCodeOnApp(a.app, code)
+}
+
+func (a *Aggregator) findItemByCode(code string) (*core.Record, error) {
+	return findItemByCodeOnApp(a.app, code)
+}
+
+// findUserByCodeOnApp / findItemByCodeOnApp accept an explicit core.App so
+// callers inside RunInTransaction closures (where the tx's app must be used
+// instead of a.app) can share the same lookup shape as the Aggregator-method
+// path. Returns nil record / nil error when no row matches.
+func findUserByCodeOnApp(app core.App, code string) (*core.Record, error) {
+	rec, err := app.FindFirstRecordByFilter("users",
 		"code = {:c}",
 		dbx.Params{"c": code})
 	if err != nil {
@@ -753,8 +796,8 @@ func (a *Aggregator) findUserByCode(code string) (*core.Record, error) {
 	return rec, nil
 }
 
-func (a *Aggregator) findItemByCode(code string) (*core.Record, error) {
-	rec, err := a.app.FindFirstRecordByFilter("items",
+func findItemByCodeOnApp(app core.App, code string) (*core.Record, error) {
+	rec, err := app.FindFirstRecordByFilter("items",
 		"code = {:c}",
 		dbx.Params{"c": code})
 	if err != nil {

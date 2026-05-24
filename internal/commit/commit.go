@@ -206,24 +206,44 @@ func Commit(app core.App, c *cart.Cart, id kioskctx.Identity, policy Policy, pub
 				result.Consumed++
 			}
 
+			// Resolve the original holder's user code for the event payload
+			// when this line carries OriginalCheckoutUserID — the controller
+			// needs the code (its user IDs differ from ours) to populate the
+			// projected original_checkout_user FK. Same-user returns reuse
+			// c.UserCode without a second lookup.
+			var origUserCode string
+			if l.OriginalCheckoutUserID != "" {
+				if l.OriginalCheckoutUserID == c.UserID {
+					origUserCode = c.UserCode
+				} else {
+					u, err := tx.FindRecordById("users", l.OriginalCheckoutUserID)
+					if err != nil {
+						return fmt.Errorf("find original checkout user %s: %w", l.OriginalCheckoutUserID, err)
+					}
+					origUserCode = u.GetString("code")
+				}
+			}
+
 			lineEvents = append(lineEvents, lineEvent{
 				Subject: events.ItemActionSubject(id.KioskCode, l.Action),
 				Payload: events.BuildItemActionPayload(events.ItemActionInput{
-					TransactionID: txRec.Id,
-					LineID:        lineRec.Id,
-					KioskCode:     id.KioskCode,
-					LocationCode:  id.LocationCode,
-					UserID:        c.UserID,
-					UserCode:      c.UserCode,
-					UserGroup:     cartUserGroupCode,
-					ItemID:        itemRec.Id,
-					ItemCode:      itemRec.GetString("code"),
-					ItemName:      itemRec.GetString("name"),
-					Action:        l.Action,
-					Qty:           l.Qty,
-					Serial:        l.Serial,
-					Uncorrelated:  lineRec.GetBool("uncorrelated"),
-					CompletedAt:   completedAt,
+					TransactionID:            txRec.Id,
+					LineID:                   lineRec.Id,
+					KioskCode:                id.KioskCode,
+					LocationCode:             id.LocationCode,
+					UserID:                   c.UserID,
+					UserCode:                 c.UserCode,
+					UserGroup:                cartUserGroupCode,
+					ItemID:                   itemRec.Id,
+					ItemCode:                 itemRec.GetString("code"),
+					ItemName:                 itemRec.GetString("name"),
+					Action:                   l.Action,
+					Qty:                      l.Qty,
+					Serial:                   l.Serial,
+					Uncorrelated:             lineRec.GetBool("uncorrelated"),
+					OriginalCheckoutUserCode: origUserCode,
+					ItemInstanceID:           l.ItemInstanceID,
+					CompletedAt:              completedAt,
 				}),
 			})
 		}

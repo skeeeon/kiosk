@@ -145,23 +145,37 @@ func republishLedger(app core.App, filter string, params dbx.Params, publish fun
 			if err != nil {
 				continue
 			}
+			// Resolve original_checkout_user → code, mirroring the live commit
+			// path so a republish recreates the controller's projection of
+			// cross-user returns. Self-returns where the FK matches the
+			// transaction's user skip the second lookup.
+			var origUserCode string
+			if origID := l.GetString("original_checkout_user"); origID != "" {
+				if origID == userRec.Id {
+					origUserCode = userRec.GetString("code")
+				} else if u, err := app.FindRecordById("users", origID); err == nil {
+					origUserCode = u.GetString("code")
+				}
+			}
 			publish(events.ItemActionSubject(kioskCode, l.GetString("action")),
 				events.BuildItemActionPayload(events.ItemActionInput{
-					TransactionID: tx.Id,
-					LineID:        l.Id,
-					KioskCode:     kioskCode,
-					LocationCode:  locationCode,
-					UserID:        userRec.Id,
-					UserCode:      userRec.GetString("code"),
-					UserGroup:     tx.GetString("user_group"),
-					ItemID:        itemRec.Id,
-					ItemCode:      itemRec.GetString("code"),
-					ItemName:      itemRec.GetString("name"),
-					Action:        l.GetString("action"),
-					Qty:           l.GetInt("qty"),
-					Serial:        l.GetString("serial"),
-					Uncorrelated:  l.GetBool("uncorrelated"),
-					CompletedAt:   completedAt,
+					TransactionID:            tx.Id,
+					LineID:                   l.Id,
+					KioskCode:                kioskCode,
+					LocationCode:             locationCode,
+					UserID:                   userRec.Id,
+					UserCode:                 userRec.GetString("code"),
+					UserGroup:                tx.GetString("user_group"),
+					ItemID:                   itemRec.Id,
+					ItemCode:                 itemRec.GetString("code"),
+					ItemName:                 itemRec.GetString("name"),
+					Action:                   l.GetString("action"),
+					Qty:                      l.GetInt("qty"),
+					Serial:                   l.GetString("serial"),
+					Uncorrelated:             l.GetBool("uncorrelated"),
+					OriginalCheckoutUserCode: origUserCode,
+					ItemInstanceID:           l.GetString("item_instance"),
+					CompletedAt:              completedAt,
 				}))
 			out.LinesPublished++
 		}

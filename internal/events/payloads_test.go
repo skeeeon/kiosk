@@ -80,7 +80,9 @@ func TestBuildItemActionPayload_KeyShape(t *testing.T) {
 		"kiosk_code", "location_code",
 		"user_id", "user_code", "user_group",
 		"item_id", "item_code", "item_name",
-		"action", "qty", "serial", "uncorrelated", "completed_at",
+		"action", "qty", "serial", "uncorrelated",
+		"original_checkout_user_code", "item_instance_id",
+		"completed_at",
 	}
 	assertKeysEqual(t, "item.action", got, want)
 

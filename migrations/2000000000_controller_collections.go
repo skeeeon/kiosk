@@ -48,6 +48,10 @@ func RegisterControllerMigrations() {
 		// every instance.lifecycle event for the Instance lifecycle
 		// Reports tab.
 		RegisterInstanceLifecycleAuditMigration()
+		// kiosk_code column on open_checkouts so the controller can hold
+		// the whole fleet's open rows in one table. Projection writes via
+		// ProjectOpenCheckouts in internal/controller/consumer.go.
+		RegisterOpenCheckoutsKioskCodeMigration()
 	})
 }
 

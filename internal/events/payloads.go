@@ -67,44 +67,60 @@ func BuildTransactionCompletePayload(in TransactionCompleteInput) map[string]any
 }
 
 // ItemActionInput holds the fields needed to emit one
-// item.{checkout|return|consume} event.
+// item.{checkout|return|consume|admin_close} event.
+//
+// OriginalCheckoutUserCode is the user-code of the holder being returned to
+// (for cross-user foreman returns) or empty for self/no-op cases. The
+// controller's transaction_lines projection uses it to populate the
+// original_checkout_user FK after a code → record lookup against its own
+// (catalog-synced) users collection.
+//
+// ItemInstanceID is the kiosk-local item_instances.id string for serialized
+// lines (and admin_closes on serialized rows). The controller stores it as
+// opaque text; matching during open_checkouts projection is by equality
+// within a kiosk_code scope, so the value just needs to be consistent
+// between the checkout and the matching return.
 type ItemActionInput struct {
-	TransactionID string
-	LineID        string
-	KioskCode     string
-	LocationCode  string
-	UserID        string
-	UserCode      string
-	UserGroup     string
-	ItemID        string
-	ItemCode      string
-	ItemName      string
-	Action        string
-	Qty           int
-	Serial        string
-	Uncorrelated  bool
-	CompletedAt   time.Time
+	TransactionID            string
+	LineID                   string
+	KioskCode                string
+	LocationCode             string
+	UserID                   string
+	UserCode                 string
+	UserGroup                string
+	ItemID                   string
+	ItemCode                 string
+	ItemName                 string
+	Action                   string
+	Qty                      int
+	Serial                   string
+	Uncorrelated             bool
+	OriginalCheckoutUserCode string
+	ItemInstanceID           string
+	CompletedAt              time.Time
 }
 
 // BuildItemActionPayload renders the input into the map shape the publisher
 // expects.
 func BuildItemActionPayload(in ItemActionInput) map[string]any {
 	return map[string]any{
-		"transaction_id": in.TransactionID,
-		"line_id":        in.LineID,
-		"kiosk_code":     in.KioskCode,
-		"location_code":  in.LocationCode,
-		"user_id":        in.UserID,
-		"user_code":      in.UserCode,
-		"user_group":     in.UserGroup,
-		"item_id":        in.ItemID,
-		"item_code":      in.ItemCode,
-		"item_name":      in.ItemName,
-		"action":         in.Action,
-		"qty":            in.Qty,
-		"serial":         in.Serial,
-		"uncorrelated":   in.Uncorrelated,
-		"completed_at":   in.CompletedAt,
+		"transaction_id":              in.TransactionID,
+		"line_id":                     in.LineID,
+		"kiosk_code":                  in.KioskCode,
+		"location_code":               in.LocationCode,
+		"user_id":                     in.UserID,
+		"user_code":                   in.UserCode,
+		"user_group":                  in.UserGroup,
+		"item_id":                     in.ItemID,
+		"item_code":                   in.ItemCode,
+		"item_name":                   in.ItemName,
+		"action":                      in.Action,
+		"qty":                         in.Qty,
+		"serial":                      in.Serial,
+		"uncorrelated":                in.Uncorrelated,
+		"original_checkout_user_code": in.OriginalCheckoutUserCode,
+		"item_instance_id":            in.ItemInstanceID,
+		"completed_at":                in.CompletedAt,
 	}
 }
 
