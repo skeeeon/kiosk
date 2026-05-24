@@ -150,6 +150,7 @@ function onSubmitAndAdd() {
             class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100"
           >
             <option value="open_checkouts">Currently checked out</option>
+            <option value="daily_activity">Daily activity</option>
           </select>
         </label>
         <label class="flex items-center gap-2 text-slate-300 mt-6">

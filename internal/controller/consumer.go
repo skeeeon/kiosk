@@ -231,6 +231,7 @@ func (a *Aggregator) ensureConsumer(ctx context.Context, stream jetstream.Stream
 			events.ReceiptTransactionFilter(),
 			events.LowStockAlertFilter(),
 			events.OpenChecksDigestFilter(),
+			events.DailyActivityDigestFilter(),
 		},
 	}
 	return stream.CreateOrUpdateConsumer(ctx, cfg)
@@ -255,6 +256,9 @@ func (a *Aggregator) handle(ctx context.Context, msg jetstream.Msg) {
 		return
 	case strings.HasSuffix(subject, ".digest.open_checkouts"):
 		a.handleOpenChecksDigest(msg)
+		return
+	case strings.HasSuffix(subject, ".digest.daily_activity"):
+		a.handleDailyActivityDigest(msg)
 		return
 	}
 

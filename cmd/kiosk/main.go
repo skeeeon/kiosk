@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -169,15 +170,19 @@ func main() {
 	if cfg.Controller.Enabled {
 		kioskCode := cfg.Kiosk.Code
 		send = func(eventType string, data any, recipients notifications.Recipients) error {
-			digestCtx, ok := data.(notifications.OpenChecksDigestContext)
-			if !ok {
-				return fmt.Errorf("managed-mode scheduler: unsupported payload type %T for event %q",
-					data, eventType)
+			subject, err := digestSubjectFor(eventType, kioskCode)
+			if err != nil {
+				return err
 			}
-			events.Publish(
-				events.OpenChecksDigestSubject(kioskCode),
-				notifications.DigestEnvelope{Context: digestCtx, Recipients: recipients},
-			)
+			payload, err := json.Marshal(data)
+			if err != nil {
+				return fmt.Errorf("managed-mode scheduler: marshal %q payload: %w", eventType, err)
+			}
+			events.Publish(subject, notifications.DigestEnvelope{
+				EventType:  eventType,
+				Context:    payload,
+				Recipients: recipients,
+			})
 			// events.Publish is fire-and-forget — slogs on failure, no
 			// error return. Treat a publish as "accepted" for the schedule
 			// row's last_status; the actual send outcome lives on the
@@ -261,4 +266,17 @@ func configPath() string {
 		return p
 	}
 	return "kiosk.yaml"
+}
+
+// digestSubjectFor maps a digest event type to its kiosk-scoped NATS
+// subject. Adding a new digest means adding both an event-type constant
+// in internal/notifications and a case here.
+func digestSubjectFor(eventType, kioskCode string) (string, error) {
+	switch eventType {
+	case notifications.EventTypeOpenChecksDigest:
+		return events.OpenChecksDigestSubject(kioskCode), nil
+	case notifications.EventTypeDailyActivity:
+		return events.DailyActivityDigestSubject(kioskCode), nil
+	}
+	return "", fmt.Errorf("managed-mode scheduler: no NATS subject for event %q", eventType)
 }

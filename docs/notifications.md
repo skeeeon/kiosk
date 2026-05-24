@@ -1,11 +1,12 @@
 # Notifications
 
-The admin SPA's **Notifications** tab manages three event types out of
-the box: transaction receipts, low-stock alerts, and scheduled
-open-checkouts digests. Each event has an editable subject + body (Go
-`text/template` syntax) and an editable recipients spec
-(`worker_email`, `all_admins`, `extras: []`). Sends are logged one row
-per recipient with `status` = `sent` / `failed` / `skipped`.
+The admin SPA's **Notifications** tab manages four event types out of
+the box: transaction receipts, low-stock alerts, scheduled
+open-checkouts digests, and scheduled daily-activity digests. Each
+event has an editable subject + body (Go `text/template` syntax) and
+an editable recipients spec (`worker_email`, `all_admins`, `extras:
+[]`). Sends are logged one row per recipient with `status` = `sent` /
+`failed` / `skipped`.
 
 Where templates are authored, where SMTP credentials live, and where
 the audit trail lands depends on whether the kiosk is managed:
@@ -32,15 +33,29 @@ the local notifier. The aggregator subscribes to:
   Day-scoped dedup is the intended semantics: "tell me once per item
   per day," not just a redelivery guard.
 - `{prefix}.{kiosk_code}.digest.open_checkouts` — a `DigestEnvelope`
-  (`{context, recipients}`) carrying the per-schedule recipients
-  override. No dedup: digests are meant to fire each cadence.
+  (`{event_type, context, recipients}`) carrying the per-schedule
+  recipients override. No dedup: digests are meant to fire each
+  cadence. The `context` is a JSON-encoded `OpenChecksDigestContext`.
+- `{prefix}.{kiosk_code}.digest.daily_activity` — same envelope shape,
+  with the `context` a JSON-encoded `DailyActivityContext`. Window
+  span is sized by the schedule's cadence: `daily` → last 24h,
+  `weekly` → 7d, `monthly` → 30d. Scope is per-kiosk; admins running a
+  fleet get one email per kiosk per fire.
 
-Schedule rows stay on each kiosk because the controller doesn't project
-`open_checkouts`. The kiosk's scheduler computes the digest locally and
-ships the envelope; the controller renders against its own template,
-sends to the embedded recipients, and writes its own send-log row. The
-kiosk's `scheduled_reports.last_status` reflects the *publish* outcome
-— view the controller's "Recent sends" tab for the SMTP outcome.
+The envelope's `event_type` field discriminates between digest
+contexts so a single wire shape serves every digest type. New digests
+slot in by adding a new event-type constant, a default
+subject/body, a runner, an `events.*DigestSubject` builder, and a
+dispatch case on the controller side — no envelope changes needed.
+
+Schedule rows stay on each kiosk because the kiosk owns the data the
+digests aggregate (`open_checkouts` is kiosk-local; transactions are
+projected but a per-kiosk digest still wants its kiosk's identity).
+The kiosk's scheduler computes the digest locally and ships the
+envelope; the controller renders against its own template, sends to
+the embedded recipients, and writes its own send-log row. The kiosk's
+`scheduled_reports.last_status` reflects the *publish* outcome — view
+the controller's "Recent sends" tab for the SMTP outcome.
 
 `recipients.all_admins` resolves against whichever app's `admins`
 collection the notifier is bound to — controller admins on the

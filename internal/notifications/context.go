@@ -1,6 +1,7 @@
 package notifications
 
 import (
+	"encoding/json"
 	"strconv"
 	"time"
 
@@ -128,15 +129,66 @@ func (c OpenChecksDigestContext) PayloadSummary() string {
 	return c.Kiosk.Code + " · " + strconv.Itoa(c.RowsCount) + " open rows"
 }
 
+// DailyActivityItemRow is one entry in the top-items leaderboard of a
+// daily-activity digest. LineCount is "how many distinct transaction_lines
+// touched this item in the window," not the qty sum — the latter is
+// dominated by consumables and would mask serialized-tool activity.
+type DailyActivityItemRow struct {
+	ItemCode  string
+	ItemName  string
+	LineCount int
+}
+
+// DailyActivityWorkerRow mirrors DailyActivityItemRow for the top-workers
+// leaderboard.
+type DailyActivityWorkerRow struct {
+	UserCode  string
+	UserName  string
+	LineCount int
+}
+
+// DailyActivityContext drives the digest.daily_activity template. The
+// window is sized by the schedule row's cadence (daily=24h, weekly=7d,
+// monthly=30d); the kiosk-side runner stamps WindowStart/WindowEnd and
+// the action counters here so the controller side is purely render+SMTP.
+type DailyActivityContext struct {
+	Kiosk            KioskInfo
+	GeneratedAt      time.Time
+	WindowStart      time.Time
+	WindowEnd        time.Time
+	Cadence          string // "daily" | "weekly" | "monthly"
+	TransactionCount int
+	LinesCount       int
+	UniqueUsers      int
+	CheckedOut       int
+	Returned         int
+	Consumed         int
+	TopItems         []DailyActivityItemRow   // up to 5
+	TopWorkers       []DailyActivityWorkerRow // up to 5
+}
+
+// PayloadSummary surfaces a compact "kiosk · cadence · N txns / M lines"
+// line in the send log.
+func (c DailyActivityContext) PayloadSummary() string {
+	return c.Kiosk.Code + " · " + c.Cadence + " · " +
+		strconv.Itoa(c.TransactionCount) + " txns / " +
+		strconv.Itoa(c.LinesCount) + " lines"
+}
+
 // DigestEnvelope is the wire shape published over NATS for managed-kiosk
-// scheduled digests. The kiosk computes the context locally (open_checkouts
-// is kiosk-local data the controller doesn't project) and ships it together
-// with the per-schedule recipients spec so the controller can render the
-// fleet-global template AND honor the per-schedule audience. Lives in the
-// notifications package because both sides import it.
+// scheduled digests. The kiosk computes the context locally (kiosk-local
+// data the controller may not project — open_checkouts, transaction
+// aggregates) and ships it together with the per-schedule recipients
+// spec so the controller can render the fleet-global template AND honor
+// the per-schedule audience.
+//
+// Context is a json.RawMessage rather than a concrete type so this single
+// envelope serves every digest event type. The controller dispatcher
+// branches on EventType to choose the right unmarshal target.
 type DigestEnvelope struct {
-	Context    OpenChecksDigestContext `json:"context"`
-	Recipients Recipients              `json:"recipients"`
+	EventType  string          `json:"event_type"`
+	Context    json.RawMessage `json:"context"`
+	Recipients Recipients      `json:"recipients"`
 }
 
 // BuildReceiptContext assembles the template payload from the values the

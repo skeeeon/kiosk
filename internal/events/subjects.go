@@ -116,6 +116,16 @@ func OpenChecksDigestSubject(kioskCode string) string {
 	return fmt.Sprintf("%s.%s.digest.open_checkouts", SubjectPrefix(), kioskCode)
 }
 
+// DailyActivityDigestSubject builds the subject for a scheduled daily-activity
+// digest event: "<prefix>.<kiosk_code>.digest.daily_activity". The wire
+// envelope is the shared notifications.DigestEnvelope discriminated by
+// EventType; the controller dispatcher unmarshals env.Context as a
+// DailyActivityContext. Window sizing (24h / 7d / 30d) is driven by the
+// schedule row's cadence and is computed kiosk-side before publish.
+func DailyActivityDigestSubject(kioskCode string) string {
+	return fmt.Sprintf("%s.%s.digest.daily_activity", SubjectPrefix(), kioskCode)
+}
+
 // StreamSubjectFilter is the catch-all subject pattern the controller's
 // stream binds to ("<prefix>.>") so every per-kiosk subject lands without
 // per-kiosk wiring.
@@ -173,6 +183,12 @@ func LowStockAlertFilter() string {
 // scheduled open-checkouts digest subject.
 func OpenChecksDigestFilter() string {
 	return SubjectPrefix() + ".*.digest.open_checkouts"
+}
+
+// DailyActivityDigestFilter is the controller-side consumer filter for the
+// scheduled daily-activity digest subject.
+func DailyActivityDigestFilter() string {
+	return SubjectPrefix() + ".*.digest.daily_activity"
 }
 
 // CommandSubject builds the subject for a controller→kiosk command targeting

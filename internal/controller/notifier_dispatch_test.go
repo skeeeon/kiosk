@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -95,23 +96,34 @@ func TestControllerNotifier_DigestEnvelope(t *testing.T) {
 	app := setupApp(t)
 	notifier := notifications.New(app)
 
+	ctx := notifications.OpenChecksDigestContext{
+		Kiosk:       notifications.KioskInfo{Code: "BAY-01", LocationCode: "WEST"},
+		GeneratedAt: time.Now().UTC(),
+		Rows:        []notifications.OpenChecksDigestRow{},
+		RowsCount:   0,
+	}
+	payload, err := json.Marshal(ctx)
+	if err != nil {
+		t.Fatalf("marshal context: %v", err)
+	}
 	env := notifications.DigestEnvelope{
-		Context: notifications.OpenChecksDigestContext{
-			Kiosk:       notifications.KioskInfo{Code: "BAY-01", LocationCode: "WEST"},
-			GeneratedAt: time.Now().UTC(),
-			Rows:        []notifications.OpenChecksDigestRow{},
-			RowsCount:   0,
-		},
+		EventType: notifications.EventTypeOpenChecksDigest,
+		Context:   payload,
 		// Per-schedule override — not the template's stored recipients.
 		// The controller must honor this list, otherwise per-schedule
 		// audiences wouldn't work in managed mode.
 		Recipients: notifications.Recipients{Extras: []string{"ops@example.com"}},
 	}
 
-	// SendTo is what handleOpenChecksDigest calls internally. Calling it
-	// directly here lets the test assert on the log row without spinning
-	// up a real JetStream consumer.
-	_ = notifier.SendTo(notifications.EventTypeOpenChecksDigest, env.Context, env.Recipients)
+	// Mirror what handleOpenChecksDigest does internally: unmarshal the
+	// raw context, then SendTo. Calling SendTo directly here lets the
+	// test assert on the log row without spinning up a real JetStream
+	// consumer.
+	var decoded notifications.OpenChecksDigestContext
+	if err := json.Unmarshal(env.Context, &decoded); err != nil {
+		t.Fatalf("decode envelope context: %v", err)
+	}
+	_ = notifier.SendTo(notifications.EventTypeOpenChecksDigest, decoded, env.Recipients)
 
 	rows, err := app.FindRecordsByFilter(
 		notifications.SendLogCollectionName,
@@ -128,5 +140,59 @@ func TestControllerNotifier_DigestEnvelope(t *testing.T) {
 	}
 	if got := rows[0].GetString("recipient"); got != "ops@example.com" {
 		t.Errorf("recipient: got %q, want %q (per-schedule override should win over template)", got, "ops@example.com")
+	}
+}
+
+// TestControllerNotifier_DailyActivityEnvelope mirrors the open-checks
+// envelope test for the new daily-activity digest event type. Together
+// they confirm the generalized DigestEnvelope routes both digest shapes
+// through the same wire format.
+func TestControllerNotifier_DailyActivityEnvelope(t *testing.T) {
+	app := setupApp(t)
+	notifier := notifications.New(app)
+
+	ctx := notifications.DailyActivityContext{
+		Kiosk:            notifications.KioskInfo{Code: "BAY-01", LocationCode: "WEST"},
+		GeneratedAt:      time.Now().UTC(),
+		WindowStart:      time.Now().Add(-24 * time.Hour).UTC(),
+		WindowEnd:        time.Now().UTC(),
+		Cadence:          "daily",
+		TransactionCount: 3,
+		LinesCount:       7,
+		UniqueUsers:      2,
+		CheckedOut:       4,
+		Consumed:         3,
+	}
+	payload, err := json.Marshal(ctx)
+	if err != nil {
+		t.Fatalf("marshal context: %v", err)
+	}
+	env := notifications.DigestEnvelope{
+		EventType:  notifications.EventTypeDailyActivity,
+		Context:    payload,
+		Recipients: notifications.Recipients{Extras: []string{"ops@example.com"}},
+	}
+
+	var decoded notifications.DailyActivityContext
+	if err := json.Unmarshal(env.Context, &decoded); err != nil {
+		t.Fatalf("decode envelope context: %v", err)
+	}
+	_ = notifier.SendTo(notifications.EventTypeDailyActivity, decoded, env.Recipients)
+
+	rows, err := app.FindRecordsByFilter(
+		notifications.SendLogCollectionName,
+		"event_type = {:e}",
+		"",
+		10, 0,
+		dbx.Params{"e": notifications.EventTypeDailyActivity},
+	)
+	if err != nil {
+		t.Fatalf("list send log: %v", err)
+	}
+	if len(rows) == 0 {
+		t.Fatalf("expected a notification_send_log row for daily-activity dispatch, got none")
+	}
+	if got := rows[0].GetString("recipient"); got != "ops@example.com" {
+		t.Errorf("recipient: got %q, want %q", got, "ops@example.com")
 	}
 }

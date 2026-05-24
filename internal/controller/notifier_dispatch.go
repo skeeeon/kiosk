@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"encoding/json"
 	"log/slog"
 
 	"github.com/nats-io/nats.go/jetstream"
@@ -78,7 +79,14 @@ func (a *Aggregator) handleOpenChecksDigest(msg jetstream.Msg) {
 		_ = msg.Term()
 		return
 	}
-	if env.Context.Kiosk.Code == "" {
+	var ctx notifications.OpenChecksDigestContext
+	if err := json.Unmarshal(env.Context, &ctx); err != nil {
+		slog.Warn("controller.notifier.digest_context_bad",
+			"subject", msg.Subject(), "error", err)
+		_ = msg.Term()
+		return
+	}
+	if ctx.Kiosk.Code == "" {
 		slog.Warn("controller.notifier.digest_missing_fields",
 			"subject", msg.Subject())
 		_ = msg.Term()
@@ -88,9 +96,44 @@ func (a *Aggregator) handleOpenChecksDigest(msg jetstream.Msg) {
 		_ = msg.Ack()
 		return
 	}
-	if err := a.notifier.SendTo(notifications.EventTypeOpenChecksDigest, env.Context, env.Recipients); err != nil {
+	if err := a.notifier.SendTo(notifications.EventTypeOpenChecksDigest, ctx, env.Recipients); err != nil {
 		slog.Warn("controller.notifier.digest_send_failed",
-			"kiosk_code", env.Context.Kiosk.Code, "error", err)
+			"kiosk_code", ctx.Kiosk.Code, "error", err)
+	}
+	_ = msg.Ack()
+}
+
+// handleDailyActivityDigest mirrors handleOpenChecksDigest for the daily
+// activity payload. The wire envelope is shared (notifications.DigestEnvelope);
+// only the concrete unmarshal target changes.
+func (a *Aggregator) handleDailyActivityDigest(msg jetstream.Msg) {
+	var env notifications.DigestEnvelope
+	if err := unmarshalMsg(msg, &env); err != nil {
+		slog.Warn("controller.notifier.daily_activity_bad_payload",
+			"subject", msg.Subject(), "error", err)
+		_ = msg.Term()
+		return
+	}
+	var ctx notifications.DailyActivityContext
+	if err := json.Unmarshal(env.Context, &ctx); err != nil {
+		slog.Warn("controller.notifier.daily_activity_context_bad",
+			"subject", msg.Subject(), "error", err)
+		_ = msg.Term()
+		return
+	}
+	if ctx.Kiosk.Code == "" {
+		slog.Warn("controller.notifier.daily_activity_missing_fields",
+			"subject", msg.Subject())
+		_ = msg.Term()
+		return
+	}
+	if a.notifier == nil {
+		_ = msg.Ack()
+		return
+	}
+	if err := a.notifier.SendTo(notifications.EventTypeDailyActivity, ctx, env.Recipients); err != nil {
+		slog.Warn("controller.notifier.daily_activity_send_failed",
+			"kiosk_code", ctx.Kiosk.Code, "error", err)
 	}
 	_ = msg.Ack()
 }

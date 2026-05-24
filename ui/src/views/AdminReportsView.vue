@@ -14,7 +14,7 @@ import type { ItemRecord, KioskRecord } from '../types'
 const { identity } = useKioskIdentity()
 const isController = computed(() => identity.value?.role === 'controller')
 
-type Tab = 'currently-out' | 'aging' | 'low-stock' | 'group-activity' | 'recent' | 'audit' | 'lifecycle' | 'notifications'
+type Tab = 'currently-out' | 'low-stock' | 'group-activity' | 'recent' | 'audit' | 'lifecycle' | 'notifications'
 const tab = ref<Tab>('currently-out')
 const toast = useAdminToast()
 
@@ -136,17 +136,6 @@ interface SendLogByEvent {
   skipped: number
 }
 
-// AgingGroup buckets all of one worker's overdue rows together so the table
-// can show "Alice has 4 tools out >7 days, oldest is 23 days ago" rather than
-// a flat list that hides repeat offenders.
-interface AgingGroup {
-  userId: string
-  userCode: string
-  userName: string
-  rows: OpenRow[]
-  oldestDays: number
-}
-
 interface GroupActivityRow {
   code: string                // group code (empty string = ungrouped)
   name: string                // group display name; equals code when ungrouped or unknown
@@ -182,8 +171,7 @@ const notificationsLookback = ref<number>(7)
 const notificationsTotals = ref({ sent: 0, failed: 0, skipped: 0 })
 const notificationsByEvent = ref<SendLogByEvent[]>([])
 const notificationsRecentFailures = ref<SendLogRow[]>([])
-const agingThresholdDays = ref(7)
-const agingGroups = ref<AgingGroup[]>([])
+const highlightThresholdDays = ref(7)
 const groupActivityFrom = ref<string>(defaultFromDate())
 const groupActivityTo = ref<string>(defaultToDate())
 const groupActivityRows = ref<GroupActivityRow[]>([])
@@ -208,10 +196,10 @@ async function loadKiosks() {
 const rebuildOpen = ref(false)
 const rebuilding = ref(false)
 
-// Selected aging-table row + dialog state for the admin force-close flow.
-// The Aging report DTO synthesizes ids from transaction_line_id (with a
-// "-N" suffix for non-serialized qty>1 rows); CheckoutCloseDialog strips
-// that suffix before posting.
+// Selected row + dialog state for the admin force-close flow. The open
+// checkouts DTO synthesizes ids from transaction_line_id (with a "-N"
+// suffix for non-serialized qty>1 rows); CheckoutCloseDialog strips that
+// suffix before posting.
 interface CloseTarget {
   rowId: string
   itemCode: string
@@ -284,39 +272,6 @@ async function loadTransactions(page = 1) {
     txRows.value = res.items
     txPage.value = res.page
     txTotalPages.value = res.totalPages
-  } catch (e) {
-    error.value = (e as Error).message
-  } finally {
-    loading.value = false
-  }
-}
-
-async function loadAging() {
-  loading.value = true
-  error.value = null
-  try {
-    // Same data source as Currently out — bucket by user and sort by
-    // oldest-out. Threshold is a display-only hint; we keep every row so
-    // the operator sees who's accumulating regardless of the cutoff.
-    const qs = kioskFilter.value
-      ? `?kiosk_code=${encodeURIComponent(kioskFilter.value)}`
-      : ''
-    const rows = await api.get<OpenRow[]>(`/api/kiosk/reports/open-checkouts${qs}`)
-    const byUser = new Map<string, AgingGroup>()
-    const now = Date.now()
-    for (const r of rows) {
-      const u = r.expand?.user
-      if (!u) continue
-      const days = Math.floor((now - new Date(r.checked_out_at).getTime()) / (1000 * 60 * 60 * 24))
-      let g = byUser.get(u.id)
-      if (!g) {
-        g = { userId: u.id, userCode: u.code, userName: u.name, rows: [], oldestDays: days }
-        byUser.set(u.id, g)
-      }
-      g.rows.push(r)
-      if (days > g.oldestDays) g.oldestDays = days
-    }
-    agingGroups.value = Array.from(byUser.values()).sort((a, b) => b.oldestDays - a.oldestDays)
   } catch (e) {
     error.value = (e as Error).message
   } finally {
@@ -676,7 +631,6 @@ async function exportCsv() {
 
 function loadCurrentTab() {
   if (tab.value === 'currently-out') loadCurrentlyOut()
-  else if (tab.value === 'aging') loadAging()
   else if (tab.value === 'low-stock') {
     // Controller fans out inventory.snapshot fleet-wide; kiosks compute
     // their local view from items + open_checkouts. Same tab, two code
@@ -733,6 +687,14 @@ const filteredOpen = computed(() => {
   })
 })
 
+function daysOut(iso: string): number {
+  return Math.floor((Date.now() - new Date(iso).getTime()) / (1000 * 60 * 60 * 24))
+}
+
+const rowsOverThreshold = computed(() =>
+  filteredOpen.value.filter((r) => daysOut(r.checked_out_at) >= highlightThresholdDays.value).length,
+)
+
 function openTxDetail(t: TxRow) {
   selectedTx.value = {
     id: t.id,
@@ -772,14 +734,6 @@ function openTxDetail(t: TxRow) {
         @click="tab = 'currently-out'"
       >
         Currently out
-      </button>
-      <button
-        type="button"
-        class="px-4 py-2 border-b-2 transition-colors"
-        :class="tabClasses('aging')"
-        @click="tab = 'aging'"
-      >
-        Aging
       </button>
       <button
         type="button"
@@ -838,12 +792,29 @@ function openTxDetail(t: TxRow) {
 
     <!-- Currently out -->
     <div v-if="tab === 'currently-out'" class="flex flex-col gap-3">
-      <input
-        v-model="openSearch"
-        type="search"
-        placeholder="Search by item, worker, or serial"
-        class="w-full max-w-md rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-slate-100"
-      />
+      <div class="flex flex-wrap items-center gap-3">
+        <input
+          v-model="openSearch"
+          type="search"
+          placeholder="Search by item, worker, or serial"
+          class="flex-1 min-w-[16rem] max-w-md rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-slate-100"
+        />
+        <label class="flex items-center gap-2 text-sm text-slate-300">
+          Highlight rows older than
+          <input
+            v-model.number="highlightThresholdDays"
+            type="number"
+            min="0"
+            max="365"
+            class="w-20 rounded-lg bg-slate-900 border border-slate-700 px-2 py-1 text-slate-100 tabular-nums"
+          />
+          days
+        </label>
+      </div>
+
+      <p v-if="filteredOpen.length > 0" class="text-xs text-slate-500">
+        {{ rowsOverThreshold }} of {{ filteredOpen.length }} held longer than {{ highlightThresholdDays }} day{{ highlightThresholdDays === 1 ? '' : 's' }}
+      </p>
 
       <div class="rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden">
         <table class="w-full text-left text-sm">
@@ -876,8 +847,9 @@ function openTxDetail(t: TxRow) {
               </td>
               <td class="px-4 py-3 font-mono text-slate-400">{{ r.serial || '—' }}</td>
               <td
-                class="px-4 py-3 text-slate-200 tabular-nums"
+                class="px-4 py-3 tabular-nums"
                 :title="formatDateTime(r.checked_out_at)"
+                :class="daysOut(r.checked_out_at) >= highlightThresholdDays ? 'text-amber-300 font-semibold' : 'text-slate-200'"
               >
                 {{ formatRelative(r.checked_out_at) }}
               </td>
@@ -904,92 +876,6 @@ function openTxDetail(t: TxRow) {
         >
           {{ rebuilding ? 'Rebuilding…' : 'Rebuild from ledger' }}
         </button>
-      </div>
-    </div>
-
-    <!-- Aging -->
-    <div v-else-if="tab === 'aging'" class="flex flex-col gap-3">
-      <div class="flex items-center gap-3 text-sm">
-        <label class="flex items-center gap-2 text-slate-300">
-          Highlight rows older than
-          <input
-            v-model.number="agingThresholdDays"
-            type="number"
-            min="0"
-            max="365"
-            class="w-20 rounded-lg bg-slate-900 border border-slate-700 px-2 py-1 text-slate-100 tabular-nums"
-          />
-          days
-        </label>
-        <span class="text-slate-500">
-          {{ agingGroups.reduce((n, g) => n + g.rows.filter((r) => Math.floor((Date.now() - new Date(r.checked_out_at).getTime()) / (1000 * 60 * 60 * 24)) >= agingThresholdDays).length, 0) }}
-          row(s) over threshold,
-          {{ agingGroups.length }} worker(s) with anything out
-        </span>
-      </div>
-
-      <div class="rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden">
-        <table class="w-full text-left text-sm">
-          <thead class="bg-slate-950/70 text-slate-400">
-            <tr>
-              <th class="px-4 py-3 font-medium">Worker</th>
-              <th class="px-4 py-3 font-medium">Item</th>
-              <th class="px-4 py-3 font-medium">Serial</th>
-              <th class="px-4 py-3 font-medium text-right">Days out</th>
-              <th class="px-4 py-3 font-medium text-right">Action</th>
-            </tr>
-          </thead>
-          <tbody class="divide-y divide-slate-800">
-            <tr v-if="loading">
-              <td colspan="5" class="text-center text-slate-500 py-8">Loading…</td>
-            </tr>
-            <tr v-else-if="agingGroups.length === 0">
-              <td colspan="5" class="text-center text-slate-500 py-8">Nothing is currently out.</td>
-            </tr>
-            <template v-for="g in agingGroups" :key="g.userId">
-              <tr class="bg-slate-950/60">
-                <td colspan="5" class="px-4 py-2">
-                  <span class="font-semibold text-slate-200">{{ g.userName }}</span>
-                  <span class="ml-2 text-xs text-slate-500 font-mono">{{ g.userCode }}</span>
-                  <span class="ml-3 text-xs text-slate-400">
-                    {{ g.rows.length }} out · oldest
-                    <span :class="g.oldestDays >= agingThresholdDays ? 'text-amber-300' : 'text-slate-400'">
-                      {{ g.oldestDays }} day{{ g.oldestDays === 1 ? '' : 's' }} ago
-                    </span>
-                  </span>
-                </td>
-              </tr>
-              <tr v-for="r in g.rows" :key="r.id" class="hover:bg-slate-800/40">
-                <td class="px-4 py-2"></td>
-                <td class="px-4 py-2">
-                  <div>{{ r.expand?.item?.name }}</div>
-                  <div class="text-xs text-slate-500 font-mono">{{ r.expand?.item?.code }}</div>
-                </td>
-                <td class="px-4 py-2 font-mono text-slate-400">{{ r.serial || '—' }}</td>
-                <td
-                  class="px-4 py-2 text-right tabular-nums"
-                  :title="formatDateTime(r.checked_out_at)"
-                  :class="
-                    Math.floor((Date.now() - new Date(r.checked_out_at).getTime()) / (1000 * 60 * 60 * 24)) >= agingThresholdDays
-                      ? 'text-amber-300 font-semibold'
-                      : 'text-slate-300'
-                  "
-                >
-                  {{ Math.floor((Date.now() - new Date(r.checked_out_at).getTime()) / (1000 * 60 * 60 * 24)) }}
-                </td>
-                <td class="px-4 py-2 text-right">
-                  <button
-                    type="button"
-                    class="text-xs px-2 py-1 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700"
-                    @click="openCloseDialog(r, g.userName, g.userCode)"
-                  >
-                    Close…
-                  </button>
-                </td>
-              </tr>
-            </template>
-          </tbody>
-        </table>
       </div>
     </div>
 

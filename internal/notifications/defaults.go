@@ -17,6 +17,7 @@ const (
 	EventTypeReceiptTransaction = "receipt.transaction"
 	EventTypeLowStock           = "alert.lowstock"
 	EventTypeOpenChecksDigest   = "digest.open_checkouts"
+	EventTypeDailyActivity      = "digest.daily_activity"
 )
 
 // DefaultReceiptSubject and DefaultReceiptBody are the v1 receipt template.
@@ -47,6 +48,30 @@ const DefaultOpenChecksBody = `Open checkouts at kiosk {{.Kiosk.Code}} as of {{f
 This is an automated digest. Adjust its schedule or recipients in the kiosk admin SPA.
 `
 
+// DefaultDailyActivitySubject and DefaultDailyActivityBody render against
+// DailyActivityContext. The window is sized by the schedule row's cadence
+// (daily=24h, weekly=7d, monthly=30d). When the window is empty the body
+// short-circuits to a "no activity" line — same pattern as the
+// open-checkouts digest.
+const DefaultDailyActivitySubject = `{{.Kiosk.Code}} activity {{.Cadence}} — {{.TransactionCount}} {{pluralize .TransactionCount "transaction"}}, {{.LinesCount}} {{pluralize .LinesCount "line"}}`
+
+const DefaultDailyActivityBody = `Activity at kiosk {{.Kiosk.Code}} ({{.Kiosk.LocationCode}}) from {{formatTime .WindowStart}} to {{formatTime .WindowEnd}}:
+
+{{if eq .TransactionCount 0}}No activity in this window.
+{{else}}- Transactions: {{.TransactionCount}}
+- Lines: {{.LinesCount}}
+- Unique workers: {{.UniqueUsers}}
+- Checked out: {{.CheckedOut}} · Returned: {{.Returned}} · Consumed: {{.Consumed}}
+
+{{if .TopItems}}Top items:
+{{range .TopItems}}- {{.ItemName}} ({{.ItemCode}}) — {{.LineCount}} {{pluralize .LineCount "line"}}
+{{end}}{{end}}{{if .TopWorkers}}
+Top workers:
+{{range .TopWorkers}}- {{.UserName}} ({{.UserCode}}) — {{.LineCount}} {{pluralize .LineCount "line"}}
+{{end}}{{end}}{{end}}
+This is an automated digest. Adjust its schedule or recipients in the kiosk admin SPA.
+`
+
 // DefaultLowStockSubject and DefaultLowStockBody render against
 // LowStockContext (see internal/notifications/context.go).
 const DefaultLowStockSubject = `Low stock at {{.Kiosk.Code}}: {{.Item.Name}} ({{.Item.Code}})`
@@ -73,6 +98,8 @@ func Defaults(eventType string) (subject, body string, ok bool) {
 		return DefaultLowStockSubject, DefaultLowStockBody, true
 	case EventTypeOpenChecksDigest:
 		return DefaultOpenChecksSubject, DefaultOpenChecksBody, true
+	case EventTypeDailyActivity:
+		return DefaultDailyActivitySubject, DefaultDailyActivityBody, true
 	}
 	return "", "", false
 }
@@ -86,6 +113,8 @@ func DefaultName(eventType string) string {
 		return "Low stock alert"
 	case EventTypeOpenChecksDigest:
 		return "Open checkouts digest"
+	case EventTypeDailyActivity:
+		return "Daily activity digest"
 	}
 	return eventType
 }
@@ -94,7 +123,12 @@ func DefaultName(eventType string) string {
 // first run. Adding a new built-in template means appending here and to
 // Defaults / DefaultName.
 func SeededEventTypes() []string {
-	return []string{EventTypeReceiptTransaction, EventTypeLowStock, EventTypeOpenChecksDigest}
+	return []string{
+		EventTypeReceiptTransaction,
+		EventTypeLowStock,
+		EventTypeOpenChecksDigest,
+		EventTypeDailyActivity,
+	}
 }
 
 // Recipients is the editable per-template audience descriptor stored in the
@@ -131,6 +165,8 @@ func DefaultRecipients(eventType string) Recipients {
 	case EventTypeOpenChecksDigest:
 		// Digests address admins by default. Each scheduled_reports row
 		// overrides this with its own recipients spec at send time.
+		return Recipients{AllAdmins: true, Extras: []string{}}
+	case EventTypeDailyActivity:
 		return Recipients{AllAdmins: true, Extras: []string{}}
 	}
 	// Conservative default for unrecognized event types: address nobody.

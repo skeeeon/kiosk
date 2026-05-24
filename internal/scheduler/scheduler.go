@@ -39,23 +39,24 @@ import (
 // in the SPA's banner copy.
 type Sender func(eventType string, data any, recipients notifications.Recipients) error
 
-// reportRunner builds the context for one scheduled report. Returning the
-// payload separately from the send lets the scheduler share status-stamping
-// + notifier wiring across every report type.
-type reportRunner func(app core.App) (eventType string, data any, err error)
+// reportRunner builds the context for one scheduled report. The row arg
+// lets runners read row-level knobs (cadence, future filters); runners
+// that don't need it ignore the param.
+type reportRunner func(app core.App, row *core.Record) (eventType string, data any, err error)
 
 // reportRunners is the dispatch table referenced by every scheduled_reports
 // row. Adding a new report key means adding a runner here and a case to
 // the SPA's report_key dropdown.
 var reportRunners = map[string]reportRunner{
 	"open_checkouts": runOpenCheckoutsDigest,
+	"daily_activity": runDailyActivityDigest,
 }
 
 // runOpenCheckoutsDigest builds an OpenChecksDigestContext by replaying
 // the ledger. Returns an empty-rows context (not an error) when nothing is
 // checked out so the digest still fires and the email body renders the
 // "no items currently checked out" branch.
-func runOpenCheckoutsDigest(app core.App) (string, any, error) {
+func runOpenCheckoutsDigest(app core.App, _ *core.Record) (string, any, error) {
 	rows, err := ledger.ReplayOpenRows(app, "")
 	if err != nil {
 		return "", nil, fmt.Errorf("replay open rows: %w", err)
@@ -175,13 +176,13 @@ func runOnce(app core.App, send Sender, rowID string) {
 		return
 	}
 
-	eventType, data, err := runner(app)
+	eventType, data, err := runner(app, row)
 	if err != nil {
 		markStatus(app, rowID, "failed", err.Error())
 		return
 	}
 
-	recipients := recipientsFromRow(row)
+	recipients := recipientsFromRow(row, eventType)
 	if err := send(eventType, data, recipients); err != nil {
 		markStatus(app, rowID, "failed", err.Error())
 		return
@@ -189,15 +190,15 @@ func runOnce(app core.App, send Sender, rowID string) {
 	markStatus(app, rowID, "sent", "")
 }
 
-func recipientsFromRow(row *core.Record) notifications.Recipients {
+func recipientsFromRow(row *core.Record, eventType string) notifications.Recipients {
 	raw := strings.TrimSpace(row.GetString("recipients"))
 	if raw == "" || raw == "null" {
-		return notifications.DefaultRecipients(notifications.EventTypeOpenChecksDigest)
+		return notifications.DefaultRecipients(eventType)
 	}
 	var r notifications.Recipients
 	if err := json.Unmarshal([]byte(raw), &r); err != nil {
 		log.Printf("scheduled reports: recipients parse failed on row %s — %v", row.Id, err)
-		return notifications.DefaultRecipients(notifications.EventTypeOpenChecksDigest)
+		return notifications.DefaultRecipients(eventType)
 	}
 	return r
 }

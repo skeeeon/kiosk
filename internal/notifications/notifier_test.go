@@ -175,3 +175,97 @@ func TestDefaultsTable(t *testing.T) {
 		t.Error("Defaults(unknown) should report not ok")
 	}
 }
+
+// TestDefaultsRenderAgainstDailyActivityContext catches drift between the
+// daily-activity template field references and the context struct. The
+// "no activity" branch is exercised separately so the empty-window code
+// path stays validated even after the populated path keeps growing.
+func TestDefaultsRenderAgainstDailyActivityContext(t *testing.T) {
+	t.Run("populated window", func(t *testing.T) {
+		ctx := DailyActivityContext{
+			Kiosk:            KioskInfo{Code: "BAY-01", LocationCode: "WAREHOUSE-A"},
+			GeneratedAt:      time.Date(2026, 5, 23, 6, 0, 0, 0, time.UTC),
+			WindowStart:      time.Date(2026, 5, 22, 6, 0, 0, 0, time.UTC),
+			WindowEnd:        time.Date(2026, 5, 23, 6, 0, 0, 0, time.UTC),
+			Cadence:          "daily",
+			TransactionCount: 12,
+			LinesCount:       34,
+			UniqueUsers:      5,
+			CheckedOut:       18,
+			Returned:         10,
+			Consumed:         6,
+			TopItems: []DailyActivityItemRow{
+				{ItemCode: "DRL-001", ItemName: "Drill", LineCount: 7},
+				{ItemCode: "GLV-007", ItemName: "Gloves", LineCount: 4},
+			},
+			TopWorkers: []DailyActivityWorkerRow{
+				{UserCode: "W1234", UserName: "Alex Worker", LineCount: 9},
+				{UserCode: "W2222", UserName: "Sam Helper", LineCount: 3},
+			},
+		}
+
+		subject, body, err := Render(DefaultDailyActivitySubject, DefaultDailyActivityBody, ctx)
+		if err != nil {
+			t.Fatalf("Render failed: %v", err)
+		}
+		if !strings.Contains(subject, "BAY-01") {
+			t.Errorf("subject missing kiosk code: %q", subject)
+		}
+		if !strings.Contains(subject, "12 transactions") {
+			t.Errorf("subject missing transaction count pluralized: %q", subject)
+		}
+		if !strings.Contains(subject, "34 lines") {
+			t.Errorf("subject missing line count: %q", subject)
+		}
+		for _, want := range []string{
+			"Transactions: 12",
+			"Lines: 34",
+			"Unique workers: 5",
+			"Checked out: 18",
+			"Returned: 10",
+			"Consumed: 6",
+			"Drill (DRL-001)",
+			"7 lines",
+			"Alex Worker (W1234)",
+			"9 lines",
+		} {
+			if !strings.Contains(body, want) {
+				t.Errorf("body missing %q in:\n%s", want, body)
+			}
+		}
+	})
+
+	t.Run("empty window short-circuits", func(t *testing.T) {
+		ctx := DailyActivityContext{
+			Kiosk:       KioskInfo{Code: "BAY-02", LocationCode: "WAREHOUSE-B"},
+			GeneratedAt: time.Date(2026, 5, 23, 6, 0, 0, 0, time.UTC),
+			WindowStart: time.Date(2026, 5, 16, 6, 0, 0, 0, time.UTC),
+			WindowEnd:   time.Date(2026, 5, 23, 6, 0, 0, 0, time.UTC),
+			Cadence:     "weekly",
+		}
+		_, body, err := Render(DefaultDailyActivitySubject, DefaultDailyActivityBody, ctx)
+		if err != nil {
+			t.Fatalf("Render failed: %v", err)
+		}
+		if !strings.Contains(body, "No activity in this window.") {
+			t.Errorf("empty-window branch missing in body: %q", body)
+		}
+		if strings.Contains(body, "Top items:") {
+			t.Errorf("empty-window body should not include Top items header: %q", body)
+		}
+	})
+}
+
+func TestDailyActivityPayloadSummary(t *testing.T) {
+	c := DailyActivityContext{
+		Kiosk:            KioskInfo{Code: "BAY-01"},
+		Cadence:          "daily",
+		TransactionCount: 7,
+		LinesCount:       21,
+	}
+	got := c.PayloadSummary()
+	if !strings.Contains(got, "BAY-01") || !strings.Contains(got, "daily") ||
+		!strings.Contains(got, "7 txns") || !strings.Contains(got, "21 lines") {
+		t.Errorf("PayloadSummary = %q; missing expected substrings", got)
+	}
+}

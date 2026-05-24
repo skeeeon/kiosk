@@ -65,6 +65,8 @@ function reportLabel(key: string): string {
   switch (key) {
     case 'open_checkouts':
       return 'Currently checked out'
+    case 'daily_activity':
+      return 'Daily activity'
   }
   return key
 }
