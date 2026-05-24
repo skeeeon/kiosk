@@ -20,8 +20,8 @@ of truth for catalog plus a unified transaction ledger.
   `reorder_threshold`, `item_instances`) is intentionally not synced
   and survives catalog updates untouched.
 - **Transactions up → controller.** Every kiosk already publishes
-  `{prefix}.{code}.transaction.complete` and
-  `{prefix}.{code}.item.{action}` when NATS is enabled (`{prefix}`
+  `{prefix}.{code}.event.transaction.complete` and
+  `{prefix}.{code}.event.item.{action}` when NATS is enabled (`{prefix}`
   defaults to `kiosk`). The controller runs a JetStream durable
   consumer (`controller-aggregator`) over the `KIOSK_EVENTS` stream
   (configurable via `nats.stream_name`) that projects every incoming
@@ -187,7 +187,7 @@ separately. JetStream must be enabled (`nats-server -js`). Provision
 the stream and KV buckets once, out of band:
 
 ```bash
-nats stream add KIOSK_EVENTS --subjects 'kiosk.>' --retention limits --max-age 168h --no-ack
+nats stream add KIOSK_EVENTS --subjects 'kiosk.*.event.>' --retention limits --max-age 168h
 nats kv add catalog_items --history 1
 nats kv add catalog_users --history 1
 nats kv add catalog_groups --history 1
@@ -196,25 +196,18 @@ nats kv add catalog_groups --history 1
 (The controller will auto-create these on first start as well; the
 manual form is here so operators have a record of what's provisioned.)
 
-**`--no-ack` is load-bearing.** The controller→kiosk command bus uses
-core NATS request/reply on subjects inside the stream's filter space
-(e.g., `kiosk.K01.command.inventory.adjust`). With the default
-`--no-ack=false`, JetStream sees the message's `Reply` inbox and races
-a PubAck to it — which the controller's `nc.Request()` then mis-reads
-as the kiosk's actual reply (you'll see "kiosk online" but get back a
-stream sequence number instead of the result). The kiosk and
-controller never use the JetStream publish API; everything goes
-through `nc.Publish`, which doesn't expect a PubAck. So turning the
-publisher-side ack off costs nothing and unblocks request/reply.
+The stream binds to only the `event.` subject family. Commands
+(`kiosk.*.command.>`) and heartbeats (`kiosk.*.heartbeat`) ride core
+NATS — they're outside the stream's filter by construction, so the
+controller→kiosk request/reply path never races against a JetStream
+PubAck. Adding a future durable subject means putting it under
+`event.` so it lands in the stream automatically; anything that needs
+synchronous request/reply or fire-and-forget pub/sub belongs under
+`command.` or its own non-event family.
 
-This setting is **separate from consumer acknowledgement** — the
-controller's durable consumer still uses `AckExplicitPolicy`, so it
-acks each event it processes and JetStream advances the cursor
-accordingly. `--no-ack` only suppresses the stream's PubAck flowing
-back to the *publisher*, not the consumer's ack flowing back to the
-*stream*. The controller's `ensureStream` sets `NoAck: true` and the
-comment block explains why; don't remove it without a replacement
-(e.g., narrowing `--subjects` to exclude `command.*` and `heartbeat`).
+The controller's durable consumer uses `AckExplicitPolicy` and acks
+each event it processes — that's the cursor advancement that survives
+restarts, independent of stream-level PubAck behavior.
 
 Names above are the defaults. On a shared NATS cluster where `kiosk.>`
 or `KIOSK_EVENTS` are already taken, override via `nats.subject_prefix`

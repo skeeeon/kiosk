@@ -166,9 +166,10 @@ subjects are in place to make them additive rather than rewrites.
   kiosk-only credentials) is a deployment-time tightening worth
   doing before any multi-tenant scenario.
 - **RFID reader integration.** Impinj reader publishes scans to
-  `kiosk.{kiosk_code}.scan.rfid`. The scan dispatcher already
-  resolves `rfid_epc` against `item_instances` — no new dispatch
-  logic needed.
+  `kiosk.{kiosk_code}.event.scan.rfid` (or its own non-event family
+  if the reader→kiosk direction wants request/reply semantics). The
+  scan dispatcher already resolves `rfid_epc` against `item_instances`
+  — no new dispatch logic needed.
 
 Each of these can be evaluated on demand. None should be built until
 there is a concrete user asking for it.

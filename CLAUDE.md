@@ -132,66 +132,56 @@ Three invariants:
    fewer matched, the line is stamped `uncorrelated=true`. Consumables and
    `return` for consumables never touch `open_checkouts`.
 3. Events fire only **after** the DB transaction commits successfully, via
-   `events.Publish`. Subject names follow NATS hierarchy:
-   `<prefix>.{kiosk_code}.transaction.complete` and
-   `<prefix>.{kiosk_code}.item.{action}` from the commit hook;
-   `<prefix>.{kiosk_code}.inventory.adjust` from the admin stock-adjust
-   handler (both local HTTP and remote command paths emit the same shape
-   via `handlers.PublishInventoryAdjustEvent`, and `commit.AdminClose`
-   emits the same subject for the qty side-effect of lost/damaged closes);
-   `<prefix>.{kiosk_code}.integrity.rebuild` from the open_checkouts
-   rebuild handler;
-   `<prefix>.{kiosk_code}.checkout.admin_close` from `commit.AdminClose`
-   (one per row closed; the matching transaction also rides
-   `transaction.complete` and the line rides `item.admin_close`-equivalent
-   via the regular `transaction_lines` projection);
-   `<prefix>.{kiosk_code}.instance.lifecycle` from the `item_instances`
-   PB record hooks (create / decommission / reactivate / delete; cosmetic
-   edits skip) AND from `commit.AdminClose` when a serialized
-   `lost`/`damaged` close decommissions the instance. The
-   `instance.lifecycle` payload carries `source_audit_id` (the kiosk-side
-   `instance_audit.id`) so the controller's projection is idempotent under
-   redelivery — same anchor strategy as `inventory.adjust`'s
-   `adjustment_id`. The prefix is `"kiosk"` by default and configurable
-   via `nats.subject_prefix`; subjects are built through shared helpers in
-   `internal/events/subjects.go` (single source of truth for both the
-   kiosk publisher and the controller's stream/consumer filters) — don't
-   re-string-format these at callsites.
+   `events.Publish`. Every NATS subject follows
+   `<prefix>.<kiosk_code>.<family>.<...>` where the family segment is one of
+   `event`, `command`, or `heartbeat`. That segment is what determines
+   transport — the JetStream stream binds to `<prefix>.*.event.>` and
+   nothing else, so commands and heartbeats are outside the stream by
+   construction rather than by exclusion-list discipline.
 
-   Two NATS subject families ride core NATS, not JetStream, and are
-   deliberately **excluded** from the controller's consumer
-   `FilterSubjects`:
+   Event subjects emitted from the commit/admin paths:
+   `<prefix>.<kiosk_code>.event.transaction.complete` and
+   `<prefix>.<kiosk_code>.event.item.{action}` from the commit hook;
+   `<prefix>.<kiosk_code>.event.inventory.adjust` from the admin
+   stock-adjust handler (both local HTTP and remote command paths emit
+   the same shape via `handlers.PublishInventoryAdjustEvent`, and
+   `commit.AdminClose` emits the same subject for the qty side-effect of
+   lost/damaged closes); `<prefix>.<kiosk_code>.event.integrity.rebuild`
+   from the open_checkouts rebuild handler;
+   `<prefix>.<kiosk_code>.event.checkout.admin_close` from
+   `commit.AdminClose` (one per row closed; the matching transaction also
+   rides `event.transaction.complete` and the line rides
+   `event.item.admin_close`-equivalent via the regular `transaction_lines`
+   projection); `<prefix>.<kiosk_code>.event.instance.lifecycle` from the
+   `item_instances` PB record hooks (create / decommission / reactivate /
+   delete; cosmetic edits skip) AND from `commit.AdminClose` when a
+   serialized `lost`/`damaged` close decommissions the instance. The
+   `event.instance.lifecycle` payload carries `source_audit_id` (the
+   kiosk-side `instance_audit.id`) so the controller's projection is
+   idempotent under redelivery — same anchor strategy as
+   `event.inventory.adjust`'s `adjustment_id`. The prefix is `"kiosk"` by
+   default and configurable via `nats.subject_prefix`; subjects are built
+   through shared helpers in `internal/events/subjects.go` (single source
+   of truth for both the kiosk publisher and the controller's
+   stream/consumer filters) — don't re-string-format these at callsites.
 
-   - **Heartbeats** — `<prefix>.{kiosk_code}.heartbeat`. Built via
+   The other two families:
+
+   - **Heartbeats** — `<prefix>.<kiosk_code>.heartbeat`. Built via
      `events.HeartbeatSubject` / `events.HeartbeatFilter`. Last-write-wins,
      no persistence; durability would mask the very signal we care about.
-   - **Commands** — `<prefix>.{kiosk_code}.command.<name>` (built via
+   - **Commands** — `<prefix>.<kiosk_code>.command.<name>` (built via
      `events.CommandSubject` / `events.CommandSubscribePattern`). Request/
      reply, single attempt, ≤5 s reply timeout. The kiosk's dispatcher
      replies on `msg.Reply` with a `{success, error, data}` envelope.
 
-   Do NOT add these to `FilterSubjects` and do NOT publish them through
-   `events.Publish` — they're not events.
-
-   **The stream is configured `NoAck: true`** (set in
-   `internal/controller/consumer.go::ensureStream`). This is load-bearing
-   for the command bus: command subjects live inside the stream's
-   `kiosk.>` filter, so a `nc.Request` to `kiosk.<code>.command.<name>`
-   would otherwise race JetStream's PubAck against the kiosk dispatcher's
-   actual reply — the requester sees the PubAck first and mis-reads it
-   as the answer. We never use `js.Publish` (all publishes go through
-   `nc.Publish` via `events.Publisher.PublishJSON`), so turning off
-   PubAck is invisible to the publisher side. `NoAck` only affects
-   stream→publisher; the consumer's `AckExplicitPolicy` is the other
-   direction and is unaffected — that ack is what advances the durable
-   cursor and must stay.
-
-   Implication for new event types: as long as you keep using
-   `events.Publish` / `nc.Publish`, you're fine. If you ever want
-   `js.Publish` semantics (synchronous "did the stream store this?"
-   confirmation), you'll need to flip `NoAck` off and narrow the stream
-   subjects to exclude the command/heartbeat space — `NoAck: true` and
-   `js.Publish` are mutually exclusive.
+   Adding a new event = put it under `event.` and the stream picks it up
+   automatically. Adding anything that needs synchronous request/reply or
+   fire-and-forget pub/sub = put it under `command.` (or its own
+   non-event family) and it stays outside the stream. Do NOT publish
+   commands or heartbeats through `events.Publish` — they're not events,
+   and although the stream filter no longer captures them, the slog
+   `kiosk.event` line still fires and reads as a lie.
 
 **Kiosk identity is process-global, not request-scoped.** `internal/kioskctx`
 holds an `atomic.Pointer[Identity]` set once at startup from config. Every

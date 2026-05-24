@@ -19,7 +19,7 @@ returns:
   allow_uncorrelated: true
 
 # Optional NATS event publishing. When enabled, every event the commit
-# hook fires is published to subjects like kiosk.{kiosk_code}.transaction.complete
+# hook fires is published to subjects like kiosk.{kiosk_code}.event.transaction.complete
 # in addition to the local slog line. Disabled by default — leave it off
 # until you have a central reporting consumer to receive these.
 nats:

@@ -186,29 +186,20 @@ func (a *Aggregator) Stop() {
 func (a *Aggregator) ensureStream(ctx context.Context) (jetstream.Stream, error) {
 	cfg := jetstream.StreamConfig{
 		Name:        a.streamName,
-		Description: "Per-kiosk transaction + item events. Consumed by the controller.",
-		Subjects:    []string{events.StreamSubjectFilter()},
-		Retention:   jetstream.LimitsPolicy,
-		MaxAge:      7 * 24 * time.Hour,
-		Storage:     jetstream.FileStorage,
-		Replicas:    1,
-		// NoAck: true is load-bearing. The kiosk command bus uses core NATS
-		// request/reply on subjects inside this stream's filter space
-		// (kiosk.<code>.command.<name>). With the default NoAck: false,
-		// JetStream sees the message's Reply inbox and races a PubAck to it
-		// — which the controller's nc.Request() then mis-reads as the
-		// kiosk's actual reply. We never use js.Publish anywhere (all
-		// publishes go via nc.Publish through events.Publisher), so the
-		// PubAck has no consumer; turning it off costs nothing and unblocks
-		// request/reply. Consumer-side acks (AckExplicitPolicy below) are
-		// unaffected — that's a separate ack flowing the other direction.
-		NoAck: true,
+		Description: "Per-kiosk events (kiosk.*.event.>). Consumed by the controller.",
+		// Stream owns only the event subject space. Commands
+		// (kiosk.*.command.>) and heartbeats (kiosk.*.heartbeat) ride core
+		// NATS and are outside this filter by construction.
+		Subjects:  []string{events.StreamSubjectFilter()},
+		Retention: jetstream.LimitsPolicy,
+		MaxAge:    7 * 24 * time.Hour,
+		Storage:   jetstream.FileStorage,
+		Replicas:  1,
 	}
-	// CreateOrUpdateStream is idempotent for compatible changes. Operators
-	// who want different knobs (more replicas, longer retention) can `nats
-	// stream edit` out of band — but the defaults work out of the box.
-	// NoAck IS a compatible update; an existing stream provisioned without
-	// it will be flipped over on the controller's next startup.
+	// CreateOrUpdateStream is idempotent for compatible changes. Narrowing
+	// Subjects on a stream that already holds messages outside the new
+	// pattern will fail — operators upgrading from the old "kiosk.>" stream
+	// must `nats stream rm KIOSK_EVENTS` once so this call recreates it.
 	return a.js.CreateOrUpdateStream(ctx, cfg)
 }
 

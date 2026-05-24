@@ -86,16 +86,24 @@ payload to the same subject via a buffering NATS connection. Errors from
 the NATS publish are logged at warn level; commit paths are never
 blocked or failed by them.
 
+Every subject lives under `{prefix}.{kiosk_code}.<family>.<...>` where
+the family is one of `event`, `command`, or `heartbeat`. The family
+segment is what determines transport semantics — the `KIOSK_EVENTS`
+JetStream stream binds to `{prefix}.*.event.>` and nothing else, so
+commands and heartbeats are outside the stream's filter by construction.
+
 | Trigger | Subject |
 |---|---|
-| Transaction completed | `{prefix}.{kiosk_code}.transaction.complete` |
-| Checkout line | `{prefix}.{kiosk_code}.item.checkout` |
-| Return line | `{prefix}.{kiosk_code}.item.return` |
-| Consume line | `{prefix}.{kiosk_code}.item.consume` |
-| Admin stock adjustment | `{prefix}.{kiosk_code}.inventory.adjust` |
-| Open-checkouts rebuild | `{prefix}.{kiosk_code}.integrity.rebuild` |
-| Receipt context (managed mode only) | `{prefix}.{kiosk_code}.receipt.transaction` |
-| Low-stock alert (managed mode only) | `{prefix}.{kiosk_code}.alert.lowstock` |
+| Transaction completed | `{prefix}.{kiosk_code}.event.transaction.complete` |
+| Checkout line | `{prefix}.{kiosk_code}.event.item.checkout` |
+| Return line | `{prefix}.{kiosk_code}.event.item.return` |
+| Consume line | `{prefix}.{kiosk_code}.event.item.consume` |
+| Admin stock adjustment | `{prefix}.{kiosk_code}.event.inventory.adjust` |
+| Open-checkouts rebuild | `{prefix}.{kiosk_code}.event.integrity.rebuild` |
+| Admin force-close | `{prefix}.{kiosk_code}.event.checkout.admin_close` |
+| Instance lifecycle | `{prefix}.{kiosk_code}.event.instance.lifecycle` |
+| Receipt context (managed mode only) | `{prefix}.{kiosk_code}.event.receipt.transaction` |
+| Low-stock alert (managed mode only) | `{prefix}.{kiosk_code}.event.alert.lowstock` |
 
 `{prefix}` is `"kiosk"` by default and configurable via
 `nats.subject_prefix` (both kiosk and controller must agree). Override
@@ -104,17 +112,13 @@ application already owns the `kiosk.>` subject space. Subscribe locally
 with the `nats` CLI to confirm publishing:
 
 ```bash
-nats sub "kiosk.>"
+nats sub "kiosk.*.event.>"
 ```
 
-Two more NATS subject families exist alongside the events above but
-don't ride JetStream:
+Two more subject families exist alongside the events above but ride
+core NATS, not JetStream:
 
 | Subject | Direction | Transport |
 |---|---|---|
 | `{prefix}.{kiosk_code}.heartbeat` | kiosk → controller | Core NATS publish, 45s cadence. No persistence — last-write-wins is the entire signal. |
 | `{prefix}.{kiosk_code}.command.<name>` | controller → kiosk | Core NATS request/reply, ≤5 s reply timeout. Today: `inventory.adjust`, `inventory.snapshot`, `checkout.close`, `instance.create`, `instance.edit`, `instance.decommission`, `instance.reactivate`, `instance.snapshot`, `integrity.rebuild`, `ledger.republish`. |
-
-The `KIOSK_EVENTS` stream's `FilterSubjects` deliberately excludes both
-— heartbeats and commands should never be replayed from a durable
-stream.

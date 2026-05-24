@@ -25,11 +25,11 @@ exist (they're seeded by the same migrations) but are dormant — the
 commit hook publishes a structured context over NATS instead of calling
 the local notifier. The aggregator subscribes to:
 
-- `{prefix}.{kiosk_code}.receipt.transaction` — full `ReceiptContext`
+- `{prefix}.{kiosk_code}.event.receipt.transaction` — full `ReceiptContext`
   (kiosk, user, transaction, lines). Controller dedupes on
   `transaction_id` via `notification_dedupe` so JetStream redelivery
   never double-sends.
-- `{prefix}.{kiosk_code}.alert.lowstock` — `LowStockContext`.
+- `{prefix}.{kiosk_code}.event.alert.lowstock` — `LowStockContext`.
   Day-scoped dedup is the intended semantics: "tell me once per item
   per day," not just a redelivery guard.
 
