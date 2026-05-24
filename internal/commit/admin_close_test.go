@@ -303,6 +303,27 @@ func TestAdminClose_MissingOpenCheckout_Errors(t *testing.T) {
 	}
 }
 
+// Companion to MissingOpenCheckout_Errors: when a controller-source call
+// carries a command_id that has NO prior transaction, the not-found from
+// the open_checkout lookup must still surface — the replay-swallow path
+// in AdminClose only kicks in when an actual prior winner exists.
+func TestAdminClose_MissingOpenCheckout_WithCommandID_StillErrors(t *testing.T) {
+	app := setupApp(t)
+	_ = seedFixtures(t, app)
+
+	_, err := commit.AdminClose(app, commit.AdminCloseInput{
+		OpenCheckoutID: "nonexistent-id",
+		ActorID:        "controller-admin-id",
+		Source:         events.SourceController,
+		CommandID:      "cmd-no-prior",
+		Reason:         "lost",
+		Identity:       testIdentity,
+	}, (&captured{}).publish)
+	if err == nil {
+		t.Fatal("expected error for missing open_checkout even with command_id set")
+	}
+}
+
 func TestAdminClose_ControllerSource_NoLocalAdminFK(t *testing.T) {
 	app := setupApp(t)
 	s := seedFixtures(t, app)

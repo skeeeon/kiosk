@@ -52,6 +52,15 @@ func TestControllerNotifier_TemplatesSeeded(t *testing.T) {
 func TestControllerNotifier_ReceiptDedupes(t *testing.T) {
 	app := setupApp(t)
 	notifier := notifications.New(app)
+	// Drain async sends before setupApp's cleanup closes the DB, otherwise
+	// a goroutine that wakes post-cleanup panics inside the notifier and
+	// fails the package even though this test's assertions passed.
+	// t.Cleanup runs LIFO, so this fires before setupApp's teardown.
+	t.Cleanup(func() {
+		if !notifier.WaitInFlight(5 * time.Second) {
+			t.Log("notifier goroutines did not drain within timeout")
+		}
+	})
 
 	ctx := notifications.ReceiptContext{
 		Kiosk: notifications.KioskInfo{Code: "BAY-01", LocationCode: "WAREHOUSE-A"},

@@ -326,10 +326,19 @@ func AdminClose(app core.App, in AdminCloseInput, publish PublishFunc) (*AdminCl
 
 	if err != nil {
 		// Slow-path idempotency: a concurrent inserter beat us to the
-		// command_id. Re-lookup outside the rolled-back txn and return
-		// the winner. Vanishingly rare with controller-issued UUIDs +
-		// SQLite's single-writer model, but cheap to handle.
-		if in.CommandID != "" && dberr.IsUniqueViolation(err) {
+		// command_id. Two flavors share this path:
+		//   - unique-violation on transactions.command_id: we got past
+		//     the open_checkout lookup and lost the race at save time.
+		//   - not-found on the open_checkout lookup: the winner already
+		//     deleted the row before we entered the txn. (Fast-path
+		//     check at the top of AdminClose can lose to a winner that
+		//     hadn't committed yet.)
+		// In either case, re-lookup outside the rolled-back txn and
+		// return the winner if it exists. If no prior exists for this
+		// command_id, the not-found was a real typo'd id (or some other
+		// genuine missing-row error inside the txn) and we surface the
+		// original error unchanged.
+		if in.CommandID != "" && (dberr.IsUniqueViolation(err) || dberr.IsNotFound(err)) {
 			prior, ferr := findAdminCloseByCommandID(app, in.CommandID)
 			if ferr != nil {
 				return nil, ferr

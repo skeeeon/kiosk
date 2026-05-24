@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/mail"
 	"strings"
+	"sync"
 	"text/template"
 	"time"
 
@@ -54,6 +55,7 @@ type PayloadSummarizer interface {
 // the kiosk run without configuring SMTP at all.
 type Notifier struct {
 	app core.App
+	wg  sync.WaitGroup
 }
 
 // New constructs a Notifier bound to the kiosk's PocketBase app. The app
@@ -69,7 +71,9 @@ func (n *Notifier) Send(eventType string, data any) {
 	if n == nil {
 		return
 	}
+	n.wg.Add(1)
 	go func() {
+		defer n.wg.Done()
 		if err := n.deliver(eventType, data); err != nil {
 			slog.Error("notifications send failed", "event_type", eventType, "err", err)
 		}
@@ -104,7 +108,9 @@ func (n *Notifier) SendIfFirst(eventType, refKey string, data any) {
 	if n == nil {
 		return
 	}
+	n.wg.Add(1)
 	go func() {
+		defer n.wg.Done()
 		first, err := n.claimDedupe(eventType, refKey)
 		if err != nil {
 			slog.Warn("notifications dedupe insert failed; dropping to avoid double-send",
@@ -118,6 +124,29 @@ func (n *Notifier) SendIfFirst(eventType, refKey string, data any) {
 			slog.Error("notifications send failed", "event_type", eventType, "err", err)
 		}
 	}()
+}
+
+// WaitInFlight blocks until all async Send/SendIfFirst goroutines have
+// returned or the timeout elapses. Returns true if all goroutines finished,
+// false if the timeout fired first. Intended for tests that need a clean
+// teardown — without it, a goroutine waking after t.Cleanup closes the DB
+// can panic inside FindCollectionByNameOrId and fail the package even
+// though the test's own assertions passed. Safe to call on a nil Notifier.
+func (n *Notifier) WaitInFlight(timeout time.Duration) bool {
+	if n == nil {
+		return true
+	}
+	done := make(chan struct{})
+	go func() {
+		n.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
 }
 
 // claimDedupe attempts to insert the (event_type, ref, day) tuple. Returns
