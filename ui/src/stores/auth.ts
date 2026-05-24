@@ -17,7 +17,7 @@ export const useAuthStore = defineStore('auth', () => {
 
   const admin = computed(() => {
     void tick.value
-    return pb.authStore.model
+    return pb.authStore.record
   })
 
   async function login(email: string, password: string) {
