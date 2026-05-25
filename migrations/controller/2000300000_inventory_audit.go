@@ -1,4 +1,4 @@
-package migrations
+package controllermigrations
 
 import (
 	"fmt"
@@ -18,18 +18,8 @@ import (
 // (see EventPayload in internal/controller/consumer.go). source_adjustment_id
 // is the kiosk-side stock_adjustments.id — unique when non-empty so a
 // JetStream redelivery is a no-op rather than a duplicate audit row.
-//
-// Controller-only, registered via RegisterControllerMigrations so the
-// kiosk binary never sees this collection on its DB.
 
 func init() {
-	// Deferred to RegisterControllerMigrations (see 2000000000_controller_collections.go).
-}
-
-// RegisterInventoryAuditMigration is invoked from the controllerOnce body
-// in 2000000000_controller_collections.go alongside the other controller
-// migrations.
-func RegisterInventoryAuditMigration() {
 	m.Register(addInventoryAuditUp, addInventoryAuditDown)
 }
 

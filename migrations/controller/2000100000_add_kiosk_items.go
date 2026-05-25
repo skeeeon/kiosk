@@ -1,4 +1,4 @@
-package migrations
+package controllermigrations
 
 import (
 	"fmt"
@@ -18,20 +18,8 @@ import (
 //     before it has anything to check out. The aggregator's touchKiosk path
 //     still works for kiosks that self-register first; it just becomes a
 //     no-op when the row already exists.
-//
-// Controller-only: registered via RegisterControllerMigrationsExtra below,
-// which the controller binary calls alongside the original.
 
 func init() {
-	// Defer the actual m.Register call until RegisterControllerMigrations
-	// fires so this stays controller-only. See the comment on
-	// RegisterControllerMigrations in 2000000000_controller_collections.go.
-}
-
-// RegisterKioskItemsMigration is invoked by RegisterControllerMigrations.
-// Kept separate so the sync.Once in that file can coordinate registration
-// of both migrations exactly once per process.
-func RegisterKioskItemsMigration() {
 	m.Register(addKioskItemsUp, addKioskItemsDown)
 }
 

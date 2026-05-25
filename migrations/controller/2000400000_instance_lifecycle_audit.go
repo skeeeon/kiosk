@@ -1,4 +1,4 @@
-package migrations
+package controllermigrations
 
 import (
 	"fmt"
@@ -19,18 +19,8 @@ import (
 // FKs into kiosk-local rows the controller doesn't have). source_audit_id
 // is the kiosk-side instance_audit.id — unique-when-non-empty so JetStream
 // redelivery is a no-op rather than a duplicate row.
-//
-// Controller-only, registered via RegisterControllerMigrations so the
-// kiosk binary never sees this collection on its DB.
 
 func init() {
-	// Deferred to RegisterControllerMigrations (see 2000000000_controller_collections.go).
-}
-
-// RegisterInstanceLifecycleAuditMigration is invoked from the controllerOnce
-// body in 2000000000_controller_collections.go alongside the other
-// controller migrations.
-func RegisterInstanceLifecycleAuditMigration() {
 	m.Register(addInstanceLifecycleAuditUp, addInstanceLifecycleAuditDown)
 }
 

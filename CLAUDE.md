@@ -95,9 +95,9 @@ PocketBase app per case via `pocketbase.NewWithConfig` +
 `core.NewMigrationsRunner` (see `setupApp` in `internal/commit/commit_test.go`).
 `migratecmd`'s `Automigrate` hooks `OnServe`, not `OnBootstrap`, so tests that
 don't start a server must apply migrations explicitly via the runner — copy
-this pattern for any new PB-backed test. Controller tests additionally call
-`migrations.RegisterControllerMigrations()` before the runner so the
-controller-only migration is included.
+this pattern for any new PB-backed test. Controller tests pull in the
+controller-only migrations via a `migrations_setup_test.go` file that
+blank-imports `migrations/controller` for side effect.
 
 ## Architecture you can't see from one file
 
@@ -282,24 +282,26 @@ change schema, write a new `migrations/<unix-ts>_<name>.go` file with an `init()
 that registers via PB's migration API. Migrations run on startup; running
 twice is a no-op (PB tracks them in `_migrations`).
 
-Controller-only schema lives in `migrations/2000000000_controller_collections.go`
-and is registered via an **explicit** `RegisterControllerMigrations()` call
-guarded by `sync.Once` — NOT via an `init()` — because init runs at package
-load before tests can set env vars and the kiosk binary transitively imports
-the same package. `cmd/controller/main.go` calls the register function; the
-kiosk binary doesn't. Tests call it from `setupApp` in the controller package.
+Controller-only schema lives in its own sibling package
+`migrations/controller/` (Go package name `controllermigrations`). Each
+file there self-registers via `init() { m.Register(up, down) }`, same
+pattern the kiosk migrations use. The kiosk binary doesn't import this
+path, so its DB never sees the controller-only collections. The
+controller binary blank-imports both `migrations` and
+`migrations/controller` from `cmd/controller/main.go`. Adding a new
+controller-only migration means dropping a new file into
+`migrations/controller/` and registering it from its own `init()` — no
+sync.Once or separate registration function involved.
 
-The second controller-only migration (`migrations/2000100000_add_kiosk_items.go`)
-adds the `kiosk_items` join collection and opens `kiosks.CreateRule` to
-admins. It registers via `RegisterKioskItemsMigration()`, which is called
-from inside the same `sync.Once` body that registers the first controller
-migration — so adding a controller migration means appending to that body,
-not adding a new `init()`.
+The current controller-only files: `2000000000_controller_collections.go`
+(kiosks registry + source_* idempotency columns on transactions/lines),
+`2000100000_add_kiosk_items.go` (kiosk_items membership + opens
+`kiosks.CreateRule`), `2000200000_kiosks_last_transaction_at.go`
+(DateField on kiosks), `2000300000_inventory_audit.go`,
+`2000400000_instance_lifecycle_audit.go`, and
+`2000500000_open_checkouts_kiosk_code.go`.
 
-The third controller-only migration (`migrations/2000200000_kiosks_last_transaction_at.go`)
-adds the `kiosks.last_transaction_at` DateField and registers via
-`RegisterKiosksLastTransactionAtMigration()`, called from the same
-`sync.Once` body. `touchKiosk` in `internal/controller/consumer.go` writes
+`touchKiosk` in `internal/controller/consumer.go` writes
 both `last_seen` (legacy, kept for one release) and `last_transaction_at`
 on each `transaction.complete` event; the SPA reads
 `last_transaction_at`. **Critical change in this release:** `touchKiosk`

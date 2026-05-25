@@ -30,7 +30,12 @@ import (
 	"github.com/skeeeon/kiosk/internal/scheduler"
 	"github.com/skeeeon/kiosk/internal/ui"
 
-	"github.com/skeeeon/kiosk/migrations"
+	// Kiosk migrations register via init(); we just need them in the
+	// build graph. The controller-only migrations live in a sibling
+	// package the kiosk binary doesn't import — that's the gating
+	// mechanism that keeps them off plain kiosks.
+	_ "github.com/skeeeon/kiosk/migrations"
+	_ "github.com/skeeeon/kiosk/migrations/controller"
 )
 
 // sendLogRetentionDays bounds the notification_send_log + notification_dedupe
@@ -39,17 +44,13 @@ import (
 const sendLogRetentionDays = 90
 
 func main() {
-	// Signal to the migration registry and config validator that we're the
-	// controller. MUST happen before any import side-effects we care about
-	// have a chance to read it.
+	// Signal to the config validator that we're the controller (relaxes
+	// the kiosk.code requirement). Migrations themselves no longer key
+	// off this env var — controller-only migrations live in
+	// migrations/controller, which only this binary imports.
 	if err := os.Setenv("KIOSK_ROLE", "controller"); err != nil {
 		log.Fatalf("set KIOSK_ROLE: %v", err)
 	}
-
-	// Register controller-only schema additions. Done explicitly (rather
-	// than via init() side effects) so the kiosk binary, which imports the
-	// same migrations package transitively, never registers them.
-	migrations.RegisterControllerMigrations()
 
 	cfg, err := config.Load(configPath())
 	if err != nil {

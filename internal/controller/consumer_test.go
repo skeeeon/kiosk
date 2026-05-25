@@ -7,22 +7,16 @@ import (
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
-
-	"github.com/skeeeon/kiosk/migrations"
 )
 
 // setupApp boots a fresh PB instance with both kiosk and controller-only
 // migrations applied. Same pattern as internal/commit/commit_test.go's
-// setupApp but with KIOSK_ROLE=controller in scope so the role-guarded
-// migration registers.
+// setupApp; migrations register via init() — both packages are imported
+// for side-effect from migrations_setup_test.go.
 func setupApp(t *testing.T) *pocketbase.PocketBase {
 	t.Helper()
 	t.Setenv("KIOSK_QUIET_BOOTSTRAP", "1")
 	t.Setenv("KIOSK_ROLE", "controller")
-
-	// Register controller-only schema additions. Idempotent — sync.Once
-	// guards multiple test invocations from re-registering.
-	migrations.RegisterControllerMigrations()
 
 	app := pocketbase.NewWithConfig(pocketbase.Config{
 		DefaultDataDir:  t.TempDir(),

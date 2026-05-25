@@ -20,10 +20,7 @@
 // init migration 1779000000_init.go and extended by 1779500000 — both
 // run unconditionally via init(), so the controller already inherits the
 // structure.
-//
-// Controller-only — registered via RegisterControllerMigrations so the
-// kiosk binary never touches its own open_checkouts schema.
-package migrations
+package controllermigrations
 
 import (
 	"fmt"
@@ -33,12 +30,6 @@ import (
 )
 
 func init() {
-	// Deferred to RegisterControllerMigrations.
-}
-
-// RegisterOpenCheckoutsKioskCodeMigration is invoked by
-// RegisterControllerMigrations inside its sync.Once body.
-func RegisterOpenCheckoutsKioskCodeMigration() {
 	m.Register(openCheckoutsKioskCodeUp, openCheckoutsKioskCodeDown)
 }
 

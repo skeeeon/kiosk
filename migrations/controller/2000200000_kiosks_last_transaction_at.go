@@ -1,4 +1,4 @@
-package migrations
+package controllermigrations
 
 import (
 	"fmt"
@@ -17,17 +17,8 @@ import (
 // The old `last_seen` field stays put for one release. touchKiosk writes
 // both columns; the SPA reads last_transaction_at; a future migration
 // drops last_seen once the field has aged out of downstream consumers.
-//
-// Controller-only — registered via RegisterControllerMigrations alongside
-// kiosk_items so the kiosk binary's PB never sees this column.
 
 func init() {
-	// Deferred to RegisterControllerMigrations.
-}
-
-// RegisterKiosksLastTransactionAtMigration is invoked by
-// RegisterControllerMigrations inside its sync.Once body.
-func RegisterKiosksLastTransactionAtMigration() {
 	m.Register(addKiosksLastTransactionAtUp, addKiosksLastTransactionAtDown)
 }
 

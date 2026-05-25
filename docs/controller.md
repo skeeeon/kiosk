@@ -252,15 +252,17 @@ cp controller.yaml.example controller.yaml      # set nats.url + auth
 ```
 
 The controller binary uses the **same** `migrations/` package as the
-kiosk plus three controller-only migrations
-(`2000000000_controller_collections.go`,
-`2000100000_add_kiosk_items.go`, and
-`2000200000_kiosks_last_transaction_at.go`) that are registered
-explicitly via `migrations.RegisterControllerMigrations()` from
-`cmd/controller/main.go` — the kiosk binary never calls it. The
-controller's data dir is `pb_data_controller/` so a kiosk and
-controller can co-exist in one working directory during development
-without colliding.
+kiosk plus the controller-only sibling package
+`migrations/controller/`, which holds six additional migrations
+(kiosks registry, kiosk_items membership, kiosks.last_transaction_at,
+inventory_audit, instance_lifecycle_audit, and the
+open_checkouts.kiosk_code/source_item_instance_id columns). Each one
+self-registers via `init()`; `cmd/controller/main.go` blank-imports
+both packages. The kiosk binary doesn't blank-import
+`migrations/controller`, so its DB never sees the controller-only
+collections. The controller's data dir is `pb_data_controller/` so a
+kiosk and controller can co-exist in one working directory during
+development without colliding.
 
 The controller's PocketBase admin UI lives at the same paths as a
 kiosk's: `/_/` for the PB superuser, `/admin/login` for the kiosk

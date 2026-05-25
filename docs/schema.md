@@ -35,15 +35,18 @@ two extra fields not present on standalone kiosks:
 pair index, idempotency key for redelivery) and `source_line_id` on
 transaction_lines (unique-when-non-empty index). These — along with the
 `kiosks`, `kiosk_items`, `inventory_audit`, and
-`instance_lifecycle_audit` collections plus
-`kiosks.last_transaction_at` — are added by five controller-only
-migrations (`2000000000_controller_collections.go`,
+`instance_lifecycle_audit` collections, `kiosks.last_transaction_at`,
+and the `open_checkouts.kiosk_code` + `source_item_instance_id`
+columns — are added by six controller-only migrations living in the
+sibling package `migrations/controller/`
+(`2000000000_controller_collections.go`,
 `2000100000_add_kiosk_items.go`,
 `2000200000_kiosks_last_transaction_at.go`,
-`2000300000_inventory_audit.go`, and
-`2000400000_instance_lifecycle_audit.go`), all registered via a single
-`sync.Once` body in `RegisterControllerMigrations`. The plain kiosk
-binary never invokes it, so its DB never gets these.
+`2000300000_inventory_audit.go`,
+`2000400000_instance_lifecycle_audit.go`, and
+`2000500000_open_checkouts_kiosk_code.go`). Each self-registers via
+`init()`. The kiosk binary doesn't import that package, so its DB
+never sees these.
 
 ## Cardinality rules for `open_checkouts`
 

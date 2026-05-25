@@ -1,9 +1,7 @@
-// Controller-only schema. Registered with the PB migration runner ONLY when
-// the process is the kiosk-controller (cmd/controller sets KIOSK_ROLE=controller
-// before importing this package). Plain kiosks leave the env var unset, so
-// this migration stays dormant for them — their local DBs never get the
-// controller's `kiosks` registry collection or the source_* fields on
-// transactions.
+// Controller-only schema. Loaded only when the controller binary
+// blank-imports migrations/controller; the kiosk binary doesn't import
+// this path, so its DB never gets the kiosks registry or the
+// source_* fields on transactions.
 //
 // What this adds on the controller side:
 //   - `kiosks` registry collection (one row per kiosk in the fleet).
@@ -12,50 +10,18 @@
 //     idempotent under redelivery — the same event arriving twice can't create
 //     two ledger rows.
 //   - `source_line_id` on `transaction_lines`, unique when non-empty.
-package migrations
+package controllermigrations
 
 import (
 	"fmt"
-	"sync"
 
 	"github.com/pocketbase/pocketbase/core"
 	m "github.com/pocketbase/pocketbase/migrations"
 )
 
-// RegisterControllerMigrations adds the controller-only schema migrations to
-// the PB registry. cmd/controller calls this in main; the kiosk binary
-// doesn't, so its DB never sees the kiosks registry or the source_* fields.
-// Tests in internal/controller call this in their setupApp helper.
-//
-// sync.Once guards against double-registration: PB rejects two migrations
-// with the same name, and tests legitimately set up many isolated apps in
-// one binary run.
-func RegisterControllerMigrations() {
-	controllerOnce.Do(func() {
-		m.Register(upController, downController)
-		// kiosk_items membership + open kiosks.CreateRule. Lives in its own
-		// file but registers in the same sync.Once so a process never
-		// double-registers either migration.
-		RegisterKioskItemsMigration()
-		// last_transaction_at on the kiosks collection — replaces last_seen
-		// as the per-kiosk "when did this kiosk last actually transact"
-		// signal once heartbeat takes over liveness duty.
-		RegisterKiosksLastTransactionAtMigration()
-		// inventory_audit collection — fleet-wide projection of every
-		// inventory.adjust event for the Adjustment audit Reports tab.
-		RegisterInventoryAuditMigration()
-		// instance_lifecycle_audit collection — fleet-wide projection of
-		// every instance.lifecycle event for the Instance lifecycle
-		// Reports tab.
-		RegisterInstanceLifecycleAuditMigration()
-		// kiosk_code column on open_checkouts so the controller can hold
-		// the whole fleet's open rows in one table. Projection writes via
-		// ProjectOpenCheckouts in internal/controller/consumer.go.
-		RegisterOpenCheckoutsKioskCodeMigration()
-	})
+func init() {
+	m.Register(upController, downController)
 }
-
-var controllerOnce sync.Once
 
 func upController(app core.App) error {
 	if err := createKiosksCollection(app); err != nil {
@@ -185,43 +151,4 @@ func addTransactionLineSourceFields(app core.App) error {
 		return fmt.Errorf("save transaction_lines: %w", err)
 	}
 	return nil
-}
-
-func hasIndex(c *core.Collection, name string) bool {
-	for _, idx := range c.Indexes {
-		if extractIndexName(idx) == name {
-			return true
-		}
-	}
-	return false
-}
-
-func removeIndex(c *core.Collection, name string) {
-	out := c.Indexes[:0]
-	for _, idx := range c.Indexes {
-		if extractIndexName(idx) != name {
-			out = append(out, idx)
-		}
-	}
-	c.Indexes = out
-}
-
-// extractIndexName pulls the index name out of a PB index DDL string. PB
-// stores indexes as raw SQL like
-//
-//	CREATE UNIQUE INDEX `idx_foo` ON `bar` (`col`) WHERE ...
-//
-// so we look for the name between the first pair of backticks.
-func extractIndexName(ddl string) string {
-	start := -1
-	for i := 0; i < len(ddl); i++ {
-		if ddl[i] == '`' {
-			if start == -1 {
-				start = i + 1
-				continue
-			}
-			return ddl[start:i]
-		}
-	}
-	return ""
 }

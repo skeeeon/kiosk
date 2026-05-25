@@ -101,32 +101,6 @@ func TestKioskMigrationsApplyCleanly(t *testing.T) {
 	}
 }
 
-// TestControllerMigrationsApplyCleanly covers the controller-only path:
-// RegisterControllerMigrations() is called explicitly (it's NOT an init
-// side effect by design — see CLAUDE.md), then migrations run, then the
-// controller-only collections must exist.
-func TestControllerMigrationsApplyCleanly(t *testing.T) {
-	t.Setenv("KIOSK_ROLE", "controller")
-	RegisterControllerMigrations()
-
-	app := newApp(t)
-	runner := core.NewMigrationsRunner(app, core.AppMigrations)
-	if _, err := runner.Up(); err != nil {
-		t.Fatalf("controller migrations failed: %v", err)
-	}
-
-	for _, name := range []string{
-		"kiosks", "kiosk_items",
-		// kiosk's collections should also be present — the controller
-		// uses the same base schema.
-		"users", "items", "transactions",
-	} {
-		if _, err := app.FindCollectionByNameOrId(name); err != nil {
-			t.Errorf("collection %q missing after migrate: %v", name, err)
-		}
-	}
-}
-
 // TestMigrationsAreIdempotent confirms that running the migration runner
 // a second time on an already-migrated DB is a no-op — PB tracks
 // _migrations and skips. Pinned because a future migration author might
