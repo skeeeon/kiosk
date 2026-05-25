@@ -16,7 +16,7 @@
 import { computed, reactive, ref, watch } from 'vue'
 import AppDialog from './AppDialog.vue'
 import { api, ApiError } from '../lib/api'
-import { useAdminToast } from '../composables/useAdminToast'
+import { useToast } from '../composables/useToast'
 
 const props = defineProps<{
   open: boolean
@@ -40,7 +40,7 @@ const emit = defineEmits<{
   closed: []
 }>()
 
-const toast = useAdminToast()
+const toast = useToast()
 
 type ClosureReason = 'lost' | 'returned_offline' | 'damaged' | 'other'
 

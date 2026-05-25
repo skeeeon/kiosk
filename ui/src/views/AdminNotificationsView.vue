@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { api, ApiError } from '../lib/api'
 import { pb } from '../lib/pb'
-import { useAdminToast } from '../composables/useAdminToast'
+import { useToast } from '../composables/useToast'
 import { useKioskIdentity } from '../composables/useKioskIdentity'
 import AppDialog from '../components/AppDialog.vue'
 import NotificationsTabs from '../components/NotificationsTabs.vue'
@@ -73,7 +73,7 @@ const helpers: FieldRef[] = [
 ]
 const showHelp = ref(false)
 
-const toast = useAdminToast()
+const toast = useToast()
 const { identity } = useKioskIdentity()
 const managed = computed(() => identity.value?.managed ?? false)
 const isController = computed(() => identity.value?.role === 'controller')

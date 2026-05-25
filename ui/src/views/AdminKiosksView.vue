@@ -5,13 +5,13 @@ import { pb } from '../lib/pb'
 import { api } from '../lib/api'
 import KioskDialog from '../components/KioskDialog.vue'
 import DataTable, { type ColumnDef } from '../components/DataTable.vue'
-import { useAdminToast } from '../composables/useAdminToast'
+import { useToast } from '../composables/useToast'
 import { useKioskIdentity } from '../composables/useKioskIdentity'
 import { useListShortcuts } from '../composables/useListShortcuts'
 import { useUrlQuerySync } from '../composables/useUrlQuerySync'
 import type { HeartbeatsResponse, KioskRecord } from '../types'
 
-const toast = useAdminToast()
+const toast = useToast()
 const router = useRouter()
 const { identity } = useKioskIdentity()
 const isController = computed(() => identity.value?.role === 'controller')

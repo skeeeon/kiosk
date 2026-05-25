@@ -14,15 +14,14 @@ import {
 } from 'reka-ui'
 import { useAuthStore } from '../stores/auth'
 import { useKioskIdentity } from '../composables/useKioskIdentity'
-import { useAdminToast } from '../composables/useAdminToast'
+import { useToast } from '../composables/useToast'
 import { api } from '../lib/api'
-import AdminToast from '../components/AdminToast.vue'
 import SidebarNavIcon from '../components/SidebarNavIcon.vue'
 import type { LedgerRepublishResult } from '../types'
 
 const auth = useAuthStore()
 const router = useRouter()
-const toast = useAdminToast()
+const toast = useToast()
 const { identity } = useKioskIdentity()
 
 const isController = computed(() => identity.value?.role === 'controller')
@@ -435,7 +434,6 @@ function closeDrawer() {
       <div class="flex-1 overflow-auto">
         <RouterView />
       </div>
-      <AdminToast />
     </div>
   </div>
   </TooltipProvider>

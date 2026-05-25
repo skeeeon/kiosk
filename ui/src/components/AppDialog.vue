@@ -32,7 +32,7 @@ const props = withDefaults(
     open: boolean
     title?: string
     description?: string
-    size?: 'sm' | 'md' | 'lg'
+    size?: 'sm' | 'md' | 'lg' | 'xl'
     variant?: 'modal' | 'sheet'
     confirmDiscard?: boolean
     dirty?: boolean
@@ -68,6 +68,8 @@ const modalSizeClass = computed(() => {
       return 'max-w-md'
     case 'lg':
       return 'max-w-4xl'
+    case 'xl':
+      return 'max-w-5xl'
     default:
       return 'max-w-2xl'
   }
@@ -79,6 +81,8 @@ const sheetSizeClass = computed(() => {
       return 'w-[400px]'
     case 'lg':
       return 'w-[760px]'
+    case 'xl':
+      return 'w-[960px]'
     default:
       return 'w-[560px]'
   }

@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { useKioskIdentity } from './composables/useKioskIdentity'
+import AppToast from './components/AppToast.vue'
 
 const { identity } = useKioskIdentity()
 const route = useRoute()
@@ -38,5 +39,7 @@ const isAdminRoute = computed(() => route.path.startsWith('/admin'))
         Admin
       </RouterLink>
     </footer>
+
+    <AppToast />
   </div>
 </template>

@@ -6,13 +6,13 @@ import GroupDialog from '../components/GroupDialog.vue'
 import WorkerHistoryDialog from '../components/WorkerHistoryDialog.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import DataTable, { type ColumnDef } from '../components/DataTable.vue'
-import { useAdminToast } from '../composables/useAdminToast'
+import { useToast } from '../composables/useToast'
 import { useKioskIdentity } from '../composables/useKioskIdentity'
 import { useListShortcuts } from '../composables/useListShortcuts'
 import { useUrlQuerySync } from '../composables/useUrlQuerySync'
 import type { GroupRecord, WorkerRecord } from '../types'
 
-const toast = useAdminToast()
+const toast = useToast()
 const { identity } = useKioskIdentity()
 const managed = computed(() => identity.value?.managed ?? false)
 

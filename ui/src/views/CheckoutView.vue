@@ -10,6 +10,7 @@ import IdentifyPanel from '../components/IdentifyPanel.vue'
 import { useCart } from '../composables/useCart'
 import { useKioskIdentity } from '../composables/useKioskIdentity'
 import { useSessionStore } from '../stores/session'
+import { useToast } from '../composables/useToast'
 import { ApiError } from '../lib/api'
 import type {
   Cart,
@@ -23,7 +24,11 @@ import type {
 } from '../types'
 
 const session = useSessionStore()
-const { cart, flash } = storeToRefs(session)
+const { cart } = storeToRefs(session)
+const toast = useToast()
+// All kiosk-side toasts use the top-center position to stay visible across a
+// wide touchscreen; admin views default to bottom-right.
+const TOP = { position: 'top' } as const
 const c = useCart()
 const { identity } = useKioskIdentity()
 
@@ -152,11 +157,14 @@ function isCartExpiredError(e: unknown): boolean {
 function handleApiError(e: unknown, fallbackPrefix?: string) {
   if (isCartExpiredError(e)) {
     session.setCart(null)
-    session.setFlash('warn', 'Your session has expired. Scan your badge to begin again.', 6000)
+    toast.warn('Your session has expired. Scan your badge to begin again.', {
+      position: 'top',
+      duration: 6000,
+    })
     return
   }
   const msg = (e as Error).message
-  session.setFlash('error', fallbackPrefix ? `${fallbackPrefix}: ${msg}` : msg)
+  toast.error(fallbackPrefix ? `${fallbackPrefix}: ${msg}` : msg, TOP)
 }
 
 // Cart lines created via the explicit foreman-return endpoint carry the
@@ -198,17 +206,14 @@ async function onScan(raw: string) {
   }
 
   if (result.type === 'unknown') {
-    session.setFlash('warn', `Unknown code: ${result.value ?? raw}`)
+    toast.warn(`Unknown code: ${result.value ?? raw}`, TOP)
     return
   }
 
   if (result.type === 'user') {
     const u = result.record as User
     if (cart.value && cart.value.user_id !== u.id) {
-      session.setFlash(
-        'warn',
-        `${cart.value.user_name} is still active. Cancel or commit first.`,
-      )
+      toast.warn(`${cart.value.user_name} is still active. Cancel or commit first.`, TOP)
       return
     }
     try {
@@ -219,7 +224,7 @@ async function onScan(raw: string) {
       const welcome = u.open_count > 0
         ? `Welcome, ${u.name} — ${u.open_count} item${u.open_count === 1 ? '' : 's'} out`
         : `Welcome, ${u.name}`
-      session.setFlash('info', welcome)
+      toast.info(welcome, TOP)
     } catch (e) {
       handleApiError(e)
     }
@@ -284,7 +289,7 @@ async function doCancel() {
     await c.cancel()
     outstanding.value = []
     outstandingExpanded.value = false
-    session.setFlash('info', 'Session ended')
+    toast.info('Session ended', TOP)
   } catch (e) {
     handleApiError(e)
   }
@@ -300,7 +305,7 @@ async function onBrowsePick(code: string) {
   browsePending.value = true
   try {
     const line = await c.addItem(code)
-    session.setFlash('info', `Added ${line.item_name}`)
+    toast.info(`Added ${line.item_name}`, TOP)
     await scrollCartToBottom()
   } catch (e) {
     handleApiError(e)
@@ -311,9 +316,9 @@ async function onBrowsePick(code: string) {
 
 function onForemanReturnAdded(payload: { cart: Cart; line: CartLine }) {
   session.setCart(payload.cart)
-  session.setFlash(
-    'warn',
+  toast.warn(
     `Foreman return queued: ${payload.line.original_checkout_user_name ?? 'worker'} · ${payload.line.item_name}`,
+    TOP,
   )
   void scrollCartToBottom()
 }
@@ -358,11 +363,6 @@ const crossUserSummary = computed(() =>
     .join('\n'),
 )
 
-const flashClasses = {
-  info: 'bg-sky-900/60 border-sky-700/70 text-sky-100',
-  warn: 'bg-amber-900/60 border-amber-700/70 text-amber-100',
-  error: 'bg-red-900/60 border-red-700/70 text-red-100',
-}
 </script>
 
 <template>
@@ -372,23 +372,6 @@ const flashClasses = {
        overflow without pushing the chrome and footer off-screen. -->
   <div class="flex-1 flex flex-col min-h-0">
   <ScanInput @scan="onScan" />
-
-  <Transition
-    enter-active-class="transition duration-200 ease-out"
-    enter-from-class="opacity-0 -translate-y-2"
-    enter-to-class="opacity-100 translate-y-0"
-    leave-active-class="transition duration-150 ease-in"
-    leave-from-class="opacity-100"
-    leave-to-class="opacity-0"
-  >
-    <div
-      v-if="flash"
-      class="fixed top-16 left-1/2 -translate-x-1/2 z-20 px-6 py-3 rounded-xl border text-lg shadow-lg"
-      :class="flashClasses[flash.kind]"
-    >
-      {{ flash.text }}
-    </div>
-  </Transition>
 
   <!-- Chrome header for the active cart and the post-commit success screen.
        The splash has its own centered logo treatment so we skip the chrome
@@ -649,7 +632,7 @@ const flashClasses = {
     :pending="browsePending"
     @update:open="browseOpen = $event"
     @pick="onBrowsePick"
-    @error="session.setFlash('error', $event)"
+    @error="toast.error($event, TOP)"
   />
 
   <ForemanReturnDialog

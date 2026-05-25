@@ -5,12 +5,12 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { pb } from '../lib/pb'
-import { useAdminToast } from '../composables/useAdminToast'
+import { useToast } from '../composables/useToast'
 import type { ItemInstance } from '../types'
 
 const props = defineProps<{ itemId: string }>()
 
-const toast = useAdminToast()
+const toast = useToast()
 
 interface InstanceRow extends ItemInstance {
   out: boolean // true when at least one open_checkouts row references this instance

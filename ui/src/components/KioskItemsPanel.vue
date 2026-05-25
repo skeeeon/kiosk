@@ -5,12 +5,12 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { pb } from '../lib/pb'
-import { useAdminToast } from '../composables/useAdminToast'
+import { useToast } from '../composables/useToast'
 import DataTable, { type ColumnDef } from './DataTable.vue'
 import type { ItemRecord, KioskItemRecord } from '../types'
 
 const props = defineProps<{ kioskId: string }>()
-const toast = useAdminToast()
+const toast = useToast()
 
 interface MembershipRow {
   id: string                  // kiosk_items row id

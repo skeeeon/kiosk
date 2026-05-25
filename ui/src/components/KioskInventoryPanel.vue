@@ -11,7 +11,7 @@ import { computed, ref, watch } from 'vue'
 import AppDialog from './AppDialog.vue'
 import DataTable, { type ColumnDef } from './DataTable.vue'
 import { api, ApiError } from '../lib/api'
-import { useAdminToast } from '../composables/useAdminToast'
+import { useToast } from '../composables/useToast'
 import type {
   InventoryAdjustResponse,
   InventorySnapshotItem,
@@ -20,7 +20,7 @@ import type {
 } from '../types'
 
 const props = defineProps<{ kioskCode: string }>()
-const toast = useAdminToast()
+const toast = useToast()
 
 const items = ref<InventorySnapshotItem[]>([])
 const loading = ref(false)

@@ -14,7 +14,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { pb } from '../lib/pb'
 import { api } from '../lib/api'
-import { useAdminToast } from '../composables/useAdminToast'
+import { useToast } from '../composables/useToast'
 import KioskItemsPanel from '../components/KioskItemsPanel.vue'
 import KioskInventoryPanel from '../components/KioskInventoryPanel.vue'
 import KioskInstancesPanel from '../components/KioskInstancesPanel.vue'
@@ -23,7 +23,7 @@ import type { HeartbeatsResponse, KioskRecord } from '../types'
 
 const props = defineProps<{ code: string }>()
 const router = useRouter()
-const toast = useAdminToast()
+const toast = useToast()
 
 const kiosk = ref<KioskRecord | null>(null)
 const loading = ref(false)

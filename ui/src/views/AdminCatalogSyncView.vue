@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { api } from '../lib/api'
-import { useAdminToast } from '../composables/useAdminToast'
+import { useToast } from '../composables/useToast'
 import { useKioskIdentity } from '../composables/useKioskIdentity'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import type {
@@ -19,7 +19,7 @@ import type {
 // "KV teaches the DB" mode — see the README's "Reconciling catalog drift"
 // section for the rationale.
 
-const toast = useAdminToast()
+const toast = useToast()
 const { identity } = useKioskIdentity()
 const isController = computed(() => identity.value?.role === 'controller')
 

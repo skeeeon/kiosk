@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { pb } from '../lib/pb'
-import { useAdminToast } from '../composables/useAdminToast'
+import { useToast } from '../composables/useToast'
 import { useKioskIdentity } from '../composables/useKioskIdentity'
 import NotificationsTabs from '../components/NotificationsTabs.vue'
 import DataTable, { type ColumnDef } from '../components/DataTable.vue'
@@ -25,7 +25,7 @@ interface SendLogPage {
   perPage: number
 }
 
-const toast = useAdminToast()
+const toast = useToast()
 const { identity } = useKioskIdentity()
 const managed = computed(() => identity.value?.managed ?? false)
 

@@ -5,13 +5,13 @@ import { download } from '../lib/api'
 import ItemDialog from '../components/ItemDialog.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import DataTable, { type ColumnDef } from '../components/DataTable.vue'
-import { useAdminToast } from '../composables/useAdminToast'
+import { useToast } from '../composables/useToast'
 import { useKioskIdentity } from '../composables/useKioskIdentity'
 import { useListShortcuts } from '../composables/useListShortcuts'
 import { useUrlQuerySync } from '../composables/useUrlQuerySync'
 import type { ItemRecord } from '../types'
 
-const toast = useAdminToast()
+const toast = useToast()
 const { identity } = useKioskIdentity()
 const managed = computed(() => identity.value?.managed ?? false)
 const isController = computed(() => identity.value?.role === 'controller')

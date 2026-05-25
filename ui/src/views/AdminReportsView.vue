@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { pb } from '../lib/pb'
 import { api, download } from '../lib/api'
-import { useAdminToast } from '../composables/useAdminToast'
+import { useToast } from '../composables/useToast'
 import { useKioskIdentity } from '../composables/useKioskIdentity'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import CheckoutCloseDialog from '../components/CheckoutCloseDialog.vue'
@@ -17,7 +17,7 @@ const isController = computed(() => identity.value?.role === 'controller')
 
 type Tab = 'currently-out' | 'low-stock' | 'group-activity' | 'recent' | 'audit' | 'lifecycle' | 'notifications'
 const tab = ref<Tab>('currently-out')
-const toast = useAdminToast()
+const toast = useToast()
 
 interface OpenRow {
   id: string

@@ -6,7 +6,7 @@
 import { computed, reactive, ref, watch } from 'vue'
 import AppDialog from './AppDialog.vue'
 import { api } from '../lib/api'
-import { useAdminToast } from '../composables/useAdminToast'
+import { useToast } from '../composables/useToast'
 import type { StockAdjustmentResult } from '../types'
 
 const props = defineProps<{
@@ -22,7 +22,7 @@ const emit = defineEmits<{
   applied: [result: StockAdjustmentResult]
 }>()
 
-const toast = useAdminToast()
+const toast = useToast()
 
 const form = reactive<{
   mode: 'delta' | 'absolute'

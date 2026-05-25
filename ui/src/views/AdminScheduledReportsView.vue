@@ -5,12 +5,12 @@ import ScheduledReportDialog from '../components/ScheduledReportDialog.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import NotificationsTabs from '../components/NotificationsTabs.vue'
 import DataTable, { type ColumnDef } from '../components/DataTable.vue'
-import { useAdminToast } from '../composables/useAdminToast'
+import { useToast } from '../composables/useToast'
 import { useKioskIdentity } from '../composables/useKioskIdentity'
 import { useUrlQuerySync } from '../composables/useUrlQuerySync'
 import type { ScheduledReportRecord } from '../types'
 
-const toast = useAdminToast()
+const toast = useToast()
 const { identity } = useKioskIdentity()
 const isController = computed(() => identity.value?.role === 'controller')
 const managed = computed(() => identity.value?.managed ?? false)

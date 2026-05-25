@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { pb } from '../lib/pb'
 import { download } from '../lib/api'
-import { useAdminToast } from '../composables/useAdminToast'
+import { useToast } from '../composables/useToast'
 import TransactionDetailDialog, {
   type TxSummary,
 } from '../components/TransactionDetailDialog.vue'
@@ -10,7 +10,7 @@ import DataTable, { type ColumnDef } from '../components/DataTable.vue'
 import { useUrlQuerySync } from '../composables/useUrlQuerySync'
 import type { KioskRecord } from '../types'
 
-const toast = useAdminToast()
+const toast = useToast()
 
 interface TxRow {
   id: string

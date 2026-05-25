@@ -5,13 +5,13 @@ import AdminDialog from '../components/AdminDialog.vue'
 import AppDialog from '../components/AppDialog.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import DataTable, { type ColumnDef } from '../components/DataTable.vue'
-import { useAdminToast } from '../composables/useAdminToast'
+import { useToast } from '../composables/useToast'
 import { useAuthStore } from '../stores/auth'
 import { useListShortcuts } from '../composables/useListShortcuts'
 import { useUrlQuerySync } from '../composables/useUrlQuerySync'
 import type { AdminRecord } from '../types'
 
-const toast = useAdminToast()
+const toast = useToast()
 const auth = useAuthStore()
 
 const admins = ref<AdminRecord[]>([])
