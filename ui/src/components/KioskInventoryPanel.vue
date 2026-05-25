@@ -9,6 +9,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import AppDialog from './AppDialog.vue'
+import DataTable, { type ColumnDef } from './DataTable.vue'
 import { api, ApiError } from '../lib/api'
 import { useAdminToast } from '../composables/useAdminToast'
 import type {
@@ -25,6 +26,8 @@ const items = ref<InventorySnapshotItem[]>([])
 const loading = ref(false)
 const error = ref<string | null>(null)
 const offline = ref(false)
+const page = ref(1)
+const perPage = ref(25)
 
 const adjustOpen = ref(false)
 const adjustForm = ref<{
@@ -137,11 +140,28 @@ async function submitAdjust() {
     adjustSubmitting.value = false
   }
 }
+
+const columns: ColumnDef[] = [
+  { key: 'item_code', label: 'Code' },
+  { key: 'item_name', label: 'Name' },
+  { key: 'quantity_on_hand', label: 'On hand', align: 'right' },
+  { key: 'reorder_threshold', label: 'Reorder ≤', align: 'right' },
+  { key: '__actions', align: 'right' },
+]
+
+function isLow(it: InventorySnapshotItem): boolean {
+  return it.reorder_threshold > 0 && it.quantity_on_hand <= it.reorder_threshold
+}
+
+const pagedItems = computed(() => {
+  const start = (page.value - 1) * perPage.value
+  return items.value.slice(start, start + perPage.value)
+})
 </script>
 
 <template>
-  <section class="rounded-xl bg-slate-950/40 border border-slate-800 p-4">
-    <header class="flex items-center justify-between mb-3">
+  <section class="space-y-3">
+    <header class="flex items-center justify-between">
       <div>
         <h3 class="text-sm font-medium text-slate-200">Live inventory</h3>
         <p class="text-xs text-slate-500">
@@ -161,60 +181,56 @@ async function submitAdjust() {
 
     <div
       v-if="offline"
-      class="rounded-lg bg-amber-900/40 border border-amber-800 text-amber-100 text-sm px-3 py-2 mb-3"
+      class="rounded-lg bg-amber-900/40 border border-amber-800 text-amber-100 text-sm px-3 py-2"
     >
       This kiosk hasn't sent a heartbeat recently. Inventory snapshot and remote
       adjustments are unavailable until it reconnects.
     </div>
 
-    <p v-if="error" class="rounded-lg bg-red-900/40 border border-red-700 text-red-200 text-sm px-3 py-2 mb-3">
+    <p v-if="error" class="rounded-lg bg-red-900/40 border border-red-700 text-red-200 text-sm px-3 py-2">
       {{ error }}
     </p>
 
-    <table class="w-full text-left text-xs">
-      <thead class="text-slate-500">
-        <tr>
-          <th class="px-2 py-2 font-medium">Code</th>
-          <th class="px-2 py-2 font-medium">Name</th>
-          <th class="px-2 py-2 font-medium text-right">On hand</th>
-          <th class="px-2 py-2 font-medium text-right">Reorder ≤</th>
-          <th class="px-2 py-2"></th>
-        </tr>
-      </thead>
-      <tbody class="divide-y divide-slate-800">
-        <tr v-if="loading">
-          <td colspan="5" class="text-center text-slate-500 py-3">Loading…</td>
-        </tr>
-        <tr v-else-if="!offline && items.length === 0">
-          <td colspan="5" class="text-center text-slate-500 py-3">
-            No items stocked at this kiosk.
-          </td>
-        </tr>
-        <tr v-for="it in items" :key="it.item_code" class="hover:bg-slate-900/50">
-          <td class="px-2 py-2 font-mono text-slate-200">{{ it.item_code }}</td>
-          <td class="px-2 py-2 text-slate-300 truncate max-w-xs">{{ it.item_name }}</td>
-          <td
-            class="px-2 py-2 text-right font-mono"
-            :class="it.reorder_threshold > 0 && it.quantity_on_hand <= it.reorder_threshold ? 'text-amber-300' : 'text-slate-200'"
-          >
-            {{ it.quantity_on_hand }}
-          </td>
-          <td class="px-2 py-2 text-right text-slate-500 font-mono">
-            {{ it.reorder_threshold > 0 ? it.reorder_threshold : '—' }}
-          </td>
-          <td class="px-2 py-2 text-right whitespace-nowrap">
-            <button
-              type="button"
-              class="text-sm text-brand-primary hover:underline disabled:opacity-50"
-              :disabled="offline"
-              @click="openAdjust(it)"
-            >
-              Adjust
-            </button>
-          </td>
-        </tr>
-      </tbody>
-    </table>
+    <DataTable
+      :columns="columns"
+      :rows="pagedItems"
+      :row-key="(it) => it.item_code"
+      :loading="loading"
+      empty-text="No items stocked at this kiosk."
+      :page="page"
+      :per-page="perPage"
+      :total="items.length"
+      @update:page="(p) => page = p"
+      @update:per-page="(n) => { perPage = n; page = 1 }"
+    >
+      <template #cell-item_code="{ row }">
+        <span class="font-mono text-slate-200">{{ row.item_code }}</span>
+      </template>
+      <template #cell-item_name="{ row }">
+        <span class="text-slate-300">{{ row.item_name }}</span>
+      </template>
+      <template #cell-quantity_on_hand="{ row }">
+        <span
+          class="tabular-nums font-mono"
+          :class="isLow(row) ? 'text-amber-300' : 'text-slate-200'"
+        >{{ row.quantity_on_hand }}</span>
+      </template>
+      <template #cell-reorder_threshold="{ row }">
+        <span class="tabular-nums font-mono text-slate-500">
+          {{ row.reorder_threshold > 0 ? row.reorder_threshold : '—' }}
+        </span>
+      </template>
+      <template #cell-__actions="{ row }">
+        <button
+          type="button"
+          class="text-sm text-brand-primary hover:underline disabled:opacity-50"
+          :disabled="offline"
+          @click="openAdjust(row)"
+        >
+          Adjust
+        </button>
+      </template>
+    </DataTable>
 
     <AppDialog
       :open="adjustOpen"

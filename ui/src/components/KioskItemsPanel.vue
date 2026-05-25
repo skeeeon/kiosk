@@ -1,11 +1,12 @@
 <!-- KioskItemsPanel lists and edits the items a controller-side kiosk stocks.
      One row = one (kiosk, item) membership. Empty = the kiosk has nothing
-     assigned. Embedded inside KioskDialog when editing an existing kiosk
-     (we need a kiosk id to FK against). -->
+     assigned. Embedded inside the AdminKioskDetailView Items tab (we need a
+     kiosk id to FK against). -->
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { pb } from '../lib/pb'
 import { useAdminToast } from '../composables/useAdminToast'
+import DataTable, { type ColumnDef } from './DataTable.vue'
 import type { ItemRecord, KioskItemRecord } from '../types'
 
 const props = defineProps<{ kioskId: string }>()
@@ -24,6 +25,8 @@ const rows = ref<MembershipRow[]>([])
 const allItems = ref<ItemRecord[]>([])
 const loading = ref(false)
 const error = ref<string | null>(null)
+const page = ref(1)
+const perPage = ref(25)
 
 // Add-item picker state.
 const pickerOpen = ref(false)
@@ -152,12 +155,23 @@ async function applyBulkAdd() {
   }
 }
 
-const hasRows = computed(() => rows.value.length > 0)
+const columns: ColumnDef[] = [
+  { key: 'itemCode', label: 'Code' },
+  { key: 'itemName', label: 'Name' },
+  { key: 'itemCategory', label: 'Category' },
+  { key: 'itemType', label: 'Type' },
+  { key: '__actions', align: 'right' },
+]
+
+const pagedRows = computed(() => {
+  const start = (page.value - 1) * perPage.value
+  return rows.value.slice(start, start + perPage.value)
+})
 </script>
 
 <template>
-  <section class="rounded-xl bg-slate-950/40 border border-slate-800 p-4">
-    <header class="flex items-center justify-between mb-3">
+  <section class="space-y-3">
+    <header class="flex items-center justify-between">
       <div>
         <h3 class="text-sm font-medium text-slate-200">Stocked items</h3>
         <p class="text-xs text-slate-500">SKUs this kiosk carries. Empty kiosks receive nothing.</p>
@@ -182,12 +196,12 @@ const hasRows = computed(() => rows.value.length > 0)
       </div>
     </header>
 
-    <p v-if="error" class="rounded-lg bg-red-900/40 border border-red-700 text-red-200 text-sm px-3 py-2 mb-2">
+    <p v-if="error" class="rounded-lg bg-red-900/40 border border-red-700 text-red-200 text-sm px-3 py-2">
       {{ error }}
     </p>
 
     <!-- Add-item picker -->
-    <div v-if="pickerOpen" class="mb-3 rounded-lg bg-slate-900 border border-slate-800 p-3">
+    <div v-if="pickerOpen" class="rounded-lg bg-slate-900 border border-slate-800 p-3">
       <div class="flex items-center gap-2 mb-2">
         <input
           v-model="pickerSearch"
@@ -222,7 +236,7 @@ const hasRows = computed(() => rows.value.length > 0)
     </div>
 
     <!-- Bulk-add-by-category picker -->
-    <div v-if="bulkOpen" class="mb-3 rounded-lg bg-slate-900 border border-slate-800 p-3">
+    <div v-if="bulkOpen" class="rounded-lg bg-slate-900 border border-slate-800 p-3">
       <div class="flex items-center gap-2 mb-2">
         <select
           v-model="bulkCategory"
@@ -258,44 +272,42 @@ const hasRows = computed(() => rows.value.length > 0)
       </ul>
     </div>
 
-    <table class="w-full text-left text-xs">
-      <thead class="text-slate-500">
-        <tr>
-          <th class="px-2 py-2 font-medium">Code</th>
-          <th class="px-2 py-2 font-medium">Name</th>
-          <th class="px-2 py-2 font-medium">Category</th>
-          <th class="px-2 py-2 font-medium">Type</th>
-          <th class="px-2 py-2"></th>
-        </tr>
-      </thead>
-      <tbody class="divide-y divide-slate-800">
-        <tr v-if="loading">
-          <td colspan="5" class="text-center text-slate-500 py-3">Loading…</td>
-        </tr>
-        <tr v-else-if="!hasRows">
-          <td colspan="5" class="text-center text-slate-500 py-3">
-            No items assigned. Use "Add item" or "Bulk add by category" to stock this kiosk.
-          </td>
-        </tr>
-        <tr v-for="row in rows" :key="row.id" class="hover:bg-slate-900/50">
-          <td class="px-2 py-2 font-mono text-slate-200">{{ row.itemCode }}</td>
-          <td class="px-2 py-2 text-slate-300 truncate max-w-xs">{{ row.itemName }}</td>
-          <td class="px-2 py-2 text-slate-400">{{ row.itemCategory || '—' }}</td>
-          <td class="px-2 py-2">
-            <span
-              class="inline-block px-2 py-0.5 rounded text-[10px]"
-              :class="row.itemType === 'tool' ? 'bg-amber-900/60 text-amber-200' : 'bg-sky-900/60 text-sky-200'"
-            >{{ row.itemType }}</span>
-          </td>
-          <td class="px-2 py-2 text-right whitespace-nowrap">
-            <button
-              type="button"
-              class="text-red-400 hover:text-red-300 px-1"
-              @click="remove(row)"
-            >Remove</button>
-          </td>
-        </tr>
-      </tbody>
-    </table>
+    <DataTable
+      :columns="columns"
+      :rows="pagedRows"
+      :row-key="(r) => r.id"
+      :loading="loading"
+      empty-text='No items assigned. Use "Add item" or "Bulk add by category" to stock this kiosk.'
+      :page="page"
+      :per-page="perPage"
+      :total="rows.length"
+      @update:page="(p) => page = p"
+      @update:per-page="(n) => { perPage = n; page = 1 }"
+    >
+      <template #cell-itemCode="{ row }">
+        <span class="font-mono text-slate-200">{{ row.itemCode }}</span>
+      </template>
+      <template #cell-itemName="{ row }">
+        <span class="text-slate-300">{{ row.itemName }}</span>
+      </template>
+      <template #cell-itemCategory="{ row }">
+        <span class="text-slate-400">{{ row.itemCategory || '—' }}</span>
+      </template>
+      <template #cell-itemType="{ row }">
+        <span
+          class="inline-block px-2 py-0.5 rounded text-xs"
+          :class="row.itemType === 'tool' ? 'bg-amber-900/60 text-amber-200' : 'bg-sky-900/60 text-sky-200'"
+        >{{ row.itemType }}</span>
+      </template>
+      <template #cell-__actions="{ row }">
+        <button
+          type="button"
+          class="px-3 py-1.5 rounded-md bg-red-950/60 hover:bg-red-900/60 text-red-200 text-sm border border-red-800/70 whitespace-nowrap"
+          @click="remove(row)"
+        >
+          Remove
+        </button>
+      </template>
+    </DataTable>
   </section>
 </template>

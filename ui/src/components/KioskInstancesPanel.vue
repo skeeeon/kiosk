@@ -7,6 +7,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import AppDialog from './AppDialog.vue'
+import DataTable, { type ColumnDef } from './DataTable.vue'
 import { api, ApiError } from '../lib/api'
 import { useAdminToast } from '../composables/useAdminToast'
 import type { KioskOfflineError } from '../types'
@@ -33,6 +34,8 @@ const loading = ref(false)
 const error = ref<string | null>(null)
 const offline = ref(false)
 const itemFilter = ref('')
+const page = ref(1)
+const perPage = ref(25)
 
 // Three mutation surfaces share the panel: create (new row), edit (cosmetic),
 // decommission / reactivate (active toggle with a reason).
@@ -57,6 +60,15 @@ const filtered = computed(() => {
   const f = itemFilter.value.trim().toUpperCase()
   if (!f) return rows.value
   return rows.value.filter((r) => r.item_code.toUpperCase().includes(f))
+})
+
+// Reset to page 1 when the filter narrows/changes — otherwise the user might
+// land on an empty page that no longer exists at the new row count.
+watch(itemFilter, () => { page.value = 1 })
+
+const pagedRows = computed(() => {
+  const start = (page.value - 1) * perPage.value
+  return filtered.value.slice(start, start + perPage.value)
 })
 
 const itemCodeOptions = computed(() => {
@@ -245,11 +257,20 @@ async function confirmToggle() {
     toggleSubmitting.value = false
   }
 }
+
+const columns: ColumnDef[] = [
+  { key: 'item_code', label: 'Item' },
+  { key: 'instance_code', label: 'Code' },
+  { key: 'serial', label: 'Serial' },
+  { key: 'rfid_epc', label: 'RFID' },
+  { key: 'active', label: 'Active' },
+  { key: '__actions', align: 'right' },
+]
 </script>
 
 <template>
-  <section class="rounded-xl bg-slate-950/40 border border-slate-800 p-4">
-    <header class="flex items-center justify-between mb-3 gap-3">
+  <section class="space-y-3">
+    <header class="flex items-center justify-between gap-3">
       <div>
         <h3 class="text-sm font-medium text-slate-200">Item instances</h3>
         <p class="text-xs text-slate-500">
@@ -285,81 +306,74 @@ async function confirmToggle() {
 
     <div
       v-if="offline"
-      class="rounded-lg bg-amber-900/40 border border-amber-800 text-amber-100 text-sm px-3 py-2 mb-3"
+      class="rounded-lg bg-amber-900/40 border border-amber-800 text-amber-100 text-sm px-3 py-2"
     >
       This kiosk hasn&rsquo;t sent a heartbeat recently. Instance snapshot
       and remote mutations are unavailable until it reconnects.
     </div>
 
-    <p v-if="error" class="rounded-lg bg-red-900/40 border border-red-700 text-red-200 text-sm px-3 py-2 mb-3">
+    <p v-if="error" class="rounded-lg bg-red-900/40 border border-red-700 text-red-200 text-sm px-3 py-2">
       {{ error }}
     </p>
 
-    <table class="w-full text-left text-xs">
-      <thead class="text-slate-500">
-        <tr>
-          <th class="px-2 py-2 font-medium">Item</th>
-          <th class="px-2 py-2 font-medium">Code</th>
-          <th class="px-2 py-2 font-medium">Serial</th>
-          <th class="px-2 py-2 font-medium">RFID</th>
-          <th class="px-2 py-2 font-medium">Active</th>
-          <th class="px-2 py-2"></th>
-        </tr>
-      </thead>
-      <tbody class="divide-y divide-slate-800">
-        <tr v-if="loading">
-          <td colspan="6" class="text-center text-slate-500 py-3">Loading…</td>
-        </tr>
-        <tr v-else-if="!offline && filtered.length === 0">
-          <td colspan="6" class="text-center text-slate-500 py-3">
-            No instances at this kiosk yet.
-          </td>
-        </tr>
-        <tr
-          v-for="r in filtered"
-          :key="r.instance_id"
-          class="hover:bg-slate-900/50"
-          :class="r.active ? '' : 'text-slate-500'"
+    <DataTable
+      :columns="columns"
+      :rows="pagedRows"
+      :row-key="(r) => r.instance_id"
+      :loading="loading"
+      empty-text="No instances at this kiosk yet."
+      :row-class="(r) => (r.active ? undefined : 'text-slate-500')"
+      :page="page"
+      :per-page="perPage"
+      :total="filtered.length"
+      @update:page="(p) => page = p"
+      @update:per-page="(n) => { perPage = n; page = 1 }"
+    >
+      <template #cell-item_code="{ row }">
+        <span class="font-mono">{{ row.item_code }}</span>
+      </template>
+      <template #cell-instance_code="{ row }">
+        <span class="font-mono">{{ row.instance_code }}</span>
+      </template>
+      <template #cell-serial="{ row }">
+        <span class="font-mono">{{ row.serial || '—' }}</span>
+      </template>
+      <template #cell-rfid_epc="{ row }">
+        <span class="font-mono">{{ row.rfid_epc || '—' }}</span>
+      </template>
+      <template #cell-active="{ row }">
+        <span v-if="row.active" class="text-emerald-400">●</span>
+        <span v-else class="text-slate-600">●</span>
+      </template>
+      <template #cell-__actions="{ row }">
+        <button
+          type="button"
+          class="text-sm text-slate-300 hover:underline mr-3 disabled:opacity-50"
+          :disabled="offline"
+          @click="openEdit(row)"
         >
-          <td class="px-2 py-2 font-mono">{{ r.item_code }}</td>
-          <td class="px-2 py-2 font-mono">{{ r.instance_code }}</td>
-          <td class="px-2 py-2 font-mono">{{ r.serial || '—' }}</td>
-          <td class="px-2 py-2 font-mono">{{ r.rfid_epc || '—' }}</td>
-          <td class="px-2 py-2">
-            <span v-if="r.active" class="text-emerald-400">●</span>
-            <span v-else class="text-slate-600">●</span>
-          </td>
-          <td class="px-2 py-2 text-right whitespace-nowrap">
-            <button
-              type="button"
-              class="text-sm text-slate-300 hover:underline mr-3 disabled:opacity-50"
-              :disabled="offline"
-              @click="openEdit(r)"
-            >
-              Edit
-            </button>
-            <button
-              v-if="r.active"
-              type="button"
-              class="text-sm text-amber-300 hover:underline disabled:opacity-50"
-              :disabled="offline"
-              @click="openToggle(r, false)"
-            >
-              Decommission
-            </button>
-            <button
-              v-else
-              type="button"
-              class="text-sm text-emerald-300 hover:underline disabled:opacity-50"
-              :disabled="offline"
-              @click="openToggle(r, true)"
-            >
-              Reactivate
-            </button>
-          </td>
-        </tr>
-      </tbody>
-    </table>
+          Edit
+        </button>
+        <button
+          v-if="row.active"
+          type="button"
+          class="text-sm text-amber-300 hover:underline disabled:opacity-50"
+          :disabled="offline"
+          @click="openToggle(row, false)"
+        >
+          Decommission
+        </button>
+        <button
+          v-else
+          type="button"
+          class="text-sm text-emerald-300 hover:underline disabled:opacity-50"
+          :disabled="offline"
+          @click="openToggle(row, true)"
+        >
+          Reactivate
+        </button>
+      </template>
+    </DataTable>
 
     <AppDialog
       :open="dialogMode !== null"

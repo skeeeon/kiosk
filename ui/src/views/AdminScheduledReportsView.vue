@@ -7,6 +7,7 @@ import NotificationsTabs from '../components/NotificationsTabs.vue'
 import DataTable, { type ColumnDef } from '../components/DataTable.vue'
 import { useAdminToast } from '../composables/useAdminToast'
 import { useKioskIdentity } from '../composables/useKioskIdentity'
+import { useUrlQuerySync } from '../composables/useUrlQuerySync'
 import type { ScheduledReportRecord } from '../types'
 
 const toast = useAdminToast()
@@ -18,6 +19,17 @@ const rows = ref<ScheduledReportRecord[]>([])
 const loading = ref(false)
 const editing = ref<Partial<ScheduledReportRecord> | null>(null)
 const deleting = ref<ScheduledReportRecord | null>(null)
+const page = ref(1)
+const perPage = ref(25)
+
+useUrlQuerySync({
+  page: { ref: page, default: 1, parse: (v) => Number(v) || 1 },
+})
+
+const pagedRows = computed(() => {
+  const start = (page.value - 1) * perPage.value
+  return rows.value.slice(start, start + perPage.value)
+})
 
 async function load() {
   // Managed kiosks: the controller owns the schedules now, so this view
@@ -192,12 +204,17 @@ async function onDelete() {
 
     <DataTable
       :columns="columns"
-      :rows="rows"
+      :rows="pagedRows"
       :row-key="(r) => r.id"
       :loading="loading"
       :empty-text="emptyText"
       row-clickable
+      :page="page"
+      :per-page="perPage"
+      :total="rows.length"
       @row-click="openEdit"
+      @update:page="(p) => page = p"
+      @update:per-page="(n) => { perPage = n; page = 1 }"
     >
       <template #cell-report_key="{ row }">
         <span class="text-slate-200">{{ reportLabel(row.report_key) }}</span>

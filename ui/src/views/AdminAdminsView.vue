@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { pb } from '../lib/pb'
 import AdminDialog from '../components/AdminDialog.vue'
 import AppDialog from '../components/AppDialog.vue'
@@ -18,12 +18,15 @@ const admins = ref<AdminRecord[]>([])
 const loading = ref(false)
 const error = ref<string | null>(null)
 const search = ref('')
+const page = ref(1)
+const perPage = ref(25)
 
 const editing = ref<Partial<AdminRecord> | null>(null)
 const deleting = ref<AdminRecord | null>(null)
 const searchInput = ref<HTMLInputElement | null>(null)
 
 useUrlQuerySync({
+  page: { ref: page, default: 1, parse: (v) => Number(v) || 1 },
   q: { ref: search, default: '' },
 })
 
@@ -53,6 +56,13 @@ const filtered = computed(() => {
   return admins.value.filter(
     (a) => a.email.toLowerCase().includes(q) || a.name.toLowerCase().includes(q),
   )
+})
+
+watch(search, () => { page.value = 1 })
+
+const pagedRows = computed(() => {
+  const start = (page.value - 1) * perPage.value
+  return filtered.value.slice(start, start + perPage.value)
 })
 
 const currentAdminId = computed(() => auth.admin?.id ?? '')
@@ -213,12 +223,17 @@ async function onDelete() {
 
     <DataTable
       :columns="columns"
-      :rows="filtered"
+      :rows="pagedRows"
       :row-key="(a) => a.id"
       :loading="loading"
       :empty-text="admins.length === 0 ? 'No admins yet.' : 'No admins match your filter.'"
       row-clickable
+      :page="page"
+      :per-page="perPage"
+      :total="filtered.length"
       @row-click="openEdit"
+      @update:page="(p) => page = p"
+      @update:per-page="(n) => { perPage = n; page = 1 }"
     >
       <template #cell-email="{ row }">
         <span class="font-mono text-slate-200">{{ row.email }}</span>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { pb } from '../lib/pb'
 import { api } from '../lib/api'
@@ -20,11 +20,14 @@ const kiosks = ref<KioskRecord[]>([])
 const loading = ref(false)
 const error = ref<string | null>(null)
 const search = ref('')
+const page = ref(1)
+const perPage = ref(25)
 
 const editing = ref<Partial<KioskRecord> | null>(null)
 const searchInput = ref<HTMLInputElement | null>(null)
 
 useUrlQuerySync({
+  page: { ref: page, default: 1, parse: (v) => Number(v) || 1 },
   q: { ref: search, default: '' },
 })
 
@@ -113,6 +116,13 @@ const filtered = computed(() => {
       k.location_code.toLowerCase().includes(q) ||
       (k.notes ?? '').toLowerCase().includes(q),
   )
+})
+
+watch(search, () => { page.value = 1 })
+
+const pagedRows = computed(() => {
+  const start = (page.value - 1) * perPage.value
+  return filtered.value.slice(start, start + perPage.value)
 })
 
 function openDetail(kiosk: KioskRecord) {
@@ -232,12 +242,17 @@ async function onSaveAndAdd(data: Partial<KioskRecord>) {
 
     <DataTable
       :columns="columns"
-      :rows="filtered"
+      :rows="pagedRows"
       :row-key="(k) => k.id"
       :loading="loading"
       :empty-text="emptyText"
       row-clickable
+      :page="page"
+      :per-page="perPage"
+      :total="filtered.length"
       @row-click="openDetail"
+      @update:page="(p) => page = p"
+      @update:per-page="(n) => { perPage = n; page = 1 }"
     >
       <template #cell-kiosk_code="{ row }">
         <span class="font-mono text-slate-200">{{ row.kiosk_code }}</span>
