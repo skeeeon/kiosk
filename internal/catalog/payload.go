@@ -43,6 +43,7 @@ type UserPayload struct {
 	Code      string `json:"code"`
 	Name      string `json:"name"`
 	Email     string `json:"email,omitempty"`
+	Phone     string `json:"phone,omitempty"`
 	Role      string `json:"role"`                 // "worker" | "foreman"
 	GroupCode string `json:"group_code,omitempty"` // resolves to groups.id locally
 	Active    bool   `json:"active"`

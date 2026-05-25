@@ -406,6 +406,7 @@ func upsertUserRow(app core.App, coll *core.Collection, existing map[string]*cor
 	rec.Set("code", code)
 	rec.Set("name", name)
 	rec.Set("email", csvCol(headers, row, "email"))
+	rec.Set("phone", csvCol(headers, row, "phone"))
 	rec.Set("role", role)
 	rec.Set("group", groupID)
 	rec.Set("active", parseCSVBool(csvCol(headers, row, "active"), true))

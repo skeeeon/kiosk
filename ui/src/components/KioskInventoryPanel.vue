@@ -142,7 +142,6 @@ async function submitAdjust() {
 }
 
 const columns: ColumnDef[] = [
-  { key: 'item_code', label: 'Code' },
   { key: 'item_name', label: 'Name' },
   { key: 'quantity_on_hand', label: 'On hand', align: 'right' },
   { key: 'reorder_threshold', label: 'Reorder ≤', align: 'right' },
@@ -203,9 +202,6 @@ const pagedItems = computed(() => {
       @update:page="(p) => page = p"
       @update:per-page="(n) => { perPage = n; page = 1 }"
     >
-      <template #cell-item_code="{ row }">
-        <span class="font-mono text-slate-200">{{ row.item_code }}</span>
-      </template>
       <template #cell-item_name="{ row }">
         <span class="text-slate-300">{{ row.item_name }}</span>
       </template>

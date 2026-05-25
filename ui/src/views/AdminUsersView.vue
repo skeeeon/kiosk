@@ -21,6 +21,7 @@ const groups = ref<GroupRecord[]>([])
 const loading = ref(false)
 const error = ref<string | null>(null)
 const search = ref('')
+const showInactive = ref(false)
 const page = ref(1)
 const perPage = ref(50)
 const total = ref(0)
@@ -34,6 +35,7 @@ const searchInput = ref<HTMLInputElement | null>(null)
 useUrlQuerySync({
   page: { ref: page, default: 1, parse: (v) => Number(v) || 1 },
   q: { ref: search, default: '' },
+  inactive: { ref: showInactive, default: false, parse: (v) => v === 'true' },
 })
 
 // PB filter literal escaping: backslash first, then double-quotes.
@@ -42,10 +44,16 @@ function pbEscape(s: string): string {
 }
 
 function buildFilter(): string {
+  const clauses: string[] = []
   const q = search.value.trim()
-  if (!q) return ''
-  const safe = pbEscape(q)
-  return `(code ~ "${safe}" || name ~ "${safe}" || email ~ "${safe}" || group.code ~ "${safe}")`
+  if (q) {
+    const safe = pbEscape(q)
+    clauses.push(`(code ~ "${safe}" || name ~ "${safe}" || email ~ "${safe}" || group.code ~ "${safe}")`)
+  }
+  if (!showInactive.value) {
+    clauses.push('active = true')
+  }
+  return clauses.join(' && ')
 }
 
 async function loadGroups() {
@@ -88,6 +96,10 @@ watch(search, () => {
     void load()
   }, 250)
 })
+watch(showInactive, () => {
+  page.value = 1
+  void load()
+})
 onUnmounted(() => {
   if (searchTimer) clearTimeout(searchTimer)
 })
@@ -104,7 +116,6 @@ function groupLabel(id: string | undefined): string {
 }
 
 const columns: ColumnDef[] = [
-  { key: 'code', label: 'Code' },
   { key: 'name', label: 'Name' },
   { key: 'email', label: 'Email' },
   { key: 'role', label: 'Role' },
@@ -113,11 +124,13 @@ const columns: ColumnDef[] = [
   { key: '__actions', align: 'right' },
 ]
 
-const emptyText = computed(() =>
-  search.value.trim() === ''
-    ? 'No workers yet. Click "New worker" to add one.'
-    : 'No workers match your filter.',
-)
+const emptyText = computed(() => {
+  if (search.value.trim() !== '') return 'No workers match your filter.'
+  if (!showInactive.value) {
+    return 'No active workers. Click "New worker" to add one, or check "Show inactive" to see retired workers.'
+  }
+  return 'No workers yet. Click "New worker" to add one.'
+})
 
 function onPageChange(p: number) {
   page.value = p
@@ -252,13 +265,19 @@ async function onCreateGroupFromUser(data: Partial<GroupRecord>) {
       </button>
     </header>
 
-    <input
-      ref="searchInput"
-      v-model="search"
-      type="search"
-      placeholder="Search code, name, email, group… (press / to focus)"
-      class="w-full rounded-lg bg-slate-900 border border-slate-800 px-3 py-2 text-slate-100 mb-4"
-    />
+    <div class="flex items-center gap-3 mb-4">
+      <input
+        ref="searchInput"
+        v-model="search"
+        type="search"
+        placeholder="Search code, name, email, group… (press / to focus)"
+        class="flex-1 rounded-lg bg-slate-900 border border-slate-800 px-3 py-2 text-slate-100"
+      />
+      <label class="flex items-center gap-2 text-sm text-slate-300 whitespace-nowrap">
+        <input v-model="showInactive" type="checkbox" class="w-4 h-4" />
+        Show inactive
+      </label>
+    </div>
 
     <p v-if="error" class="rounded-lg bg-red-900/40 border border-red-700 text-red-200 px-3 py-2 mb-3">
       {{ error }}
@@ -278,9 +297,6 @@ async function onCreateGroupFromUser(data: Partial<GroupRecord>) {
       @update:page="onPageChange"
       @update:per-page="onPerPageChange"
     >
-      <template #cell-code="{ row }">
-        <span class="font-mono text-slate-200">{{ row.code }}</span>
-      </template>
       <template #cell-email="{ row }">
         <span class="text-slate-400">{{ row.email }}</span>
       </template>

@@ -56,13 +56,13 @@ func WriteUsersTemplate(w io.Writer) error {
 	defer cw.Flush()
 
 	if err := cw.Write([]string{
-		"code", "name", "email", "role", "group", "active",
+		"code", "name", "email", "phone", "role", "group", "active",
 	}); err != nil {
 		return err
 	}
 	rows := [][]string{
-		{"WORKER-001", "Alex Worker", "alex@example.com", "worker", "CREW-A", "true"},
-		{"FOREMAN-001", "Sam Foreman", "sam@example.com", "foreman", "CREW-A", "true"},
+		{"WORKER-001", "Alex Worker", "alex@example.com", "+1-555-0101", "worker", "CREW-A", "true"},
+		{"FOREMAN-001", "Sam Foreman", "sam@example.com", "+1-555-0102", "foreman", "CREW-A", "true"},
 	}
 	for _, r := range rows {
 		if err := cw.Write(r); err != nil {

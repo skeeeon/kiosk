@@ -18,6 +18,7 @@ const groups = ref<GroupRecord[]>([])
 const loading = ref(false)
 const error = ref<string | null>(null)
 const search = ref('')
+const showInactive = ref(false)
 const page = ref(1)
 const perPage = ref(25)
 
@@ -28,6 +29,7 @@ const searchInput = ref<HTMLInputElement | null>(null)
 useUrlQuerySync({
   page: { ref: page, default: 1, parse: (v) => Number(v) || 1 },
   q: { ref: search, default: '' },
+  inactive: { ref: showInactive, default: false, parse: (v) => v === 'true' },
 })
 
 async function load() {
@@ -48,16 +50,18 @@ onMounted(load)
 
 const filtered = computed(() => {
   const q = search.value.trim().toLowerCase()
-  if (!q) return groups.value
-  return groups.value.filter(
-    (g) =>
+  return groups.value.filter((g) => {
+    if (!showInactive.value && !g.active) return false
+    if (!q) return true
+    return (
       g.code.toLowerCase().includes(q) ||
       g.name.toLowerCase().includes(q) ||
-      (g.contact_email ?? '').toLowerCase().includes(q),
-  )
+      (g.contact_email ?? '').toLowerCase().includes(q)
+    )
+  })
 })
 
-watch(search, () => { page.value = 1 })
+watch([search, showInactive], () => { page.value = 1 })
 
 const pagedRows = computed(() => {
   const start = (page.value - 1) * perPage.value
@@ -79,7 +83,6 @@ function openEdit(group: GroupRecord) {
 }
 
 const columns: ColumnDef[] = [
-  { key: 'code', label: 'Code' },
   { key: 'name', label: 'Name' },
   { key: 'contact_email', label: 'Contact email' },
   { key: 'contact_phone', label: 'Phone' },
@@ -87,11 +90,14 @@ const columns: ColumnDef[] = [
   { key: '__actions', align: 'right' },
 ]
 
-const emptyText = computed(() =>
-  groups.value.length === 0
-    ? 'No groups yet. Click "New group" to add one.'
-    : 'No groups match your filter.',
-)
+const emptyText = computed(() => {
+  if (groups.value.length === 0) return 'No groups yet. Click "New group" to add one.'
+  if (search.value.trim() !== '') return 'No groups match your filter.'
+  if (!showInactive.value) {
+    return 'No active groups. Click "New group" to add one, or check "Show inactive" to see retired groups.'
+  }
+  return 'No groups match your filter.'
+})
 
 async function persistSave(data: Partial<GroupRecord>): Promise<boolean> {
   const isEdit = !!data.id
@@ -165,13 +171,19 @@ async function onDelete() {
       </button>
     </header>
 
-    <input
-      ref="searchInput"
-      v-model="search"
-      type="search"
-      placeholder="Search code, name, contact email… (press / to focus)"
-      class="w-full rounded-lg bg-slate-900 border border-slate-800 px-3 py-2 text-slate-100 mb-4"
-    />
+    <div class="flex items-center gap-3 mb-4">
+      <input
+        ref="searchInput"
+        v-model="search"
+        type="search"
+        placeholder="Search code, name, contact email… (press / to focus)"
+        class="flex-1 rounded-lg bg-slate-900 border border-slate-800 px-3 py-2 text-slate-100"
+      />
+      <label class="flex items-center gap-2 text-sm text-slate-300 whitespace-nowrap">
+        <input v-model="showInactive" type="checkbox" class="w-4 h-4" />
+        Show inactive
+      </label>
+    </div>
 
     <p v-if="error" class="rounded-lg bg-red-900/40 border border-red-700 text-red-200 px-3 py-2 mb-3">
       {{ error }}
@@ -191,9 +203,6 @@ async function onDelete() {
       @update:page="(p) => page = p"
       @update:per-page="(n) => { perPage = n; page = 1 }"
     >
-      <template #cell-code="{ row }">
-        <span class="font-mono text-slate-200">{{ row.code }}</span>
-      </template>
       <template #cell-contact_email="{ row }">
         <span class="text-slate-400">{{ row.contact_email || '—' }}</span>
       </template>

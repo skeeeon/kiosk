@@ -166,6 +166,7 @@ export interface ItemRecord {
 export interface WorkerRecord {
   id: string
   email: string
+  phone: string
   code: string
   name: string
   role: 'worker' | 'foreman'

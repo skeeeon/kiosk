@@ -295,6 +295,7 @@ func (p *CatalogPublisher) publishUser(rec *core.Record) {
 		Code:      rec.GetString("code"),
 		Name:      rec.GetString("name"),
 		Email:     rec.GetString("email"),
+		Phone:     rec.GetString("phone"),
 		Role:      rec.GetString("role"),
 		GroupCode: groupCode,
 		Active:    rec.GetBool("active"),

@@ -130,6 +130,7 @@ func expectedUserKeys(app core.App) (map[string][]byte, error) {
 			Code:      code,
 			Name:      u.GetString("name"),
 			Email:     u.GetString("email"),
+			Phone:     u.GetString("phone"),
 			Role:      u.GetString("role"),
 			GroupCode: groupCodeByID[u.GetString("group")],
 			Active:    u.GetBool("active"),

@@ -347,6 +347,7 @@ func (w *Watcher) upsertUser(p UserPayload) error {
 	rec.Set("code", p.Code)
 	rec.Set("name", p.Name)
 	rec.Set("email", p.Email)
+	rec.Set("phone", p.Phone)
 	rec.Set("role", p.Role)
 	// Resolve group code → local FK. If the group payload hasn't projected
 	// yet (out-of-order arrival), set blank — the next user update after the

@@ -24,6 +24,7 @@ const form = reactive<Partial<WorkerRecord>>({
   code: '',
   name: '',
   email: '',
+  phone: '',
   role: 'worker',
   group: '',
   active: true,
@@ -39,6 +40,7 @@ watch(
       code: '',
       name: '',
       email: '',
+      phone: '',
       role: 'worker',
       group: '',
       active: true,
@@ -108,17 +110,28 @@ function onSubmitAndAdd() {
           />
         </label>
         <label class="flex flex-col gap-1">
-          <span class="text-sm text-slate-400">Role</span>
-          <select
-            v-model="form.role"
+          <span class="text-sm text-slate-400">Phone <span class="text-slate-500">(optional)</span></span>
+          <input
+            v-model="form.phone"
+            type="tel"
+            placeholder="+1-555-0100"
             :disabled="managed"
             class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 disabled:opacity-60 disabled:cursor-not-allowed"
-          >
-            <option value="worker">Worker</option>
-            <option value="foreman">Foreman</option>
-          </select>
+          />
         </label>
       </div>
+
+      <label class="flex flex-col gap-1">
+        <span class="text-sm text-slate-400">Role</span>
+        <select
+          v-model="form.role"
+          :disabled="managed"
+          class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 disabled:opacity-60 disabled:cursor-not-allowed"
+        >
+          <option value="worker">Worker</option>
+          <option value="foreman">Foreman</option>
+        </select>
+      </label>
 
       <label class="flex flex-col gap-1">
         <span class="text-sm text-slate-400">Group <span class="text-slate-500">(optional)</span></span>

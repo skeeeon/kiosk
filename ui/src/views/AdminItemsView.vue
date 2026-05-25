@@ -28,6 +28,7 @@ const loading = ref(false)
 const error = ref<string | null>(null)
 const search = ref('')
 const typeFilter = ref<'all' | 'tool' | 'consumable'>('all')
+const showInactive = ref(false)
 const page = ref(1)
 const perPage = ref(50)
 const total = ref(0)
@@ -40,6 +41,7 @@ useUrlQuerySync({
   page: { ref: page, default: 1, parse: (v) => Number(v) || 1 },
   q: { ref: search, default: '' },
   type: { ref: typeFilter, default: 'all' },
+  inactive: { ref: showInactive, default: false, parse: (v) => v === 'true' },
 })
 
 function pbEscape(s: string): string {
@@ -55,6 +57,9 @@ function buildFilter(): string {
   }
   if (typeFilter.value !== 'all') {
     clauses.push(`type = "${typeFilter.value}"`)
+  }
+  if (!showInactive.value) {
+    clauses.push('active = true')
   }
   return clauses.join(' && ')
 }
@@ -136,13 +141,16 @@ watch(typeFilter, () => {
   page.value = 1
   void load()
 })
+watch(showInactive, () => {
+  page.value = 1
+  void load()
+})
 onUnmounted(() => {
   if (searchTimer) clearTimeout(searchTimer)
 })
 
 const visibleColumns = computed<ColumnDef[]>(() => {
   const cols: ColumnDef[] = [
-    { key: 'code', label: 'Code' },
     { key: 'name', label: 'Name' },
     { key: 'type', label: 'Type' },
     { key: 'tracking_mode', label: 'Tracking' },
@@ -164,10 +172,12 @@ const visibleColumns = computed<ColumnDef[]>(() => {
 })
 
 const emptyText = computed(() => {
-  const hasFilter = search.value.trim() !== '' || typeFilter.value !== 'all'
-  return hasFilter
-    ? 'No items match your filter.'
-    : 'No items yet. Click "New item" to add one.'
+  const hasNarrowingFilter = search.value.trim() !== '' || typeFilter.value !== 'all'
+  if (hasNarrowingFilter) return 'No items match your filter.'
+  if (!showInactive.value) {
+    return 'No active items. Click "New item" to add one, or check "Show inactive" to see retired items.'
+  }
+  return 'No items yet. Click "New item" to add one.'
 })
 
 function onPageChange(p: number) {
@@ -315,6 +325,10 @@ async function onDelete() {
         <option value="tool">Tools</option>
         <option value="consumable">Consumables</option>
       </select>
+      <label class="flex items-center gap-2 text-sm text-slate-300 whitespace-nowrap">
+        <input v-model="showInactive" type="checkbox" class="w-4 h-4" />
+        Show inactive
+      </label>
     </div>
 
     <p v-if="error" class="rounded-lg bg-red-900/40 border border-red-700 text-red-200 px-3 py-2 mb-3">
@@ -336,9 +350,6 @@ async function onDelete() {
       @update:page="onPageChange"
       @update:per-page="onPerPageChange"
     >
-      <template #cell-code="{ row }">
-        <span class="font-mono text-slate-200">{{ row.code }}</span>
-      </template>
       <template #cell-type="{ row }">
         <span
           class="inline-block px-2 py-0.5 rounded text-xs"
