@@ -223,7 +223,7 @@ const pagedItems = computed(() => {
       <template #cell-__actions="{ row }">
         <button
           type="button"
-          class="text-sm text-brand-primary hover:underline disabled:opacity-50"
+          class="px-3 py-1.5 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm border border-slate-700 whitespace-nowrap disabled:opacity-50"
           :disabled="offline"
           @click="openAdjust(row)"
         >

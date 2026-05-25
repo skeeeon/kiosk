@@ -346,32 +346,34 @@ const columns: ColumnDef[] = [
         <span v-else class="text-slate-600">●</span>
       </template>
       <template #cell-__actions="{ row }">
-        <button
-          type="button"
-          class="text-sm text-slate-300 hover:underline mr-3 disabled:opacity-50"
-          :disabled="offline"
-          @click="openEdit(row)"
-        >
-          Edit
-        </button>
-        <button
-          v-if="row.active"
-          type="button"
-          class="text-sm text-amber-300 hover:underline disabled:opacity-50"
-          :disabled="offline"
-          @click="openToggle(row, false)"
-        >
-          Decommission
-        </button>
-        <button
-          v-else
-          type="button"
-          class="text-sm text-emerald-300 hover:underline disabled:opacity-50"
-          :disabled="offline"
-          @click="openToggle(row, true)"
-        >
-          Reactivate
-        </button>
+        <div class="inline-flex justify-end gap-2">
+          <button
+            type="button"
+            class="px-3 py-1.5 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm border border-slate-700 whitespace-nowrap disabled:opacity-50"
+            :disabled="offline"
+            @click="openEdit(row)"
+          >
+            Edit
+          </button>
+          <button
+            v-if="row.active"
+            type="button"
+            class="px-3 py-1.5 rounded-md bg-amber-950/60 hover:bg-amber-900/60 text-amber-200 text-sm border border-amber-800/70 whitespace-nowrap disabled:opacity-50"
+            :disabled="offline"
+            @click="openToggle(row, false)"
+          >
+            Decommission
+          </button>
+          <button
+            v-else
+            type="button"
+            class="px-3 py-1.5 rounded-md bg-emerald-950/60 hover:bg-emerald-900/60 text-emerald-200 text-sm border border-emerald-800/70 whitespace-nowrap disabled:opacity-50"
+            :disabled="offline"
+            @click="openToggle(row, true)"
+          >
+            Reactivate
+          </button>
+        </div>
       </template>
     </DataTable>
 
