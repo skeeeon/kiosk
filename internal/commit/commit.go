@@ -358,10 +358,11 @@ func openCheckoutsForLine(tx core.App, col *core.Collection, line *cart.Line, li
 
 // closeCheckoutsForLine deletes up to qty rows. For serialized tools, the
 // row is uniquely identified by the item_instance carried on the cart line;
-// for non-serialized, we prefer rows belonging to the line's
-// original_checkout_user (or the cart user if unset) and fall back to
-// anyone else's. Returns uncorrelated=true if we couldn't match enough
-// rows to cover qty.
+// for non-serialized, only rows belonging to the line's
+// original_checkout_user (or the cart user if unset) are eligible. A
+// shortfall is surfaced as uncorrelated=true on the caller — we do NOT
+// silently borrow rows from other users, since that would mask the audit
+// signal that the return doesn't match recorded state.
 func closeCheckoutsForLine(tx core.App, line *cart.Line, lineRec, itemRec *core.Record, cartUserID string, qty int) (bool, error) {
 	rows, err := candidateOpenRows(tx, line, lineRec, itemRec, cartUserID, qty)
 	if err != nil {
@@ -406,18 +407,5 @@ func candidateOpenRows(tx core.App, line *cart.Line, lineRec, itemRec *core.Reco
 	if err != nil {
 		return nil, fmt.Errorf("find open rows for target user: %w", err)
 	}
-	if len(rows) >= qty {
-		return rows, nil
-	}
-
-	// Fallback: anyone else with that item out.
-	need := qty - len(rows)
-	more, err := tx.FindRecordsByFilter("open_checkouts",
-		"item = {:item} && user != {:user}",
-		"checked_out_at", need, 0,
-		dbx.Params{"item": itemRec.Id, "user": target})
-	if err != nil {
-		return nil, fmt.Errorf("find open rows fallback: %w", err)
-	}
-	return append(rows, more...), nil
+	return rows, nil
 }

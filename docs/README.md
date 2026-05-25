@@ -23,6 +23,9 @@ detailed lives here.
   subjects.
 - [Schema](schema.md) — collections, controller-only fields,
   `open_checkouts` cardinality rules, CSV import format.
+- [Ledger](ledger.md) — append-only design, the single write path,
+  `open_checkouts` as a derived view, the controller's projected
+  ledger, drift recovery.
 
 ## Subsystems
 

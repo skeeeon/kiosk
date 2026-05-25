@@ -38,29 +38,18 @@ func setupAppInternal(t *testing.T) *pocketbase.PocketBase {
 	return app
 }
 
-// TestExpectedOpenCheckouts_FallbackDivergence pins a known divergence
-// between expectedOpenCheckouts (the integrity replay) and the commit hook's
-// closeCheckoutsForLine fallback behavior.
+// TestExpectedOpenCheckouts_MatchesActualAfterUncorrelatedReturn confirms
+// that the integrity replay (expectedOpenCheckouts) agrees with the
+// commit hook's actual open_checkouts writes after an uncorrelated
+// return — i.e. the case that used to diverge when the resolver had a
+// cross-user fallback.
 //
-// Scenario: Alice and Bob each check out 1 hammer. Alice's cart then carries
-// a return line for hammer with qty=2 and no OriginalCheckoutUserID (e.g.,
-// she bumped the qty via the line's +/- control after a single self-scan).
-// At commit, closeCheckoutsForLine prefers Alice's open row, finds only 1,
-// and falls back to deleting Bob's row to satisfy qty=2. The return is NOT
-// flagged uncorrelated (deleted == qty), and OriginalCheckoutUserID is empty
-// so the cross-user foreman gate never engages.
-//
-// Actual table state after commit: empty (both rows closed).
-// Integrity replay state: charges -2 entirely against Alice → Alice clamps
-// to 0, Bob still shows +1. A subsequent /integrity diff would report Bob
-// as missing 1 hammer he doesn't actually have out — a false-positive drift
-// signal that would prompt an unnecessary rebuild.
-//
-// This test pins today's behavior. The fix (if real ops pain surfaces) is
-// in expectedOpenCheckouts: when a return's target user can't cover qty,
-// charge the deficit against an arbitrary other-user bucket the same way
-// closeCheckoutsForLine does, so the replay model mirrors the commit policy.
-func TestExpectedOpenCheckouts_FallbackDivergence(t *testing.T) {
+// Scenario: Alice (foreman) and Bob each have 1 hammer out. Alice
+// commits a self-return of qty=2. The resolver closes only Alice's
+// row, flags the line uncorrelated, and leaves Bob's row intact.
+// Replay charges -2 against Alice → Alice clamps to 0, Bob = +1.
+// Both match reality.
+func TestExpectedOpenCheckouts_MatchesActualAfterUncorrelatedReturn(t *testing.T) {
 	app := setupAppInternal(t)
 
 	users, err := app.FindCollectionByNameOrId("users")
@@ -72,7 +61,8 @@ func TestExpectedOpenCheckouts_FallbackDivergence(t *testing.T) {
 	alice.Set("email", "alice@test.local")
 	alice.Set("name", "Alice")
 	alice.Set("code", "EMP-A")
-	alice.Set("role", "worker")
+	// Foreman so policy.AllowUncorrelated + role gate both pass.
+	alice.Set("role", "foreman")
 	alice.Set("group", electricalID)
 	alice.Set("active", true)
 	alice.SetPassword("password-aaaaaaaaaaaa")
@@ -131,7 +121,8 @@ func TestExpectedOpenCheckouts_FallbackDivergence(t *testing.T) {
 		t.Fatalf("alice checkout: %v", err)
 	}
 
-	// Alice returns qty=2 — fallback closes Bob's row to satisfy.
+	// Alice returns qty=2 — closes her own row, leaves Bob's alone,
+	// flags the line uncorrelated.
 	aliceReturn := &cart.Cart{
 		ID: "c3", UserID: alice.Id, UserCode: "EMP-A", UserName: "Alice",
 		Lines: []*cart.Line{{
@@ -144,37 +135,34 @@ func TestExpectedOpenCheckouts_FallbackDivergence(t *testing.T) {
 		t.Fatalf("alice return: %v", err)
 	}
 
-	// Reality: both open_checkouts rows are gone — commit's fallback worked.
-	actual, err := app.FindRecordsByFilter("open_checkouts", "", "", 0, 0)
+	// Reality: only Bob's row remains.
+	actualRows, err := app.FindRecordsByFilter("open_checkouts", "", "", 0, 0)
 	if err != nil {
 		t.Fatalf("load open_checkouts: %v", err)
 	}
-	if len(actual) != 0 {
-		t.Fatalf("actual open_checkouts after fallback return: want 0, got %d", len(actual))
+	if len(actualRows) != 1 {
+		t.Fatalf("actual open_checkouts: want 1, got %d", len(actualRows))
+	}
+	if actualRows[0].GetString("user") != bob.Id {
+		t.Errorf("surviving row user: want Bob, got %s", actualRows[0].GetString("user"))
 	}
 
-	// Integrity replay: charges -2 against Alice (target user), leaves Bob's
-	// +1 intact — the divergence.
+	// Replay matches: Alice clamps to 0, Bob = +1.
 	expected, _, err := expectedOpenCheckouts(app)
 	if err != nil {
 		t.Fatalf("expectedOpenCheckouts: %v", err)
 	}
-
 	bobKey := openKey{item: hammer.Id, instance: "", user: bob.Id}
 	if got := expected[bobKey]; got != 1 {
-		t.Errorf("expected[Bob] under divergent replay: want 1, got %d", got)
+		t.Errorf("expected[Bob]: want 1, got %d", got)
 	}
 	aliceKey := openKey{item: hammer.Id, instance: "", user: alice.Id}
+	// Alice's raw replay value is -1 (one +1 checkout, one -2 return).
+	// The Integrity handler clamps negatives to zero downstream; we
+	// assert the raw value here so a future change to the clamp logic
+	// doesn't quietly mask drift.
 	if got := expected[aliceKey]; got != -1 {
-		t.Errorf("expected[Alice] under divergent replay: want -1, got %d", got)
-	}
-
-	// Post-clamp behavior the Integrity handler applies: negative buckets
-	// are zeroed. Alice = 0 = actual (no diff). Bob = 1 ≠ actual 0 → would
-	// be reported as missing_in_table. That is the false-positive drift.
-	if expected[bobKey] <= 0 {
-		t.Fatalf("post-clamp Bob bucket must be > 0 to produce drift; got %d",
-			expected[bobKey])
+		t.Errorf("expected[Alice] raw: want -1, got %d", got)
 	}
 }
 

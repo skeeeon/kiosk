@@ -1,6 +1,7 @@
 package commit_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -332,6 +333,116 @@ func TestReturn_CrossUser_DeletesOriginalUsersOpenRow(t *testing.T) {
 
 	if n := countOpenCheckouts(t, app, "user = {:u}", dbx.Params{"u": s.OtherUserID}); n != 0 {
 		t.Errorf("bob's open rows: want 0, got %d", n)
+	}
+}
+
+// When a return's qty exceeds the target user's open rows, the resolver
+// no longer borrows from other users' open rows — the shortfall is
+// surfaced as uncorrelated=true. A regular worker can't record an
+// uncorrelated return, so the commit rolls back entirely.
+func TestReturn_QtyExceedsTargetUserRows_RegularWorkerRejected(t *testing.T) {
+	app := setupApp(t)
+	s := seedFixtures(t, app)
+
+	// Bob (worker) checks out 2 hammers.
+	bobCheckout := newCart(s.OtherUserID, &cart.Line{
+		ItemID: s.ToolQtyID, Action: "checkout", Qty: 2,
+		ItemType: "tool", TrackingMode: "quantity",
+	})
+	bobCheckout.UserCode = "EMP-2"
+	bobCheckout.UserName = "Bob"
+	if _, err := commit.Commit(app, bobCheckout, testIdentity, commit.DefaultPolicy(), (&captured{}).publish); err != nil {
+		t.Fatalf("seed bob checkout: %v", err)
+	}
+
+	// Alice (foreman) also checks out 1 hammer — used to prove the
+	// resolver no longer reaches into another user's open rows.
+	aliceCheckout := newCart(s.UserID, &cart.Line{
+		ItemID: s.ToolQtyID, Action: "checkout", Qty: 1,
+		ItemType: "tool", TrackingMode: "quantity",
+	})
+	if _, err := commit.Commit(app, aliceCheckout, testIdentity, commit.DefaultPolicy(), (&captured{}).publish); err != nil {
+		t.Fatalf("seed alice checkout: %v", err)
+	}
+
+	// Bob attempts to return 3 — he only has 2 out.
+	bobReturn := newCart(s.OtherUserID, &cart.Line{
+		ItemID: s.ToolQtyID, Action: "return", Qty: 3,
+		ItemType: "tool", TrackingMode: "quantity",
+	})
+	bobReturn.UserCode = "EMP-2"
+	bobReturn.UserName = "Bob"
+	_, err := commit.Commit(app, bobReturn, testIdentity, commit.DefaultPolicy(), (&captured{}).publish)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if got := err.Error(); !strings.Contains(got, "only a foreman can record an uncorrelated return") {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	// Commit rolled back: Bob's 2 rows and Alice's 1 row both intact.
+	if n := countOpenCheckouts(t, app, "user = {:u}", dbx.Params{"u": s.OtherUserID}); n != 2 {
+		t.Errorf("bob's open rows after rollback: want 2, got %d", n)
+	}
+	if n := countOpenCheckouts(t, app, "user = {:u}", dbx.Params{"u": s.UserID}); n != 1 {
+		t.Errorf("alice's open rows: want 1 (untouched), got %d", n)
+	}
+}
+
+// Same shape but with a foreman in the cart: the partial close lands,
+// the line is flagged uncorrelated, and another user's open rows for
+// the same SKU are not touched.
+func TestReturn_QtyExceedsTargetUserRows_ForemanPartialUncorrelated(t *testing.T) {
+	app := setupApp(t)
+	s := seedFixtures(t, app)
+
+	// Alice (foreman) checks out 2 hammers.
+	aliceCheckout := newCart(s.UserID, &cart.Line{
+		ItemID: s.ToolQtyID, Action: "checkout", Qty: 2,
+		ItemType: "tool", TrackingMode: "quantity",
+	})
+	if _, err := commit.Commit(app, aliceCheckout, testIdentity, commit.DefaultPolicy(), (&captured{}).publish); err != nil {
+		t.Fatalf("seed alice checkout: %v", err)
+	}
+
+	// Bob (worker) checks out 1 hammer — the "evidence" row that the
+	// old fallback would have consumed.
+	bobCheckout := newCart(s.OtherUserID, &cart.Line{
+		ItemID: s.ToolQtyID, Action: "checkout", Qty: 1,
+		ItemType: "tool", TrackingMode: "quantity",
+	})
+	bobCheckout.UserCode = "EMP-2"
+	bobCheckout.UserName = "Bob"
+	if _, err := commit.Commit(app, bobCheckout, testIdentity, commit.DefaultPolicy(), (&captured{}).publish); err != nil {
+		t.Fatalf("seed bob checkout: %v", err)
+	}
+
+	// Alice attempts to return 3 — she only has 2 out.
+	aliceReturn := newCart(s.UserID, &cart.Line{
+		ItemID: s.ToolQtyID, Action: "return", Qty: 3,
+		ItemType: "tool", TrackingMode: "quantity",
+	})
+	result, err := commit.Commit(app, aliceReturn, testIdentity, commit.DefaultPolicy(), (&captured{}).publish)
+	if err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	// Alice's open rows are gone; Bob's row is untouched.
+	if n := countOpenCheckouts(t, app, "user = {:u}", dbx.Params{"u": s.UserID}); n != 0 {
+		t.Errorf("alice's open rows after partial return: want 0, got %d", n)
+	}
+	if n := countOpenCheckouts(t, app, "user = {:u}", dbx.Params{"u": s.OtherUserID}); n != 1 {
+		t.Errorf("bob's open rows: want 1 (untouched), got %d", n)
+	}
+
+	// The return line is flagged uncorrelated.
+	lines, _ := app.FindRecordsByFilter("transaction_lines", "transaction = {:tx}", "", 0, 0,
+		dbx.Params{"tx": result.TransactionID})
+	if len(lines) != 1 {
+		t.Fatalf("lines: want 1, got %d", len(lines))
+	}
+	if !lines[0].GetBool("uncorrelated") {
+		t.Error("expected uncorrelated=true on the partial-match return line")
 	}
 }
 
