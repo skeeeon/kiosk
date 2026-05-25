@@ -57,9 +57,13 @@ const toggleReason = ref('')
 const toggleSubmitting = ref(false)
 
 const filtered = computed(() => {
-  const f = itemFilter.value.trim().toUpperCase()
+  const f = itemFilter.value.trim().toLowerCase()
   if (!f) return rows.value
-  return rows.value.filter((r) => r.item_code.toUpperCase().includes(f))
+  return rows.value.filter(
+    (r) =>
+      r.item_name.toLowerCase().includes(f) ||
+      r.item_code.toLowerCase().includes(f),
+  )
 })
 
 // Reset to page 1 when the filter narrows/changes — otherwise the user might
@@ -259,7 +263,7 @@ async function confirmToggle() {
 }
 
 const columns: ColumnDef[] = [
-  { key: 'item_code', label: 'Item' },
+  { key: 'item_name', label: 'Item' },
   { key: 'instance_code', label: 'Code' },
   { key: 'serial', label: 'Serial' },
   { key: 'rfid_epc', label: 'RFID' },
@@ -282,7 +286,7 @@ const columns: ColumnDef[] = [
         <input
           v-model="itemFilter"
           type="text"
-          placeholder="Filter by item code…"
+          placeholder="Filter by item…"
           class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-1.5 text-slate-100 text-sm w-44"
         />
         <button
@@ -329,8 +333,8 @@ const columns: ColumnDef[] = [
       @update:page="(p) => page = p"
       @update:per-page="(n) => { perPage = n; page = 1 }"
     >
-      <template #cell-item_code="{ row }">
-        <span class="font-mono">{{ row.item_code }}</span>
+      <template #cell-item_name="{ row }">
+        <span class="text-slate-300">{{ row.item_name }}</span>
       </template>
       <template #cell-instance_code="{ row }">
         <span class="font-mono">{{ row.instance_code }}</span>

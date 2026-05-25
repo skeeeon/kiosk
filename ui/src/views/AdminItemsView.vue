@@ -151,6 +151,7 @@ onUnmounted(() => {
 
 const visibleColumns = computed<ColumnDef[]>(() => {
   const cols: ColumnDef[] = [
+    { key: 'code', label: 'Code' },
     { key: 'name', label: 'Name' },
     { key: 'type', label: 'Type' },
     { key: 'tracking_mode', label: 'Tracking' },
@@ -350,6 +351,9 @@ async function onDelete() {
       @update:page="onPageChange"
       @update:per-page="onPerPageChange"
     >
+      <template #cell-code="{ row }">
+        <span class="font-mono text-slate-200">{{ row.code }}</span>
+      </template>
       <template #cell-type="{ row }">
         <span
           class="inline-block px-2 py-0.5 rounded text-xs"
