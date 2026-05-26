@@ -176,6 +176,18 @@ rfid:
   reader:
     host: ""                # reader IP / hostname (required when enabled)
     port: 5084              # standard LLRP port
+    # antennas (optional): enumerate the active reader ports and the
+    # TX power each one should run at. Empty/omitted leaves the
+    # reader's own baseline alone — useful for sites that prefer to
+    # provision via the reader's web UI / IoT REST. When set, only
+    # the listed ports are inventoried and each runs at the given
+    # dBm (resolved to the reader's nearest available power index at
+    # Connect time).
+    # antennas:
+    #   - id: 1
+    #     tx_power_dbm: 25.0
+    #   - id: 3
+    #     tx_power_dbm: 20.0
   read_window: "3s"         # how long a single inventory cycle runs
   door_id: ""               # required when mode=enclosure_diff
 ```
@@ -186,10 +198,17 @@ Validation at startup:
 - When `rfid.enabled=true`, `rfid.reader.host` and `rfid.reader.port`
   are required.
 - When `rfid.mode=enclosure_diff`, `rfid.door_id` is required.
-- Failure to connect to the reader on startup logs a warning but does
-  not block the binary — the kiosk falls back to a degraded state
-  where RFID endpoints return 503 until the connection comes up. This
-  mirrors how NATS unreachability is handled today.
+- Antenna entries (when listed) must have `id >= 1`, unique IDs, and
+  `tx_power_dbm > 0`. The actual reader-side ceiling (FCC ~33 dBm,
+  ETSI ~31.5 dBm at port) is enforced at Connect against the reader's
+  power table, not statically — see the Reader lifecycle section.
+- Failure to connect to the reader on startup **does not block the
+  binary**. The kiosk supervises the LLRP session in a background
+  goroutine that retries on failure with exponential backoff, so a
+  kiosk that boots before its reader is online will self-heal once
+  the reader appears. RFID endpoints return `ErrNotConnected` (503 to
+  the SPA) during any gap and recover transparently when the session
+  is re-established.
 
 Env-var overrides follow the standard `KIOSK_*` pattern
 (`KIOSK_RFID_ENABLED`, `KIOSK_RFID_MODE`, etc.).
@@ -201,6 +220,66 @@ The identity payload served to the SPA grows `rfid_enabled` and
 fallback alongside the primary NATS-driven `read.trigger`. Both
 modes share the 3-second countdown styling; the button is hidden
 entirely when RFID is disabled.
+
+## Reader lifecycle
+
+The kiosk maintains one long-running LLRP TCP session to the reader,
+not a connect-per-read model. `internal/rfid/reader.go` owns the
+session through a supervisor goroutine started by `Connect` and
+cancelled by `Close`.
+
+**Supervisor loop.** On each iteration:
+
+1. Dial the reader (5 s per-attempt timeout).
+2. Start the EdgeX `*llrp.Client` against the TCP conn.
+3. If the operator configured antennas, send
+   `GET_READER_CAPABILITIES` and resolve each requested `tx_power_dbm`
+   against the reader's `TransmitPowerLevelTable` to an LLRP power
+   index (5 s timeout). The resolver picks the highest entry **at or
+   below** the request — never silently exceeding — and clamps up
+   with a log line if every entry is above (request below the
+   reader's minimum). Hopping vs fixed-frequency region info comes
+   from the same response.
+4. Publish the live `*llrp.Client` + resolved per-antenna `txConfig`
+   under the reader's mutex. `ReadFor` snapshots both and proceeds.
+5. Park on the connection's exit channel until either it drops
+   (retry) or the supervisor's context is cancelled (Close).
+
+On dial or capabilities failure, the supervisor logs and retries with
+exponential backoff: 1 s → 2 s → 4 s → ... → 30 s ceiling. A
+successful connect resets backoff to 1 s, so a transient blip during
+reconnect doesn't penalize the next attempt.
+
+**Why a supervisor and not just retry-on-demand.** The reader is
+long-lived shared state. A kiosk that boots before its reader is
+ready — or one whose reader power-cycles mid-shift — must not require
+a manual binary restart. Operator-driven retry inside the HTTP
+handler would also pay the dial latency on every cart-screen visit.
+
+**Why inline AntennaConfiguration, not `SET_READER_CONFIG`.** Antenna
+power could be baked into the reader's NVRAM (web UI / IoT REST) or
+pushed once via LLRP `SET_READER_CONFIG` per session. Instead the
+kiosk embeds an `AntennaConfiguration` block inside every ROSpec's
+`InventoryParameterSpec`. Tradeoff:
+
+- Reader reboots become transparent — the next `ReadFor` re-applies
+  the tuning. No supervisor logic to re-push baseline state on
+  reconnect.
+- `kiosk.yaml` is the source of truth, not the box. Swapping a reader
+  (RMA, hardware refresh) doesn't require re-provisioning; the same
+  YAML configures it.
+- Variable installs (1–4 antennas per room) are a config problem, not
+  a code problem. Each antenna gets its own dBm — overhead and
+  side-mount antennas in the same cabinet routinely run at different
+  power to avoid bleed.
+
+The cost — one extra parameter block per ROSpec on the wire — is
+negligible at our read cadence (operator-driven, low frequency).
+
+**When the operator leaves `antennas:` empty**, the ROSpec falls back
+to `AntennaIDs: [0]` ("all antennas, reader's own baseline") and emits
+no per-antenna override. The supervisor also skips the capabilities
+round-trip in that case — there's nothing to resolve.
 
 ## NATS subjects
 
@@ -457,8 +536,10 @@ Frontend has no test suite per CLAUDE.md; SPA correctness rides on
 - Camera / access-control integrations. These are external systems
   that publish to the NATS command subjects defined here. We define
   the command shape; we don't wire the camera side.
-- Hardware tuning, antenna placement, EPC filter prefixes. Handled
-  via reader configuration and physical design, outside the binary.
+- Antenna placement, cabling, regulatory region selection, EPC
+  filter prefixes. Handled via physical design and the reader's own
+  provisioning surfaces (web UI / IoT REST). TX power per antenna is
+  in-binary — see Reader lifecycle.
 - LLRP-over-MQTT or any alternate reader transport. We picked direct
   LLRP and we're committing.
 - Persisting carts to PocketBase. The in-memory invariant stays.

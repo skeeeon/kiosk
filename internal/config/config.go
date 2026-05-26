@@ -164,6 +164,34 @@ type RFIDConfig struct {
 type RFIDReaderConfig struct {
 	Host string `yaml:"host"`
 	Port int    `yaml:"port"`
+
+	// Antennas enumerates the reader's active antenna ports and the TX
+	// power each one should run at. Empty list means "leave the reader's
+	// own baseline alone" — useful for sites that prefer to provision
+	// via the reader's web UI / IoT REST. Non-empty list means the kiosk
+	// owns tuning: only the listed ports are inventoried, each at the
+	// given dBm.
+	//
+	// Power is specified in dBm because it's human-meaningful; the LLRP
+	// wire wants a 1-based index into a reader-specific power table, so
+	// the kiosk resolves dBm → nearest achievable index at Connect time
+	// via GET_READER_CAPABILITIES. The actual ceiling is whatever the
+	// reader's regulatory region permits; we don't try to enforce that
+	// statically.
+	//
+	// Per-antenna power (rather than one global value) because room
+	// geometry varies — an overhead antenna often runs lower than a
+	// side-mount one in the same cabinet to avoid RF bleed.
+	Antennas []RFIDAntennaConfig `yaml:"antennas"`
+}
+
+// RFIDAntennaConfig pairs a reader antenna port with its TX power. ID
+// is the 1-based port number on the reader (1–4 for an R700). Duplicate
+// IDs are rejected at validation; an ID outside the reader's actual
+// capability is rejected at Connect when capabilities come back.
+type RFIDAntennaConfig struct {
+	ID         int     `yaml:"id"`
+	TxPowerDBm float64 `yaml:"tx_power_dbm"`
 }
 
 // Valid RFID mode strings. The set is fixed; new modes get a new
@@ -431,6 +459,19 @@ func validateRFID(r *RFIDConfig) error {
 	}
 	if r.ReadWindow.AsDuration() == 0 {
 		r.ReadWindow = Duration(3 * time.Second)
+	}
+	seen := make(map[int]struct{}, len(r.Reader.Antennas))
+	for i, a := range r.Reader.Antennas {
+		if a.ID <= 0 {
+			return fmt.Errorf("rfid.reader.antennas[%d].id must be >= 1 (got %d)", i, a.ID)
+		}
+		if _, dup := seen[a.ID]; dup {
+			return fmt.Errorf("rfid.reader.antennas: duplicate id %d", a.ID)
+		}
+		seen[a.ID] = struct{}{}
+		if a.TxPowerDBm <= 0 {
+			return fmt.Errorf("rfid.reader.antennas[%d].tx_power_dbm must be > 0 (got %g)", i, a.TxPowerDBm)
+		}
 	}
 	return nil
 }

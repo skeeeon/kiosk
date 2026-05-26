@@ -61,6 +61,10 @@ rfid:                          # Optional. Off by default.
   reader:
     host: ""                   # Reader IP/hostname (required when enabled)
     port: 5084                 # Standard LLRP port
+    antennas: []               # Active reader ports + TX power. Empty = use reader baseline.
+                               # Each entry: {id: 1, tx_power_dbm: 25.0}. Ids must be >= 1
+                               # and unique; dBm resolved to nearest index via reader
+                               # capabilities at Connect.
   read_window: "3s"            # How long one inventory cycle runs
   door_id: ""                  # Required when mode=enclosure_diff
 ```
