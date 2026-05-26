@@ -23,6 +23,7 @@ import (
 	"github.com/skeeeon/kiosk/internal/instances"
 	"github.com/skeeeon/kiosk/internal/kioskctx"
 	"github.com/skeeeon/kiosk/internal/notifications"
+	"github.com/skeeeon/kiosk/internal/rfid"
 	"github.com/skeeeon/kiosk/internal/scheduler"
 	"github.com/skeeeon/kiosk/internal/ui"
 
@@ -131,6 +132,31 @@ func main() {
 		}
 	}
 
+	// RFID reader (Phase 1: connect-and-hold, no handlers wired yet).
+	// Connection failures fail soft, mirroring the NATS unreachability
+	// story — the kiosk's local checkout flow doesn't depend on RFID.
+	// Phase 2 will pass this Reader to handlers; for now it's
+	// constructed, dialed, and held so we exercise the lifecycle on
+	// real hardware in advance of the dependent code landing.
+	var rfidReader rfid.Reader
+	if cfg.RFID.Enabled {
+		r, err := rfid.New(cfg.RFID)
+		if err != nil {
+			log.Printf("rfid: %v — kiosk will continue without RFID", err)
+		} else {
+			app.OnServe().BindFunc(func(e *core.ServeEvent) error {
+				if err := r.Connect(context.Background()); err != nil {
+					log.Printf("rfid: connect failed — %v; kiosk will continue without RFID", err)
+					return e.Next()
+				}
+				rfidReader = r
+				log.Printf("rfid: connected to %s:%d in %s mode",
+					cfg.RFID.Reader.Host, cfg.RFID.Reader.Port, cfg.RFID.Mode)
+				return e.Next()
+			})
+		}
+	}
+
 	app.OnTerminate().BindFunc(func(e *core.TerminateEvent) error {
 		if catalogWatcher != nil {
 			catalogWatcher.Stop()
@@ -139,6 +165,9 @@ func main() {
 		heartbeatCancel()
 		if commandSub != nil {
 			_ = commandSub.Unsubscribe()
+		}
+		if rfidReader != nil {
+			_ = rfidReader.Close()
 		}
 		if p := events.CurrentPublisher(); p != nil {
 			p.Close()

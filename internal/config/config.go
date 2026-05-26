@@ -23,6 +23,7 @@ type Config struct {
 	Branding   BrandingConfig   `yaml:"branding"`
 	NATS       NATSConfig       `yaml:"nats"`
 	Controller ControllerConfig `yaml:"controller"`
+	RFID       RFIDConfig       `yaml:"rfid"`
 }
 
 type KioskConfig struct {
@@ -130,6 +131,47 @@ type ControllerConfig struct {
 	CatalogUsersBucket  string `yaml:"catalog_users_bucket"`
 	CatalogGroupsBucket string `yaml:"catalog_groups_bucket"`
 }
+
+// RFIDConfig opts a kiosk into RFID-driven inventory flows. See
+// docs/rfid.md for the full design. Disabled by default; when off the
+// binary behaves exactly as it does without RFID hardware.
+//
+// Two modes:
+//
+//   - counter_scan — operator hits a button on CheckoutView, kiosk runs
+//     a single inventory cycle for the configured ReadWindow, observed
+//     EPCs resolve through scan.Resolver into cart lines.
+//   - enclosure_diff — NATS commands (cart.start, read.trigger) drive
+//     the cart from an external access-control / occupancy system. A
+//     read computes a diff against the kiosk's expected-present set
+//     and synthesizes checkout / return lines accordingly. DoorID is
+//     the opaque label used as part of the cart-start idempotency key
+//     (user_code, door_id), so two enclosures sharing a kiosk can be
+//     disambiguated.
+//
+// Connection to the reader is best-effort: failure on startup logs a
+// warning and the binary continues — mirrors NATS unreachability
+// handling. RFID endpoints/commands will reply with errors until the
+// connection comes up.
+type RFIDConfig struct {
+	Enabled    bool             `yaml:"enabled"`
+	Mode       string           `yaml:"mode"`
+	Reader     RFIDReaderConfig `yaml:"reader"`
+	ReadWindow Duration         `yaml:"read_window"`
+	DoorID     string           `yaml:"door_id"`
+}
+
+type RFIDReaderConfig struct {
+	Host string `yaml:"host"`
+	Port int    `yaml:"port"`
+}
+
+// Valid RFID mode strings. The set is fixed; new modes get a new
+// constant and a switch arm in validate().
+const (
+	RFIDModeCounterScan   = "counter_scan"
+	RFIDModeEnclosureDiff = "enclosure_diff"
+)
 
 // BrandingConfig customizes the kiosk's visual identity. All fields are
 // optional; empty/missing values fall back to the SPA's built-in defaults.
@@ -302,6 +344,28 @@ func applyEnvOverrides(c *Config) {
 	if v := os.Getenv("KIOSK_CONTROLLER_CATALOG_GROUPS_BUCKET"); v != "" {
 		c.Controller.CatalogGroupsBucket = v
 	}
+	if v := os.Getenv("KIOSK_RFID_ENABLED"); v != "" {
+		c.RFID.Enabled = parseBool(v)
+	}
+	if v := os.Getenv("KIOSK_RFID_MODE"); v != "" {
+		c.RFID.Mode = v
+	}
+	if v := os.Getenv("KIOSK_RFID_READER_HOST"); v != "" {
+		c.RFID.Reader.Host = v
+	}
+	if v := os.Getenv("KIOSK_RFID_READER_PORT"); v != "" {
+		if p, err := strconv.Atoi(v); err == nil {
+			c.RFID.Reader.Port = p
+		}
+	}
+	if v := os.Getenv("KIOSK_RFID_READ_WINDOW"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			c.RFID.ReadWindow = Duration(d)
+		}
+	}
+	if v := os.Getenv("KIOSK_RFID_DOOR_ID"); v != "" {
+		c.RFID.DoorID = v
+	}
 }
 
 func parseBool(s string) bool {
@@ -330,6 +394,43 @@ func validate(c *Config) error {
 	}
 	if c.Server.Bind == "" {
 		c.Server.Bind = "127.0.0.1"
+	}
+	if err := validateRFID(&c.RFID); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateRFID enforces the cross-field invariants for the RFID block.
+// When disabled, everything below it is irrelevant; when enabled, the
+// mode + reader endpoint are required, and enclosure_diff additionally
+// requires a door_id (it's part of the cart-start idempotency key).
+// ReadWindow defaults to 3s when unset to spare callers from spelling
+// out the common case.
+func validateRFID(r *RFIDConfig) error {
+	if !r.Enabled {
+		return nil
+	}
+	switch r.Mode {
+	case RFIDModeCounterScan, RFIDModeEnclosureDiff:
+		// ok
+	case "":
+		return fmt.Errorf("rfid.mode is required when rfid.enabled=true")
+	default:
+		return fmt.Errorf("rfid.mode must be %q or %q (got %q)",
+			RFIDModeCounterScan, RFIDModeEnclosureDiff, r.Mode)
+	}
+	if r.Reader.Host == "" {
+		return fmt.Errorf("rfid.reader.host is required when rfid.enabled=true")
+	}
+	if r.Reader.Port == 0 {
+		return fmt.Errorf("rfid.reader.port is required when rfid.enabled=true")
+	}
+	if r.Mode == RFIDModeEnclosureDiff && r.DoorID == "" {
+		return fmt.Errorf("rfid.door_id is required when rfid.mode=%q", RFIDModeEnclosureDiff)
+	}
+	if r.ReadWindow.AsDuration() == 0 {
+		r.ReadWindow = Duration(3 * time.Second)
 	}
 	return nil
 }

@@ -41,16 +41,26 @@ type identityPayload struct {
 	// admin SPA hides Add/Edit/Delete/Import affordances. Local stock
 	// adjustments and other kiosk-local actions remain available.
 	Managed bool `json:"managed"`
+	// RFIDEnabled mirrors cfg.RFID.Enabled. The SPA uses it (with
+	// RFIDMode) to decide whether to render the "RFID scan" button on
+	// CheckoutView in Phase 2. Always present so the frontend can
+	// branch on it without re-checking for undefined.
+	RFIDEnabled bool `json:"rfid_enabled"`
+	// RFIDMode mirrors cfg.RFID.Mode. Empty when RFIDEnabled is false.
+	// Set to "counter_scan" or "enclosure_diff" otherwise.
+	RFIDMode string `json:"rfid_mode,omitempty"`
 }
 
 // Identity returns the kiosk's stable identity (kiosk_code + location_code)
 // plus the configured branding. The SPA fetches this once on boot.
 func (h *Handlers) Identity(re *core.RequestEvent) error {
 	out := identityPayload{
-		Role:     "kiosk",
-		Identity: kioskctx.Get(),
-		MaxQty:   cart.MaxQty,
-		Managed:  h.Cfg.Controller.Enabled,
+		Role:        "kiosk",
+		Identity:    kioskctx.Get(),
+		MaxQty:      cart.MaxQty,
+		Managed:     h.Cfg.Controller.Enabled,
+		RFIDEnabled: h.Cfg.RFID.Enabled,
+		RFIDMode:    h.Cfg.RFID.Mode,
 	}
 	if strings.TrimSpace(h.Cfg.Branding.LogoPath) != "" {
 		out.Branding.LogoURL = "/branding/logo"
