@@ -11,6 +11,8 @@
 // Built-in commands: inventory.adjust (mutating, idempotent via command_id),
 // inventory.snapshot (read-only). Add new commands by registering a Handler
 // against a suffix string.
+//
+// Wire reference: docs/wire.md — payload/reply shapes per command.
 package commands
 
 import (

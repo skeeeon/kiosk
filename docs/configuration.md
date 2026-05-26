@@ -54,6 +54,15 @@ nats:                          # Optional. Off by default.
   tls_cert_file: ""
   tls_key_file: ""
   tls_insecure: false          # skip cert verification — dev only
+
+rfid:                          # Optional. Off by default.
+  enabled: false               # When true, the kiosk dials the LLRP reader at startup.
+  mode: ""                     # "counter_scan" | "enclosure_diff" (required when enabled)
+  reader:
+    host: ""                   # Reader IP/hostname (required when enabled)
+    port: 5084                 # Standard LLRP port
+  read_window: "3s"            # How long one inventory cycle runs
+  door_id: ""                  # Required when mode=enclosure_diff
 ```
 
 ### Returns policy
@@ -107,6 +116,35 @@ pointing at the same broker the controller publishes to. Stock adjustments
 remain available at each kiosk regardless. See
 [Central controller](controller.md) for the full picture.
 
+### RFID
+
+The `rfid.*` block opts the kiosk into one of two LLRP-driven inventory
+flows. Disabled by default; when off the binary behaves exactly as it
+does without any reader on the network.
+
+- **`counter_scan`** — operator hits an "RFID scan" button on
+  `CheckoutView`; the kiosk runs one inventory cycle and folds every
+  matched EPC into the cart via the same path `cart/add` uses.
+- **`enclosure_diff`** — NATS-driven. An access-control system
+  publishes `cart.start` at the door, then a camera/occupancy system
+  publishes `read.trigger` when the worker steps out. The kiosk
+  reconciles observed EPCs against expected-present state and
+  synthesizes checkout/return lines. Requires `nats.enabled=true`.
+
+Validation at startup:
+
+- `rfid.mode` is required when `rfid.enabled=true`.
+- `rfid.reader.host` and `rfid.reader.port` are required when
+  `rfid.enabled=true`.
+- `rfid.door_id` is required when `rfid.mode=enclosure_diff`.
+- Connect failure at startup logs a warning but does not block the
+  binary — RFID endpoints return 503 until the connection comes up.
+  Mirrors how NATS unreachability is handled.
+
+The identity payload served to the SPA grows `rfid_enabled` and
+`rfid_mode` so the frontend gates affordances appropriately. See
+[RFID](rfid.md) for the full design.
+
 ## Environment overrides
 
 Every YAML key has a `KIOSK_*` equivalent: prefix `KIOSK_`, replace dots with
@@ -127,6 +165,12 @@ KIOSK_NATS_CREDENTIALS_FILE=/etc/kiosk/nats.creds
 KIOSK_CONTROLLER_ENABLED=true
 KIOSK_CONTROLLER_CATALOG_ITEMS_BUCKET=catalog_items
 KIOSK_CONTROLLER_CATALOG_USERS_BUCKET=catalog_users
+KIOSK_RFID_ENABLED=true
+KIOSK_RFID_MODE=enclosure_diff
+KIOSK_RFID_READER_HOST=10.0.4.50
+KIOSK_RFID_READER_PORT=5084
+KIOSK_RFID_READ_WINDOW=3s
+KIOSK_RFID_DOOR_ID=cabinet-a
 ```
 
 Other env vars:

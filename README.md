@@ -39,6 +39,16 @@ it via config. See [docs/controller.md](docs/controller.md).
   SKU; one `item_instances` row is the physical unit (its scannable
   barcode, printed serial, RFID tag). Returns close the exact instance
   scanned, so three impact drivers under one SKU don't blur together.
+- **Optional RFID flows.** A networked LLRP reader (Impinj R700 or
+  similar) drives either of two modes: **`counter_scan`** turns the
+  reader into a bulk barcode-gun equivalent — operator hits "RFID
+  scan" on the checkout view and every observed EPC folds into the
+  cart; **`enclosure_diff`** is NATS-driven for smart-cabinet /
+  locker installs — an access-control event publishes `cart.start`,
+  a camera/occupancy event publishes `read.trigger`, the kiosk
+  reconciles what's still in vs. what left and synthesizes the
+  resulting cart lines. Worker confirms on a normal checkout screen.
+  See [RFID](docs/rfid.md).
 - **Federation-ready.** Every transaction is stamped with `kiosk_code`
   and `location_code`. Every state change flows through
   `events.Publish`, which always logs via slog and (when enabled) also
@@ -187,8 +197,9 @@ The repo's deeper documentation lives under [`docs/`](docs/):
 - [Configuration](docs/configuration.md) — YAML + env-var surface,
   branding, custom CSS.
 - [Development](docs/development.md) — dev loops, DB reset, test suite.
-- [API reference](docs/api.md) — custom endpoints, collection rules,
-  event subjects.
+- [API reference](docs/api.md) — custom endpoints, collection rules.
+- [Wire reference](docs/wire.md) — every NATS subject (events,
+  commands, heartbeats) with payload and reply shapes.
 - [Schema](docs/schema.md) — collections, cardinality rules, CSV
   import format.
 - [Operations](docs/operations.md) — deploy, backups, ledger integrity,
@@ -197,4 +208,6 @@ The repo's deeper documentation lives under [`docs/`](docs/):
 - [Central controller](docs/controller.md) — multi-kiosk deployments.
 - [Notifications](docs/notifications.md) — receipts, low-stock alerts,
   scheduled digests.
+- [RFID](docs/rfid.md) — `counter_scan` and `enclosure_diff` modes,
+  LLRP reader integration, the SSE cart-events channel.
 - [Shipped & roadmap](docs/roadmap.md) — what's live and what's deferred.

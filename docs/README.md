@@ -19,8 +19,10 @@ detailed lives here.
 ## Reference
 
 - [API reference](api.md) — custom `/api/kiosk/*` and
-  `/api/controller/*` endpoints, PocketBase collection rules, event
-  subjects.
+  `/api/controller/*` endpoints, PocketBase collection rules.
+- [Wire reference](wire.md) — every NATS subject (events, commands,
+  heartbeats) with payload and reply shapes. Read this if you're
+  integrating an external system with the kiosk over NATS.
 - [Schema](schema.md) — collections, controller-only fields,
   `open_checkouts` cardinality rules, CSV import format.
 - [Ledger](ledger.md) — append-only design, the single write path,

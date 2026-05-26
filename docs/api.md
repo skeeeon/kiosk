@@ -7,7 +7,7 @@ PB's `/api/collections/*` is used for PB-native CRUD.
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| `GET` | `/api/kiosk/identity` | none | Returns `{kiosk_code, location_code, branding, max_qty, managed}` — `managed` is true when this kiosk is opted into central control |
+| `GET` | `/api/kiosk/identity` | none | Returns `{kiosk_code, location_code, branding, max_qty, managed, rfid_enabled, rfid_mode}` — `managed` is true when opted into central control; `rfid_enabled` + `rfid_mode` gate the SPA's "RFID scan" / "Re-read enclosure" buttons (`counter_scan` shows the former, `enclosure_diff` shows the latter; both omitted when RFID is off) |
 | `POST` | `/api/kiosk/scan` | none | Resolves a raw scan to `user`, `item`, or `unknown` |
 | `POST` | `/api/kiosk/cart/start` | none | Returns existing or new cart for a user code |
 | `POST` | `/api/kiosk/cart/add` | none | Appends or stacks a line; computes default action. Defaults: consumable → `consume`; tool already out to the cart's user → `return`; otherwise → `checkout`. Never sets `original_checkout_user_id` — cross-user returns flow through the dedicated endpoint below. |
@@ -15,8 +15,12 @@ PB's `/api/collections/*` is used for PB-native CRUD.
 | `POST` | `/api/kiosk/cart/foreman-return` | none | Adds a return line on behalf of another worker. Body: `{cart_id, item_code, target_user_code?}`. `target_user_code` is optional only when `item_code` resolves to a **serialized** instance — the server derives the holder from the instance's open_checkouts row. Pre-flights cart user is a `foreman` with a group and target is in the same group; same checks the commit gate re-enforces. **Only writer of `Line.original_checkout_user_id`.** |
 | `PATCH` | `/api/kiosk/cart/lines/{id}` | none | Update qty and/or action on a line |
 | `DELETE` | `/api/kiosk/cart/lines/{id}` | none | Remove a line |
+| `GET` | `/api/kiosk/cart` | none | Refetch the cart by `?cart_id=`. The SPA hits this on every SSE tickle — payload pull, signal push. |
+| `GET` | `/api/kiosk/cart/events` | none | Server-Sent Events stream for one cart. Query: `?cart_id=…`. Emits `cart.updated` on every cart write and `cart.gone` on commit/cancel. 15 s SSE-comment heartbeats keep proxies from closing idle connections. The SPA refetches via `GET /api/kiosk/cart` on every signal. |
 | `POST` | `/api/kiosk/cart/cancel` | none | Discard an in-progress cart |
 | `POST` | `/api/kiosk/cart/commit` | none | Promote cart to transaction + side effects + events |
+| `POST` | `/api/kiosk/cart/rfid-scan` | none | **RFID counter_scan mode only.** Query: `?cart_id=…`. Runs one LLRP inventory cycle, resolves each observed EPC through the same scan path `cart/add` uses, and adds matched instances to the cart. Per-EPC failures (already in cart, inactive instance, unknown tag) are skip-and-logged so one bad tag doesn't fail the batch. Returns `{cart, added_lines, observed_epcs, unresolved_epcs}`. 503 when the reader connection is down; publishes `event.scan.rfid.observed` regardless of outcome. |
+| `POST` | `/api/kiosk/cart/read-trigger` | none | **RFID enclosure_diff mode only.** Query: `?cart_id=…`. Runs one LLRP inventory cycle and reconciles observed EPCs against expected-present state via `rfid.Diff`, synthesizing checkout lines (expected, not observed) and self-return lines (held by cart user, observed). Cross-user returns are skip-and-counted. Returns `{cart, added_lines, observed_epcs, unresolved_epcs, skipped_cross_user_count}`. Also reachable as the NATS `read.trigger` command — this HTTP form is the manual-retry path on the outside-enclosure screen. |
 | `GET` | `/api/kiosk/integrity` | admin | Diff expected vs actual `open_checkouts` |
 | `POST` | `/api/kiosk/integrity/rebuild` | admin | Wipe `open_checkouts` and rebuild it from the ledger |
 | `POST` | `/api/kiosk/ledger/republish` | admin | Re-emit transaction.complete + item.{action} events for completed transactions in an optional `{from, to}` ISO8601 window. Aggregator is idempotent so safe to re-run. |
@@ -85,7 +89,7 @@ The kiosk checkout flow never touches PB's REST API. Every operation
 goes through a custom `/api/kiosk/*` endpoint that runs in-process and
 bypasses collection rules.
 
-## Events
+## Events, commands, heartbeats
 
 `internal/events.Publish(subject, payload)` is called from the commit
 hook for every state change. It always emits a structured `slog.Info`
@@ -94,39 +98,19 @@ payload to the same subject via a buffering NATS connection. Errors from
 the NATS publish are logged at warn level; commit paths are never
 blocked or failed by them.
 
-Every subject lives under `{prefix}.{kiosk_code}.<family>.<...>` where
-the family is one of `event`, `command`, or `heartbeat`. The family
-segment is what determines transport semantics — the `KIOSK_EVENTS`
-JetStream stream binds to `{prefix}.*.event.>` and nothing else, so
-commands and heartbeats are outside the stream's filter by construction.
+The full subject namespace — every event, command, and heartbeat with
+payload and reply shapes — is in [Wire reference](wire.md). The short
+version:
 
-| Trigger | Subject |
-|---|---|
-| Transaction completed | `{prefix}.{kiosk_code}.event.transaction.complete` |
-| Checkout line | `{prefix}.{kiosk_code}.event.item.checkout` |
-| Return line | `{prefix}.{kiosk_code}.event.item.return` |
-| Consume line | `{prefix}.{kiosk_code}.event.item.consume` |
-| Admin stock adjustment | `{prefix}.{kiosk_code}.event.inventory.adjust` |
-| Open-checkouts rebuild | `{prefix}.{kiosk_code}.event.integrity.rebuild` |
-| Admin force-close | `{prefix}.{kiosk_code}.event.checkout.admin_close` |
-| Instance lifecycle | `{prefix}.{kiosk_code}.event.instance.lifecycle` |
-| Receipt context (managed mode only) | `{prefix}.{kiosk_code}.event.receipt.transaction` |
-| Low-stock alert (managed mode only) | `{prefix}.{kiosk_code}.event.alert.lowstock` |
+- **Events:** `{prefix}.{kiosk_code}.event.<...>` — JetStream-bound,
+  durable. The stream binds to `{prefix}.*.event.>` and nothing else.
+- **Commands:** `{prefix}.{kiosk_code}.command.<name>` — core NATS
+  request/reply, ≤5 s reply timeout. Reply envelope is
+  `{success, error, data}`.
+- **Heartbeats:** `{prefix}.{kiosk_code}.heartbeat` — core NATS
+  publish, 45 s cadence, last-write-wins.
 
 `{prefix}` is `"kiosk"` by default and configurable via
 `nats.subject_prefix` (both kiosk and controller must agree). Override
 only to avoid collisions on a shared NATS cluster where another
-application already owns the `kiosk.>` subject space. Subscribe locally
-with the `nats` CLI to confirm publishing:
-
-```bash
-nats sub "kiosk.*.event.>"
-```
-
-Two more subject families exist alongside the events above but ride
-core NATS, not JetStream:
-
-| Subject | Direction | Transport |
-|---|---|---|
-| `{prefix}.{kiosk_code}.heartbeat` | kiosk → controller | Core NATS publish, 45s cadence. No persistence — last-write-wins is the entire signal. |
-| `{prefix}.{kiosk_code}.command.<name>` | controller → kiosk | Core NATS request/reply, ≤5 s reply timeout. Today: `inventory.adjust`, `inventory.snapshot`, `checkout.close`, `instance.create`, `instance.edit`, `instance.decommission`, `instance.reactivate`, `instance.snapshot`, `integrity.rebuild`, `ledger.republish`. |
+application already owns the `kiosk.>` subject space.

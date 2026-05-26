@@ -18,6 +18,8 @@ import (
 // without thinking: the stream binds to "<prefix>.*.event.>" and that's it.
 // Commands and heartbeats are outside the stream's filter space by
 // construction, not by exclusion-list discipline.
+//
+// Wire reference: docs/wire.md — payload shapes per subject.
 const (
 	DefaultSubjectPrefix = "kiosk"
 	DefaultStreamName    = "KIOSK_EVENTS"
