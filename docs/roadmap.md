@@ -160,16 +160,11 @@ subjects are in place to make them additive rather than rewrites.
 - **Tighten PB collection rules in managed mode.** UI gating is the
   v1 story; a follow-up could lock the collection rules themselves
   so a determined admin poking PB directly can't drift the catalog.
-- **Per-subject NATS ACLs.** Today any holder of the NATS credentials
-  can publish to `{prefix}.*.command.>`. Locking the command pattern
-  to controller-only credentials (and the event subjects to
-  kiosk-only credentials) is a deployment-time tightening worth
-  doing before any multi-tenant scenario.
-- **RFID reader integration.** Impinj reader publishes scans to
-  `kiosk.{kiosk_code}.event.scan.rfid` (or its own non-event family
-  if the reader→kiosk direction wants request/reply semantics). The
-  scan dispatcher already resolves `rfid_epc` against `item_instances`
-  — no new dispatch logic needed.
+- **RFID reader integration.** Hardware on the way (Impinj R700).
+  Design locked: LLRP vendored from EdgeX, two modes
+  (`counter_scan` and `enclosure_diff`), NATS-orchestrated cart
+  state machine in Mode B, in-process diff against `item_instances`.
+  Phased five-phase rollout plan. See [RFID](rfid.md).
 
 Each of these can be evaluated on demand. None should be built until
 there is a concrete user asking for it.
