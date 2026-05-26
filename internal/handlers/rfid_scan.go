@@ -6,6 +6,7 @@ package handlers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"time"
@@ -68,26 +69,18 @@ func (h *Handlers) RFIDScan(re *core.RequestEvent) error {
 	case errors.Is(err, errRFIDReadFailed):
 		return re.JSON(http.StatusServiceUnavailable, map[string]any{
 			"error":   "rfid_read_failed",
-			"message": errors.Unwrap(err).Error(),
+			"message": err.Error(),
 		})
 	default:
 		return re.InternalServerError("rfid scan failed", err)
 	}
 }
 
-// errRFIDReadFailed wraps the underlying LLRP error from ReadFor so
-// the HTTP layer can distinguish reader-unreachable from other
-// failures while preserving the underlying message for the operator.
-type rfidReadErr struct{ err error }
-
-func (e *rfidReadErr) Error() string { return "rfid read failed: " + e.err.Error() }
-func (e *rfidReadErr) Unwrap() error { return e.err }
-func (*rfidReadErr) Is(target error) bool {
-	_, ok := target.(*rfidReadErr)
-	return ok
-}
-
-var errRFIDReadFailed = &rfidReadErr{err: errors.New("placeholder")}
+// errRFIDReadFailed sentinels a wrapped error from rfid.Reader.ReadFor
+// so the HTTP layer can translate it to a 503 with the underlying
+// LLRP message intact. Wrap with fmt.Errorf("...%w...", errRFIDReadFailed)
+// when returning; callers use errors.Is to match.
+var errRFIDReadFailed = errors.New("rfid read failed")
 
 // PerformRFIDScan is the testable core: runs one LLRP inventory cycle
 // scoped to the given cart, resolves each observed EPC against
@@ -116,7 +109,7 @@ func (h *Handlers) PerformRFIDScan(ctx context.Context, cartID string) (*RFIDSca
 
 	observed, err := h.RFID.ReadFor(ctx, window)
 	if err != nil {
-		return nil, &rfidReadErr{err: err}
+		return nil, fmt.Errorf("%w: %w", errRFIDReadFailed, err)
 	}
 
 	// Translate to plain strings once for both response and event.
@@ -125,17 +118,13 @@ func (h *Handlers) PerformRFIDScan(ctx context.Context, cartID string) (*RFIDSca
 		observedStrings = append(observedStrings, string(e))
 	}
 
-	var (
-		addedLines     = make([]*cart.Line, 0, len(observed))
-		unresolvedEPCs = make([]string, 0)
-		latestCart     any
-	)
+	addedLines := make([]*cart.Line, 0, len(observed))
+	unresolvedEPCs := make([]string, 0)
 	for _, epc := range observed {
-		c, added, err := h.addCodeToCart(cartID, string(epc))
+		_, added, err := h.addCodeToCart(cartID, string(epc))
 		switch {
 		case err == nil:
 			addedLines = append(addedLines, added)
-			latestCart = c
 		case errors.Is(err, errCodeNotFound):
 			// Surface unknown tags so the SPA can render "3 unknown
 			// observed" rather than silently dropping.
@@ -161,16 +150,15 @@ func (h *Handlers) PerformRFIDScan(ctx context.Context, cartID string) (*RFIDSca
 		"observed_at":   time.Now().UTC(),
 	})
 
-	if latestCart == nil {
-		c, _ := h.Carts.Get(cartID)
-		latestCart = c
-	}
-
 	// One broker tickle for the whole batch (not per-EPC). The SPA
 	// refetches once and sees the merged state regardless of how many
 	// lines landed. Fires even on zero-add reads so subscribers still
 	// know the operator hit the button.
 	h.CartEvents.Tickle(cartID)
+
+	// Fetch once at the end so the response carries the final merged
+	// cart state, regardless of which (if any) per-EPC add succeeded.
+	latestCart, _ := h.Carts.Get(cartID)
 
 	return &RFIDScanResponse{
 		Cart:           latestCart,

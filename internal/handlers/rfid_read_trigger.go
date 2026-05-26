@@ -70,7 +70,7 @@ func (h *Handlers) PerformReadTrigger(ctx context.Context, c *cart.Cart) (*ReadT
 
 	observed, err := h.RFID.ReadFor(ctx, window)
 	if err != nil {
-		return nil, &rfidReadErr{err: err}
+		return nil, fmt.Errorf("%w: %w", errRFIDReadFailed, err)
 	}
 
 	expected, err := h.expectedInstanceStates()
@@ -275,7 +275,7 @@ func (h *Handlers) ReadTrigger(re *core.RequestEvent) error {
 	case errors.Is(err, errRFIDReadFailed):
 		return re.JSON(http.StatusServiceUnavailable, map[string]any{
 			"error":   "rfid_read_failed",
-			"message": errors.Unwrap(err).Error(),
+			"message": err.Error(),
 		})
 	default:
 		return re.InternalServerError("read trigger failed", err)
