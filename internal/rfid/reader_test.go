@@ -61,11 +61,12 @@ func TestNew_OkWhenConfigured(t *testing.T) {
 	}
 }
 
-// TestReadFor_Stub captures Phase 1's "wrapper exists but inventory
-// cycle is not yet implemented" semantics. When Phase 2 lands the real
-// ReadFor this test should be deleted or rewritten — its presence is
-// load-bearing for the current phase, not a permanent fixture.
-func TestReadFor_Stub(t *testing.T) {
+// TestReadFor_NotConnected confirms the wrapper refuses to attempt an
+// LLRP exchange before Connect has run. This is the only ReadFor case
+// covered by unit tests; the real LLRP message dance lives behind an
+// LLRP simulator integration test gated on RFID_SIM=1 (see
+// reader_sim_test.go when that lands).
+func TestReadFor_NotConnected(t *testing.T) {
 	r, err := New(config.RFIDConfig{
 		Enabled: true,
 		Mode:    config.RFIDModeCounterScan,
@@ -75,11 +76,40 @@ func TestReadFor_Stub(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 	epcs, err := r.ReadFor(context.Background(), time.Second)
-	if !errors.Is(err, ErrReadForNotImplemented) {
-		t.Errorf("expected ErrReadForNotImplemented, got %v", err)
+	if !errors.Is(err, ErrNotConnected) {
+		t.Errorf("expected ErrNotConnected, got %v", err)
 	}
 	if epcs != nil {
 		t.Errorf("expected nil EPC slice, got %v", epcs)
+	}
+}
+
+// TestDedupEPCs covers the pure helper that collapses repeated tag
+// observations into one entry per distinct EPC, preserving first-seen
+// order so a transcript stays readable.
+func TestDedupEPCs(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []EPC
+		want []EPC
+	}{
+		{"empty", nil, nil},
+		{"single", []EPC{"aa"}, []EPC{"aa"}},
+		{"all dups", []EPC{"aa", "aa", "aa"}, []EPC{"aa"}},
+		{"order preserved", []EPC{"aa", "bb", "aa", "cc", "bb"}, []EPC{"aa", "bb", "cc"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := dedupEPCs(tc.in)
+			if len(got) != len(tc.want) {
+				t.Fatalf("len mismatch: got %v, want %v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("at %d: got %q, want %q (full: got=%v want=%v)", i, got[i], tc.want[i], got, tc.want)
+				}
+			}
+		})
 	}
 }
 

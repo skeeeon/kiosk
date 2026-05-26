@@ -58,36 +58,47 @@ func (h *Handlers) CartAdd(re *core.RequestEvent) error {
 		return re.BadRequestError("cart_id and item_code are required", nil)
 	}
 
-	c, err := h.Carts.Get(body.CartID)
+	c, added, err := h.addCodeToCart(body.CartID, body.ItemCode)
 	if err != nil {
-		return re.NotFoundError("cart not found or expired", nil)
+		return cartAddErrorToResponse(re, err)
+	}
+	return re.JSON(http.StatusOK, map[string]any{"cart": c, "line": added})
+}
+
+// addCodeToCart is the shared cart-write path used by both CartAdd
+// (one HTTP scan event) and RFIDScan (a batched LLRP read). It
+// resolves the code through the same item-instance → item → rfid_epc
+// precedence as the scan dispatcher, validates active flags, applies
+// the default action via defaultActionFor, and appends via the cart
+// store. Returns the updated cart and the line that landed; callers
+// translate errors per their context (HTTP responses vs per-EPC
+// skip-and-log).
+func (h *Handlers) addCodeToCart(cartID, code string) (*cart.Cart, *cart.Line, error) {
+	c, err := h.Carts.Get(cartID)
+	if err != nil {
+		return nil, nil, errCartNotFound
 	}
 
-	// Resolve the input string against instances first, then items —
-	// same precedence as the scan dispatcher.
-	item, instance, err := h.resolveScannableForCart(body.ItemCode)
+	item, instance, err := h.resolveScannableForCart(code)
 	if err != nil {
 		if isNotFound(err) {
-			return re.NotFoundError("item not found", nil)
+			return nil, nil, errCodeNotFound
 		}
-		return err
+		return nil, nil, err
 	}
 	if !item.GetBool("active") {
-		return re.BadRequestError("item is inactive", nil)
+		return nil, nil, errItemInactive
 	}
-	// Serialized items must be added via a specific instance — the SKU
-	// alone doesn't identify a physical unit. Browse-and-pick by SKU is
-	// the path that hits this; the frontend prompts to select an instance.
 	if item.GetString("tracking_mode") == "serialized" && instance == nil {
-		return re.BadRequestError("select a specific unit (instance) for this serialized item", nil)
+		return nil, nil, errSerializedNeedsInstance
 	}
 	if instance != nil && !instance.GetBool("active") {
-		return re.BadRequestError("instance is inactive", nil)
+		return nil, nil, errInstanceInactive
 	}
 
 	action, err := h.defaultActionFor(item, instance, c.UserID)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 
 	lineCode := item.GetString("code")
@@ -112,27 +123,55 @@ func (h *Handlers) CartAdd(re *core.RequestEvent) error {
 		ItemInstanceCode: instanceCode,
 	}
 
-	c, added, err := h.Carts.AddLine(body.CartID, line)
-	if err == nil {
-		// Recompute low-stock against the stacked total qty (AddLine may have
-		// merged into an existing line). Warning is informational only —
-		// commit doesn't reject on it.
-		if w, werr := lowStockWarning(h.App, item, added.Action, added.Qty); werr == nil && w != "" {
-			added.Warnings = setLowStockWarning(added.Warnings, w)
-		}
-	}
+	c, added, err := h.Carts.AddLine(cartID, line)
 	if err != nil {
-		switch {
-		case errors.Is(err, cart.ErrQtyOutOfRange):
-			return re.BadRequestError(fmt.Sprintf("qty per line is capped at %d", cart.MaxQty), nil)
-		case errors.Is(err, cart.ErrInvalidAction):
-			return re.BadRequestError("action is not valid for this item type", nil)
-		case errors.Is(err, cart.ErrDuplicateInstance):
-			return re.BadRequestError("this unit is already in your cart", nil)
-		}
-		return re.NotFoundError("cart not found or expired", nil)
+		return nil, nil, err
 	}
-	return re.JSON(http.StatusOK, map[string]any{"cart": c, "line": added})
+	// Low-stock warning is informational and shouldn't fail the add.
+	if w, werr := lowStockWarning(h.App, item, added.Action, added.Qty); werr == nil && w != "" {
+		added.Warnings = setLowStockWarning(added.Warnings, w)
+	}
+	return c, added, nil
+}
+
+// Sentinel errors returned by addCodeToCart. RFIDScan branches on
+// these to decide skip vs surface; CartAdd's response builder
+// translates them to HTTP responses. Distinct from cart.Err* values
+// (those bubble through unchanged) — these cover the resolve /
+// activity-flag layer above the cart store.
+var (
+	errCartNotFound            = errors.New("cart not found or expired")
+	errCodeNotFound            = errors.New("code not found")
+	errItemInactive            = errors.New("item is inactive")
+	errInstanceInactive        = errors.New("instance is inactive")
+	errSerializedNeedsInstance = errors.New("serialized item needs a specific instance")
+)
+
+// cartAddErrorToResponse maps the sentinel + cart.Err* errors
+// addCodeToCart can return into RequestEvent responses. Kept in one
+// place so CartAdd, the existing rescan path, and the new RFIDScan
+// per-EPC fallback (when surfacing rather than skipping) all phrase
+// the user-visible message identically.
+func cartAddErrorToResponse(re *core.RequestEvent, err error) error {
+	switch {
+	case errors.Is(err, errCartNotFound):
+		return re.NotFoundError("cart not found or expired", nil)
+	case errors.Is(err, errCodeNotFound):
+		return re.NotFoundError("item not found", nil)
+	case errors.Is(err, errItemInactive):
+		return re.BadRequestError("item is inactive", nil)
+	case errors.Is(err, errInstanceInactive):
+		return re.BadRequestError("instance is inactive", nil)
+	case errors.Is(err, errSerializedNeedsInstance):
+		return re.BadRequestError("select a specific unit (instance) for this serialized item", nil)
+	case errors.Is(err, cart.ErrQtyOutOfRange):
+		return re.BadRequestError(fmt.Sprintf("qty per line is capped at %d", cart.MaxQty), nil)
+	case errors.Is(err, cart.ErrInvalidAction):
+		return re.BadRequestError("action is not valid for this item type", nil)
+	case errors.Is(err, cart.ErrDuplicateInstance):
+		return re.BadRequestError("this unit is already in your cart", nil)
+	}
+	return err
 }
 
 // ForemanReturnWorker is one entry in the picker the SPA renders for the

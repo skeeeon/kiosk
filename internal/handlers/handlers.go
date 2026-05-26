@@ -12,6 +12,7 @@ import (
 	"github.com/skeeeon/kiosk/internal/cart"
 	"github.com/skeeeon/kiosk/internal/config"
 	"github.com/skeeeon/kiosk/internal/notifications"
+	"github.com/skeeeon/kiosk/internal/rfid"
 	"github.com/skeeeon/kiosk/internal/scan"
 )
 
@@ -20,6 +21,12 @@ type Handlers struct {
 	Cfg      *config.Config
 	Carts    *cart.Store
 	Notifier *notifications.Notifier
+	// RFID is the optional LLRP reader wrapper. nil when rfid.enabled
+	// is false or when the startup connection failed — the RFID
+	// handler short-circuits with 503 in that case. Production wiring
+	// in cmd/kiosk/main.go sets this after the reader's first
+	// successful Connect.
+	RFID rfid.Reader
 }
 
 func New(app core.App, cfg *config.Config, carts *cart.Store, notifier *notifications.Notifier) *Handlers {

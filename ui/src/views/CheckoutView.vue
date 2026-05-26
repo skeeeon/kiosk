@@ -177,6 +177,69 @@ const crossUserLines = computed<CartLine[]>(() => {
 
 const isForeman = computed(() => cart.value?.user_role === 'foreman')
 
+// RFID-scan affordance is gated on counter_scan mode. enclosure_diff
+// reads are NATS-command-driven and the operator stands outside —
+// there's no button there. The button stays out of the DOM entirely
+// when the reader isn't configured.
+const rfidButtonVisible = computed(
+  () => identity.value?.rfid_enabled && identity.value?.rfid_mode === 'counter_scan',
+)
+
+// rfidReadWindowMs is what we draw the "Reading… 3s" countdown over.
+// The server's actual read window comes from kiosk.yaml; we mirror the
+// docs/rfid.md default here so the UI's countdown matches by default
+// without us shipping read_window over the identity payload. The
+// button's `disabled` while scanning prevents the operator from
+// double-clicking and getting out of sync if a deployment used a
+// non-default window — they'll just see the spinner past 3s, which
+// is fine.
+const RFID_READ_WINDOW_MS = 3000
+const rfidScanning = ref(false)
+const rfidProgress = ref(0)
+let rfidTickHandle: ReturnType<typeof setInterval> | null = null
+
+async function onRFIDScan() {
+  if (!cart.value || rfidScanning.value) return
+  rfidScanning.value = true
+  rfidProgress.value = 0
+  const startedAt = Date.now()
+  rfidTickHandle = setInterval(() => {
+    const elapsed = Date.now() - startedAt
+    rfidProgress.value = Math.min(1, elapsed / RFID_READ_WINDOW_MS)
+  }, 50)
+  try {
+    const result = await c.rfidScan()
+    const added = result.added_lines.length
+    const observed = result.observed_epcs.length
+    const unresolved = result.unresolved_epcs.length
+    if (added > 0) {
+      toast.success(
+        `Added ${added} ${added === 1 ? 'item' : 'items'} from ${observed} observed`,
+        TOP,
+      )
+    } else if (observed > 0) {
+      // The reader saw something but nothing landed — typically
+      // duplicates already in the cart or unresolved tags.
+      const detail =
+        unresolved > 0
+          ? `${unresolved} unknown ${unresolved === 1 ? 'tag' : 'tags'}`
+          : 'all tags already in cart'
+      toast.warn(`Observed ${observed} ${observed === 1 ? 'tag' : 'tags'} — ${detail}`, TOP)
+    } else {
+      toast.warn('No tags observed — check antenna placement and try again', TOP)
+    }
+  } catch (e) {
+    handleApiError(e, 'RFID scan')
+  } finally {
+    if (rfidTickHandle) {
+      clearInterval(rfidTickHandle)
+      rfidTickHandle = null
+    }
+    rfidScanning.value = false
+    rfidProgress.value = 0
+  }
+}
+
 const ACTION_LABEL: Record<CartAction, string> = {
   checkout: 'Checked out',
   return: 'Returned',
@@ -596,6 +659,25 @@ const crossUserSummary = computed(() =>
         @click="browseOpen = true"
       >
         Browse items
+      </button>
+      <button
+        v-if="rfidButtonVisible"
+        type="button"
+        class="relative overflow-hidden px-6 py-4 rounded-xl bg-sky-700/80 hover:bg-sky-700 disabled:bg-slate-700 disabled:text-slate-500 text-white text-lg"
+        :disabled="rfidScanning"
+        @click="onRFIDScan"
+      >
+        <!-- Countdown drains left-to-right, same shape as the receipt
+             countdown bar. We render it as a thin overlay rather than
+             a separate component so the visual stays anchored to the
+             button it belongs to. -->
+        <span
+          v-if="rfidScanning"
+          class="absolute left-0 top-0 h-1 bg-sky-300/80 transition-[width] duration-100"
+          :style="{ width: `${rfidProgress * 100}%` }"
+        ></span>
+        <template v-if="rfidScanning">Reading… {{ Math.max(0, Math.ceil((1 - rfidProgress) * (RFID_READ_WINDOW_MS / 1000))) }}s</template>
+        <template v-else>RFID scan</template>
       </button>
       <button
         v-if="isForeman"

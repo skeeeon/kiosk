@@ -21,6 +21,11 @@ export interface KioskIdentity {
   // Present on kiosks; true when this kiosk is opted into central control by
   // the kiosk-controller (catalog read-only, admin mutation affordances hidden).
   managed?: boolean
+  // RFID gating. When rfid_enabled is true the checkout view renders the
+  // "RFID scan" button (counter_scan mode only). enclosure_diff doesn't
+  // expose a button — its reads are NATS-command-driven.
+  rfid_enabled?: boolean
+  rfid_mode?: 'counter_scan' | 'enclosure_diff'
 }
 
 export interface User {
@@ -141,6 +146,22 @@ export interface CommitResult {
   checked_out: number
   returned: number
   consumed: number
+}
+
+// RFIDScanResult is the response from POST /api/kiosk/cart/rfid-scan.
+// observed_epcs is the full deduplicated EPC array the reader saw —
+// useful for an "n tags observed" hint regardless of how many landed
+// in the cart. unresolved_epcs is the subset that didn't match any
+// active item_instance (the SPA renders these as a passive "unknown
+// tags" badge). added_lines are the per-EPC cart lines that landed
+// through the same merge semantics as cart/add; counts may be fewer
+// than observed_epcs - unresolved_epcs because of duplicates or
+// inactive instances (those are skip-and-logged server-side).
+export interface RFIDScanResult {
+  cart: Cart
+  added_lines: CartLine[]
+  observed_epcs: string[]
+  unresolved_epcs: string[]
 }
 
 // Admin-side records mirror what we persist in PocketBase. These are looser

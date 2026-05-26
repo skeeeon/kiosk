@@ -132,30 +132,7 @@ func main() {
 		}
 	}
 
-	// RFID reader (Phase 1: connect-and-hold, no handlers wired yet).
-	// Connection failures fail soft, mirroring the NATS unreachability
-	// story — the kiosk's local checkout flow doesn't depend on RFID.
-	// Phase 2 will pass this Reader to handlers; for now it's
-	// constructed, dialed, and held so we exercise the lifecycle on
-	// real hardware in advance of the dependent code landing.
 	var rfidReader rfid.Reader
-	if cfg.RFID.Enabled {
-		r, err := rfid.New(cfg.RFID)
-		if err != nil {
-			log.Printf("rfid: %v — kiosk will continue without RFID", err)
-		} else {
-			app.OnServe().BindFunc(func(e *core.ServeEvent) error {
-				if err := r.Connect(context.Background()); err != nil {
-					log.Printf("rfid: connect failed — %v; kiosk will continue without RFID", err)
-					return e.Next()
-				}
-				rfidReader = r
-				log.Printf("rfid: connected to %s:%d in %s mode",
-					cfg.RFID.Reader.Host, cfg.RFID.Reader.Port, cfg.RFID.Mode)
-				return e.Next()
-			})
-		}
-	}
 
 	app.OnTerminate().BindFunc(func(e *core.TerminateEvent) error {
 		if catalogWatcher != nil {
@@ -178,6 +155,29 @@ func main() {
 	carts := cart.NewStore(cfg.Session.IdleTimeout.AsDuration())
 	notifier := notifications.New(app)
 	h := handlers.New(app, cfg, carts, notifier)
+
+	// RFID reader. Constructed here so h.RFID can be set from inside
+	// the OnServe Connect hook. A failed Connect at startup leaves
+	// h.RFID nil and the SPA's RFID button hits 503 instead of
+	// blocking boot — matches the NATS unreachability story.
+	if cfg.RFID.Enabled {
+		r, err := rfid.New(cfg.RFID)
+		if err != nil {
+			log.Printf("rfid: %v — kiosk will continue without RFID", err)
+		} else {
+			app.OnServe().BindFunc(func(e *core.ServeEvent) error {
+				if err := r.Connect(context.Background()); err != nil {
+					log.Printf("rfid: connect failed — %v; kiosk will continue without RFID", err)
+					return e.Next()
+				}
+				rfidReader = r
+				h.RFID = r
+				log.Printf("rfid: connected to %s:%d in %s mode",
+					cfg.RFID.Reader.Host, cfg.RFID.Reader.Port, cfg.RFID.Mode)
+				return e.Next()
+			})
+		}
+	}
 
 	// PB record hooks on item_instances: create / decommission (active flip)
 	// / delete write an instance_audit row + publish an instance.lifecycle
@@ -239,6 +239,7 @@ func main() {
 		e.Router.DELETE("/api/kiosk/cart/lines/{id}", h.CartDeleteLine)
 		e.Router.POST("/api/kiosk/cart/cancel", h.CartCancel)
 		e.Router.POST("/api/kiosk/cart/commit", h.CartCommit)
+		e.Router.POST("/api/kiosk/cart/rfid-scan", h.RFIDScan)
 		e.Router.GET("/api/kiosk/integrity", h.Integrity)
 		e.Router.POST("/api/kiosk/integrity/rebuild", h.RebuildOpenCheckouts)
 		e.Router.GET("/api/kiosk/reports/open-checkouts", h.ReportOpenCheckouts)

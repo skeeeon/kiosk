@@ -4,19 +4,20 @@
 // EdgeX's device-rfid-llrp-go/pkg/llrp; that import is an
 // implementation detail of impinjReader and is not re-exported.
 //
-// Phase 1 lands the package shape, connection lifecycle, and a stub
-// ReadFor. The LLRP inventory-cycle message dance (AddROSpec /
-// EnableROSpec / ROAccessReport collection / DisableROSpec /
-// DeleteROSpec) lands in Phase 2 alongside the first caller. See
-// docs/rfid.md for the full design.
+// Phase 2 implements ReadFor — one LLRP inventory cycle per call —
+// against the live reader: AddROSpec / EnableROSpec / collect
+// ROAccessReport / DisableROSpec / DeleteROSpec. See docs/rfid.md
+// for the full design.
 package rfid
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -54,9 +55,12 @@ type Reader interface {
 	Close() error
 }
 
-// ErrReadForNotImplemented is what the Phase 1 stub returns. Callers
-// that want to detect "the wrapper is dormant" check via errors.Is.
-var ErrReadForNotImplemented = errors.New("rfid: ReadFor not implemented in phase 1")
+// ErrNotConnected is returned by ReadFor when Connect hasn't run or
+// the connection was torn down. Callers can branch on this if they
+// want different behavior from generic LLRP errors (e.g. a kiosk that
+// boots without the reader plugged in but should still serve manual
+// scans).
+var ErrNotConnected = errors.New("rfid: not connected")
 
 // dialTimeout caps how long we'll wait for the initial TCP handshake.
 // The LLRP-level handshake that follows is asynchronous and not bounded
@@ -96,6 +100,22 @@ type impinjReader struct {
 	client *llrp.Client
 	conn   net.Conn
 	done   chan error // signals when client.Connect's goroutine exits
+
+	// readMu serializes ReadFor calls so we never have two ROSpecs
+	// fighting over the same ROSpecID, and so the ROAccessReport
+	// handler always has an unambiguous owner. One read at a time
+	// matches reality (one operator at a kiosk; one cabinet door
+	// open at a time in enclosure_diff) — contention is not a
+	// concern, correctness is.
+	readMu sync.Mutex
+
+	// accumMu guards `accum` between the LLRP read-side goroutine
+	// (where the ROAccessReport handler fires) and the ReadFor
+	// goroutine that drains it. Stored as a pointer so ReadFor can
+	// swap in a fresh slice atomically — old reads landing late from
+	// the previous cycle don't pollute the next one.
+	accumMu sync.Mutex
+	accum   *[]EPC
 }
 
 // Connect dials the reader and starts the LLRP client goroutine. The
@@ -123,7 +143,15 @@ func (r *impinjReader) Connect(ctx context.Context) error {
 		return fmt.Errorf("rfid: dial %s: %w", r.addr, err)
 	}
 
-	client := llrp.NewClient()
+	// The ROAccessReport handler is the only thing the read-side
+	// goroutine ever pushes into. It must not block — the LLRP client
+	// runs handlers inline with the read loop, so a stalled handler
+	// stalls the whole connection. We do a cheap unmarshal + mutex'd
+	// append and return.
+	client := llrp.NewClient(
+		llrp.WithMessageHandler(llrp.MsgROAccessReport,
+			llrp.MessageHandlerFunc(r.onROAccessReport)),
+	)
 	done := make(chan error, 1)
 
 	go func() {
@@ -143,8 +171,226 @@ func (r *impinjReader) Connect(ctx context.Context) error {
 	return nil
 }
 
+// ReadFor runs one LLRP inventory cycle for d and returns the
+// deduplicated EPCs observed. The flow:
+//
+//  1. Reset the in-impinjReader accumulator to a fresh slice.
+//  2. Send AddROSpec; check LLRPStatus.
+//  3. Send EnableROSpec; check LLRPStatus. The ROSpec auto-starts
+//     (ROStartTriggerImmediate) and auto-stops after d ms
+//     (ROStopTriggerDuration). ROAccessReport messages flow inbound
+//     during that window and the handler accumulates EPCs.
+//  4. Wait for d, or for ctx to cancel — whichever first.
+//  5. Send DisableROSpec + DeleteROSpec, best-effort, on a fresh
+//     short-timeout ctx so cleanup happens even when the caller's ctx
+//     is already dead.
+//
+// One ROSpec ID is used for all calls (ROSpecID 1). We delete on the
+// way out so the next call's Add is clean. Concurrent ReadFor calls
+// serialize on readMu; this matches reality (one operator, one
+// door).
 func (r *impinjReader) ReadFor(ctx context.Context, d time.Duration) ([]EPC, error) {
-	return nil, ErrReadForNotImplemented
+	r.readMu.Lock()
+	defer r.readMu.Unlock()
+
+	r.mu.Lock()
+	client := r.client
+	r.mu.Unlock()
+	if client == nil {
+		return nil, ErrNotConnected
+	}
+
+	// Fresh accumulator. Any stragglers from a previous (cancelled)
+	// read drop on the floor.
+	bucket := make([]EPC, 0, 16)
+	r.accumMu.Lock()
+	r.accum = &bucket
+	r.accumMu.Unlock()
+	defer func() {
+		r.accumMu.Lock()
+		r.accum = nil
+		r.accumMu.Unlock()
+	}()
+
+	spec := buildROSpec(d)
+
+	// Add + Enable. Failures on either short-circuit; cleanup is
+	// best-effort but we still try, because the reader may have
+	// accepted Add even if Enable failed.
+	if err := sendAndCheck(ctx, client, spec.Add(), &llrp.AddROSpecResponse{}); err != nil {
+		r.cleanupSpec(spec) // no-op if Add never landed
+		return nil, fmt.Errorf("rfid: AddROSpec: %w", err)
+	}
+	if err := sendAndCheck(ctx, client, spec.Enable(), &llrp.EnableROSpecResponse{}); err != nil {
+		r.cleanupSpec(spec)
+		return nil, fmt.Errorf("rfid: EnableROSpec: %w", err)
+	}
+
+	// Wait for the read window or ctx cancel. The ROSpec stops itself
+	// on the reader side after d ms, but we still send Disable below
+	// so a torn read leaves clean state for next time.
+	select {
+	case <-time.After(d):
+	case <-ctx.Done():
+	}
+
+	r.cleanupSpec(spec)
+
+	// Snapshot + deduplicate the accumulator. ROAccessReport handlers
+	// can fire briefly after Disable as in-flight messages drain
+	// through; the readMu we still hold prevents the next ReadFor from
+	// stealing them, and the defer above clears r.accum after the
+	// snapshot.
+	r.accumMu.Lock()
+	raw := append([]EPC(nil), bucket...)
+	r.accumMu.Unlock()
+
+	return dedupEPCs(raw), nil
+}
+
+// cleanupSpec sends Disable + Delete on a short, independent context
+// so it runs even when the caller's ctx is dead. Errors are logged
+// implicitly via the LLRP client's logger — we don't surface them
+// because the caller already knows the read window completed; whether
+// the reader's state is perfectly clean is best-effort.
+func (r *impinjReader) cleanupSpec(spec *llrp.ROSpec) {
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = sendAndCheck(cleanupCtx, r.client, spec.Disable(), &llrp.DisableROSpecResponse{})
+	_ = sendAndCheck(cleanupCtx, r.client, spec.Delete(), &llrp.DeleteROSpecResponse{})
+}
+
+// onROAccessReport is wired in via WithMessageHandler at NewClient
+// time. It runs on the LLRP client's read goroutine — keep the work
+// here cheap. We decode the report, extract EPCs from each tag, and
+// append into whatever accumulator ReadFor has installed. When no
+// ReadFor is in flight, r.accum is nil and the tags are silently
+// dropped (the reader shouldn't be sending unsolicited reports
+// outside a ROSpec, but if it does we don't want to crash).
+func (r *impinjReader) onROAccessReport(_ *llrp.Client, msg llrp.Message) {
+	rpt := &llrp.ROAccessReport{}
+	if err := msg.UnmarshalTo(rpt); err != nil {
+		return
+	}
+	if len(rpt.TagReportData) == 0 {
+		return
+	}
+
+	r.accumMu.Lock()
+	defer r.accumMu.Unlock()
+	if r.accum == nil {
+		return
+	}
+	for _, tag := range rpt.TagReportData {
+		if e := epcFromTag(tag); e != "" {
+			*r.accum = append(*r.accum, e)
+		}
+	}
+}
+
+// epcFromTag prefers EPC96 when populated; otherwise falls back to
+// EPCData. Hex-encoded lower-case is what the reader emits in our
+// downstream representations and matches the existing rfid_epc field
+// format on item_instances (callers handle case-insensitive compare).
+func epcFromTag(tag llrp.TagReportData) EPC {
+	switch {
+	case len(tag.EPC96.EPC) > 0:
+		return EPC(strings.ToLower(hex.EncodeToString(tag.EPC96.EPC)))
+	case len(tag.EPCData.EPC) > 0:
+		return EPC(strings.ToLower(hex.EncodeToString(tag.EPCData.EPC)))
+	}
+	return ""
+}
+
+// dedupEPCs collapses repeated observations of the same tag (a
+// 3-second read window typically sees each tag many times) into a
+// single entry while preserving first-seen order.
+func dedupEPCs(in []EPC) []EPC {
+	if len(in) == 0 {
+		return nil
+	}
+	seen := make(map[EPC]struct{}, len(in))
+	out := make([]EPC, 0, len(in))
+	for _, e := range in {
+		if _, ok := seen[e]; ok {
+			continue
+		}
+		seen[e] = struct{}{}
+		out = append(out, e)
+	}
+	return out
+}
+
+// sendAndCheck sends an LLRP request and asserts the response's
+// LLRPStatus is success. The body is whichever Statusable response
+// type the caller passes — we don't care about the rest of the
+// payload at this layer.
+func sendAndCheck(ctx context.Context, c *llrp.Client, out llrp.Outgoing, in llrp.Incoming) error {
+	if err := c.SendFor(ctx, out, in); err != nil {
+		return err
+	}
+	if s, ok := in.(llrp.Statusable); ok {
+		st := s.Status()
+		if st.Status != llrp.StatusSuccess {
+			return fmt.Errorf("LLRP status %d: %s", st.Status, st.ErrorDescription)
+		}
+	}
+	return nil
+}
+
+// rfidROSpecID is the single ROSpec slot we (re)use for every
+// counter_scan / enclosure_diff cycle. Phase 4 may pick a different
+// ID for enclosure_diff if it ever wants concurrent reads — for now
+// one slot is enough since readMu serializes everything.
+const rfidROSpecID = 1
+
+// buildROSpec returns a minimal ROSpec configured to start
+// immediately, run for d, deliver results when the RO ends, and
+// inventory all antennas using EPC Gen2. Antenna power, channel
+// selection, and Impinj custom extensions are intentionally
+// left to the reader's own configuration — the kiosk doesn't tune
+// from here.
+func buildROSpec(d time.Duration) *llrp.ROSpec {
+	ms := uint32(d / time.Millisecond)
+	if ms == 0 {
+		ms = 1 // 0 would mean "never stop"; clamp defensively
+	}
+	return &llrp.ROSpec{
+		ROSpecID:           rfidROSpecID,
+		Priority:           0,
+		ROSpecCurrentState: llrp.ROSpecStateDisabled,
+		ROBoundarySpec: llrp.ROBoundarySpec{
+			StartTrigger: llrp.ROSpecStartTrigger{
+				Trigger: llrp.ROStartTriggerImmediate,
+			},
+			StopTrigger: llrp.ROSpecStopTrigger{
+				Trigger:              llrp.ROStopTriggerDuration,
+				DurationTriggerValue: llrp.Millisecs32(ms),
+			},
+		},
+		AISpecs: []llrp.AISpec{{
+			AntennaIDs: []llrp.AntennaID{0}, // 0 = all antennas
+			StopTrigger: llrp.AISpecStopTrigger{
+				Trigger: llrp.AIStopTriggerNone, // bounded by ROSpec stop trigger
+			},
+			InventoryParameterSpecs: []llrp.InventoryParameterSpec{{
+				InventoryParameterSpecID: 1,
+				AirProtocolID:            llrp.AirProtoEPCGlobalClass1Gen2,
+			}},
+		}},
+		ROReportSpec: &llrp.ROReportSpec{
+			Trigger: llrp.NTagsOrROEnd,
+			N:       0, // 0 + ROEnd trigger = "report on RO end"
+			TagReportContentSelector: llrp.TagReportContentSelector{
+				EnableAntennaID:    true,
+				EnablePeakRSSI:     true,
+				EnableTagSeenCount: true,
+				// EPC96 / EPCData come along automatically — that's the
+				// payload we actually use. The other Enable* flags
+				// above are cheap context for future analytics.
+			},
+		},
+	}
 }
 
 // Close shuts the client down. Calls Shutdown first for a graceful

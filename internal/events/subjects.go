@@ -115,6 +115,25 @@ func LowStockAlertSubject(kioskCode string) string {
 	return fmt.Sprintf("%s.%s.event.alert.lowstock", SubjectPrefix(), kioskCode)
 }
 
+// ScanRFIDObservedSubject builds the subject for a "completed RFID read
+// window" event: "<prefix>.<kiosk_code>.event.scan.rfid.observed". One
+// event per ReadFor call (counter_scan or enclosure_diff), carrying the
+// full deduplicated EPC array plus the cart_id the read was scoped to.
+// Cheap observability — no projector consumes it today; the stream
+// captures it for future drift detection and analytics. See
+// docs/rfid.md.
+func ScanRFIDObservedSubject(kioskCode string) string {
+	return fmt.Sprintf("%s.%s.event.scan.rfid.observed", SubjectPrefix(), kioskCode)
+}
+
+// ScanRFIDObservedFilter is the controller-side consumer filter for
+// the RFID observed-EPCs subject. Not bound to any projector yet —
+// reserved so a future Watch/Audit hook can subscribe without
+// re-stringing the pattern.
+func ScanRFIDObservedFilter() string {
+	return SubjectPrefix() + ".*.event.scan.rfid.observed"
+}
+
 // StreamSubjectFilter is the subject pattern the controller's JetStream
 // stream binds to: "<prefix>.*.event.>". Only events live in the stream;
 // commands and heartbeats are core-NATS-only and ride outside this filter.

@@ -1,6 +1,13 @@
 import { api } from '../lib/api'
 import { useSessionStore } from '../stores/session'
-import type { Cart, CartAction, CartLine, CommitResult, ScanResult } from '../types'
+import type {
+  Cart,
+  CartAction,
+  CartLine,
+  CommitResult,
+  RFIDScanResult,
+  ScanResult,
+} from '../types'
 
 // useCart wraps the /api/kiosk/cart/* endpoints. It writes results into the
 // session store so any component (CheckoutView, CartTable, etc.) reacts.
@@ -55,5 +62,21 @@ export function useCart() {
     return result
   }
 
-  return { scanDispatch, start, addItem, updateLine, deleteLine, cancel, commit }
+  // rfidScan triggers one LLRP inventory cycle on the kiosk's reader
+  // (counter_scan mode) and folds matched tags into the active cart.
+  // The server runs the read for its configured window and returns the
+  // resulting cart plus added_lines + observed_epcs + unresolved_epcs;
+  // the caller drives any "Reading…" UI on its own clock since this
+  // promise doesn't resolve until the read window completes server-side.
+  async function rfidScan(): Promise<RFIDScanResult> {
+    if (!session.cart) throw new Error('no active cart')
+    const result = await api.post<RFIDScanResult>(
+      `/api/kiosk/cart/rfid-scan?cart_id=${encodeURIComponent(session.cart.id)}`,
+      {},
+    )
+    if (result.cart) session.setCart(result.cart)
+    return result
+  }
+
+  return { scanDispatch, start, addItem, updateLine, deleteLine, cancel, commit, rfidScan }
 }
