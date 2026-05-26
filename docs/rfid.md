@@ -110,11 +110,6 @@ kiosk on any new port.
 ## Code seams
 
 ```
-internal/llrp/                  vendored from EdgeX, Apache-2.0
-  NOTICE, LICENSE               preserved
-  README.md                     upstream-sync policy (see below)
-  *.go                          unmodified EdgeX internal/llrp
-
 internal/rfid/                  domain wrapper, public to other internal packages
   reader.go                     Reader interface + impinjReader impl
   diff.go                       enclosure_diff pure functions
@@ -145,8 +140,8 @@ ui/src/composables/useCartEvents.ts   new — wraps EventSource
 The `Reader` interface in `internal/rfid` stays small (`Connect`,
 `ReadFor(d) ([]EPC, error)`, `Close`) so handler and command tests can
 mock it cleanly without spinning up an LLRP simulator. The EdgeX
-`internal/llrp` package is an implementation detail of `impinjReader`
-and not exported from `internal/rfid`.
+`llrp.Client` is an implementation detail of `impinjReader` and is not
+re-exported from `internal/rfid`.
 
 ## Schema
 
@@ -251,12 +246,14 @@ tickle keeps the invariant intact.
 
 ## LLRP library
 
-The kiosk uses the LLRP protocol implementation from the EdgeX
-Foundry `device-rfid-llrp-go` service. The relevant code lives under
-`internal/llrp` in that repository, which means it's marked as a
-non-public API by Go convention. We vendor it (copy into our own
-`internal/llrp/`, preserving the upstream `LICENSE` and `NOTICE`)
-rather than try to import it directly.
+The kiosk uses the LLRP protocol implementation from EdgeX Foundry's
+`device-rfid-llrp-go` repository. As of v4, the LLRP package lives at
+`github.com/edgexfoundry/device-rfid-llrp-go/pkg/llrp` — a stable
+public API. We **import it directly**, pinned via `go.mod`:
+
+```
+go get github.com/edgexfoundry/device-rfid-llrp-go/pkg/llrp@v4.0.1
+```
 
 We pick the EdgeX implementation over the available standalone Go
 LLRP libraries because:
@@ -264,14 +261,18 @@ LLRP libraries because:
 - It is actively maintained as part of an LF-backed project.
 - It is explicitly tested against Impinj hardware, including the R700.
 - Apache-2.0 license is friction-free for our use.
-- Treating it as our code (that we can read and modify) is an asset,
-  not a liability, when reader behavior surprises us.
+- The package's production code imports only the Go standard library —
+  EdgeX's enormous device-service transitive dependency tree
+  (mongodb, OpenTelemetry, Zitadel, etc.) belongs to the driver code,
+  not the LLRP package, so importing pulls nothing extra into our
+  go.mod.
 
-The cost is a manual upstream-sync policy, documented in
-`internal/llrp/README.md`: **check the upstream repository on a
-periodic cadence (every six months is fine) and additionally any
-time a bug we suspect lives in the LLRP layer bites in production.**
-We do not auto-track; we cherry-pick fixes when they matter.
+We previously considered vendoring (copying source into our own
+`internal/llrp/`) when the LLRP code was still under EdgeX's
+`internal/` directory. With it now in `pkg/llrp`, importing is the
+simpler, more idiomatic choice. Version pinning in `go.mod` covers
+the "what if upstream breaks us" concern that vendoring would have
+addressed — we bump on our schedule, not theirs.
 
 We do **not** write our own LLRP. The spec is large, binary, and
 unforgiving — reinventing it earns no benefit.
@@ -284,39 +285,51 @@ first.
 
 ### Phase 1 — Foundation
 
-**Scope.** Vendor EdgeX `internal/llrp` into `internal/llrp/`. Write
-the `internal/rfid` wrapper (`Reader` interface, `impinjReader`
-impl, `Config` parsing + validation). Add the `rfid:` block to
-`kiosk.yaml.example`. Wire connection startup/shutdown in
-`cmd/kiosk/main.go` gated on `rfid.enabled`.
+**Scope.** `go get` the EdgeX LLRP package. Write the `internal/rfid`
+wrapper: `Reader` interface (`Connect`, `ReadFor`, `Close`),
+`impinjReader` implementation around `*llrp.Client` covering Connect
+and Close, plus a stub `ReadFor` that returns "not implemented" — the
+LLRP message dance for an inventory cycle lands with Phase 2 where
+the first caller appears. Add the `RFIDConfig` block to
+`internal/config` with env-var overrides and cross-field validation.
+Extend `kiosk.yaml.example` accordingly. Wire reader construction +
+lifecycle in `cmd/kiosk/main.go` gated on `rfid.enabled`. Extend the
+identity payload with `rfid_enabled` and `rfid_mode` so Phase 2's
+frontend gating is ready.
 
 **Behavior change.** None. Code is dormant when the feature flag is
-off; reader connection is attempted on startup when on, but no
-endpoints or commands consume it yet.
+off. When on, the kiosk attempts a reader connection on startup and
+fails soft (warn + continue, like NATS unreachability), but no
+endpoints or commands consume the reader yet.
 
-**Tests.** Unit tests around `internal/rfid` config validation and
-the wrapper's error paths. Optional EdgeX-simulator integration
-test gated on `RFID_SIM=1` env var, mirroring the opt-in pattern PB
-tests use for slower paths. `internal/llrp/README.md` documents the
-upstream-sync policy.
+**Tests.** Config validation (enabled/disabled, mode requirements,
+door_id requirement when `mode=enclosure_diff`, env overrides).
+Wrapper construction from a `RFIDConfig` value. No LLRP-level
+integration tests in this phase — those land with Phase 2's `ReadFor`
+implementation against the EdgeX simulator, gated on an opt-in
+`RFID_SIM=1` env var that mirrors the pattern PB tests already use
+for slower paths.
 
 **Size.** Small.
 
 ### Phase 2 — `counter_scan` end-to-end
 
-**Scope.** New endpoint `POST /api/kiosk/cart/rfid-scan?cart_id=...`.
-Calls `rfid.ReadFor`, loops EPCs through `scan.Resolver`, adds each
-matched instance to the cart via the same write paths
-`cart/add` uses today. Returns the new lines. Publishes
-`event.scan.rfid.observed` after every read. Frontend gets an
-"RFID scan" button on `CheckoutView`, gated on
-`rfid_enabled && rfid_mode === 'counter_scan'` from the identity
-payload. Button shows a brief "Reading… 3s" toast styled like the
-existing cart-complete countdown.
+**Scope.** Implement `impinjReader.ReadFor`: send AddROSpec /
+EnableROSpec, collect ROAccessReport messages for the configured
+window, decode TagReportData EPCs, send DisableROSpec / DeleteROSpec.
+New endpoint `POST /api/kiosk/cart/rfid-scan?cart_id=...` calls
+`rfid.ReadFor`, loops EPCs through `scan.Resolver`, adds each matched
+instance to the cart via the same write paths `cart/add` uses today.
+Returns the new lines. Publishes `event.scan.rfid.observed` after
+every read. Frontend gets an "RFID scan" button on `CheckoutView`,
+gated on `rfid_enabled && rfid_mode === 'counter_scan'` from the
+identity payload. Button shows a brief "Reading… 3s" toast styled
+like the existing cart-complete countdown.
 
 **Tests.** Handler tests with a fake `rfid.Reader`. End-to-end test
 of the scan → resolve → cart-add path against a real PB app per the
-`commit_test.go` pattern.
+`commit_test.go` pattern. `ReadFor` integration tests against the
+EdgeX LLRP simulator, gated on `RFID_SIM=1`.
 
 **Size.** Small-medium.
 
