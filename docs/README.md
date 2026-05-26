@@ -34,9 +34,10 @@ detailed lives here.
   heartbeat/online status, remote inventory commands, NATS provisioning.
 - [Notifications](notifications.md) — receipts, low-stock alerts,
   scheduled digests; standalone vs managed mode dispatch.
-- [RFID](rfid.md) — design doc for the planned RFID integration:
-  USB HID badges, LLRP-driven inventory in two modes (`counter_scan`
-  and `enclosure_diff`), phased rollout plan. Not yet shipped.
+- [RFID](rfid.md) — Impinj R700 / LLRP integration with two
+  operational modes (`counter_scan` and `enclosure_diff`), the SSE
+  cart-events channel, and the `cart.start` / `read.trigger` NATS
+  command pair. USB HID badge readers are also covered.
 
 ## Project status
 

@@ -111,30 +111,43 @@ kiosk on any new port.
 
 ```
 internal/rfid/                  domain wrapper, public to other internal packages
-  reader.go                     Reader interface + impinjReader impl
-  diff.go                       enclosure_diff pure functions
-  config.go                     RFID config block parsing + validation
-  reader_test.go                wrapper tests against EdgeX simulator (opt-in)
+  reader.go                     Reader interface + impinjReader impl + EPC type
+  diff.go                       enclosure_diff pure function
   diff_test.go                  pure-function unit tests, no I/O
+  reader_test.go                wrapper tests; LLRP integration deferred to RFID_SIM=1
+
+internal/cartevents/            tiny SSE-driven pub/sub broker
+  broker.go                     Subscribe / Tickle / Close
+  broker_test.go
 
 internal/handlers/
-  rfid_scan.go                  counter_scan HTTP endpoint
-  cart_events.go                SSE endpoint
+  rfid_scan.go                  counter_scan endpoint + PerformRFIDScan core
+  rfid_read_trigger.go          enclosure_diff PerformReadTrigger core + ReadTrigger HTTP wrapper
+  cart_events.go                SSE endpoint (GET /api/kiosk/cart/events)
+  cart.go                       gains CartGet (GET /api/kiosk/cart) for SSE-driven refetch
 
 internal/commands/
-  cart_start.go                 enclosure_diff cart.start handler
-  read_trigger.go               enclosure_diff read.trigger handler
+  rfid_enclosure.go             cart.start + read.trigger handlers (one file, two methods)
+  dispatcher.go                 gains KioskHandlers field for those handlers to reach in
 
 internal/cart/
-  store.go                      extended with external-keyed lookup
+  store.go                      gains StartByExternal + GetByUserDoor + secondary byUserDoor index
+
+internal/config/
+  config.go                     RFIDConfig block + KIOSK_RFID_* env overrides + cross-field validation
 
 internal/events/
-  subjects.go                   adds ScanRFIDObservedSubject helper
+  subjects.go                   ScanRFIDObservedSubject, CartStartCommandSubject, ReadTriggerCommandSubject
 
-cmd/kiosk/main.go               wires rfid.Reader + new commands when enabled
+cmd/kiosk/main.go               wires rfid.Reader, cart-events broker, enclosure command deps
 
-ui/src/views/CheckoutView.vue   RFID scan button (counter_scan), SSE subscription
-ui/src/composables/useCartEvents.ts   new — wraps EventSource
+ui/src/composables/
+  useCart.ts                    refresh(), rfidScan(), readTrigger()
+  useCartEvents.ts              EventSource wrapper
+
+ui/src/views/CheckoutView.vue   "RFID scan" (counter_scan), "Re-read enclosure" (enclosure_diff),
+                                SSE subscription via useCartEvents
+ui/src/types.ts                 KioskIdentity.rfid_enabled / .rfid_mode, RFIDScanResult, ReadTriggerResult
 ```
 
 The `Reader` interface in `internal/rfid` stays small (`Connect`,
@@ -159,14 +172,12 @@ the kiosk binary behaves exactly as it does today.
 ```yaml
 rfid:
   enabled: false
-  mode: counter_scan        # counter_scan | enclosure_diff
+  mode: ""                  # "counter_scan" | "enclosure_diff" (required when enabled)
   reader:
-    host: 10.0.0.50
+    host: ""                # reader IP / hostname (required when enabled)
     port: 5084              # standard LLRP port
-  read_window: 3s
-  # enclosure_diff only:
-  door_id: ""               # opaque label; part of the cart-start
-                            # idempotency key (user_code, door_id)
+  read_window: "3s"         # how long a single inventory cycle runs
+  door_id: ""               # required when mode=enclosure_diff
 ```
 
 Validation at startup:
@@ -184,11 +195,12 @@ Env-var overrides follow the standard `KIOSK_*` pattern
 (`KIOSK_RFID_ENABLED`, `KIOSK_RFID_MODE`, etc.).
 
 The identity payload served to the SPA grows `rfid_enabled` and
-`rfid_mode` so the frontend gates affordances appropriately. The
-"RFID scan" button on `CheckoutView` shows only when
-`rfid_enabled && rfid_mode === 'counter_scan'`. `enclosure_diff` UI
-doesn't need a different view — same `CheckoutView`, but no button
-since reads are server-driven.
+`rfid_mode` so the frontend gates affordances appropriately.
+`counter_scan` shows an "RFID scan" button on `CheckoutView`;
+`enclosure_diff` shows a "Re-read enclosure" button as a manual
+fallback alongside the primary NATS-driven `read.trigger`. Both
+modes share the 3-second countdown styling; the button is hidden
+entirely when RFID is disabled.
 
 ## NATS subjects
 
@@ -200,8 +212,8 @@ semantics already documented in CLAUDE.md.
 
 | Subject | Payload | Reply |
 |---|---|---|
-| `<prefix>.<code>.command.cart.start` | `{user_code, door_id, command_id}` | `{success, error, data: {cart_id, reused: bool}}` |
-| `<prefix>.<code>.command.read.trigger` | `{cart_id}` *or* `{user_code, door_id}` | `{success, error, data: {observed_epcs, added_lines}}` |
+| `<prefix>.<code>.command.cart.start` | `{user_code, door_id, command_id}` | `{success, error, data: {cart_id, user_code, door_id, reused}}` |
+| `<prefix>.<code>.command.read.trigger` | `{cart_id}` *or* `{user_code, door_id}` (+ optional `command_id`) | `{success, error, data: {cart, added_lines, observed_epcs, unresolved_epcs, skipped_cross_user_count}}` |
 
 Both commands MUST reply within the 5 s window even on error —
 silence renders "kiosk offline" at the caller.
@@ -210,7 +222,7 @@ silence renders "kiosk offline" at the caller.
 
 | Subject | When | Payload |
 |---|---|---|
-| `<prefix>.<code>.event.scan.rfid.observed` | After every completed read in either mode | `{cart_id, mode, observed_epcs, read_duration_ms}` |
+| `<prefix>.<code>.event.scan.rfid.observed` | After every completed read in either mode | `{kiosk_code, location_code, cart_id, door_id, mode, observed_epcs, observed_at}` |
 
 The observed-EPCs event is cheap observability — it gives the
 controller (or any downstream consumer) a stream of "what tags have
@@ -226,17 +238,24 @@ SPA-initiated" assumption — NATS-driven cart starts and reads happen
 without the SPA's knowledge. A small SSE endpoint covers it:
 
 - `GET /api/kiosk/cart/events?cart_id=...` streams `cart.updated`
-  tickles. Plain `text/event-stream` over Echo's response writer.
-- Server-side broadcaster shared by every cart write path
-  (add/update/foreman-return/rfid-scan/commit/abandon/diff). One
-  channel per active cart; closes when the cart commits or expires.
-- SPA opens the connection when `CheckoutView` mounts, refetches cart
-  state via the existing GET on every tickle, drops the subscription
-  on unmount. Plain `EventSource` — no library.
+  and `cart.gone` tickles. Plain `text/event-stream`; 15-second SSE
+  comment heartbeats keep idle proxies from closing the connection.
+- `GET /api/kiosk/cart?cart_id=...` is the matching refetch endpoint
+  the SPA hits on every tickle.
+- Broker is `internal/cartevents`: `Subscribe(cartID) → (chan, unsub)`,
+  `Tickle(cartID)`, `Close(cartID)`. Drop-on-full per-subscriber
+  buffering so a slow client never backs up a hot write path.
+- Tickle fires from every cart write path (CartAdd, CartUpdateLine,
+  CartDeleteLine, CartForemanReturn, PerformRFIDScan,
+  PerformReadTrigger) — exactly once per HTTP/NATS call, not once
+  per cart line. Close fires from CartCommit and CartCancel.
+- SPA opens the EventSource when `CheckoutView`'s cart_id becomes
+  non-null, refetches via the GET endpoint on every tickle, drops
+  the subscription on unmount or on `cart.gone`. Plain
+  `EventSource` — no library.
 - `counter_scan` also fires the tickle even though the button press
-  is local; this keeps the broadcaster uniform and supports any
-  future "spectator" client (e.g., a controller-side
-  watch-this-kiosk view).
+  is local; this keeps the broker uniform and supports any future
+  "spectator" client (e.g., a controller-side watch-this-kiosk view).
 
 The cart stays in-memory. Persisting it to PocketBase to leverage
 PB realtime would solve the delivery problem but cost the in-memory
@@ -252,8 +271,18 @@ The kiosk uses the LLRP protocol implementation from EdgeX Foundry's
 public API. We **import it directly**, pinned via `go.mod`:
 
 ```
-go get github.com/edgexfoundry/device-rfid-llrp-go/pkg/llrp@v4.0.1
+go get github.com/edgexfoundry/device-rfid-llrp-go/pkg/llrp@main
 ```
+
+Note the `@main` pseudo-version rather than a clean semver tag.
+EdgeX's `v4.x` tags exist but are unreachable to Go's module system
+because their `go.mod` declares `module
+github.com/edgexfoundry/device-rfid-llrp-go` without the `/v4`
+major-version suffix Go semver-major requires. The proxy serves only
+the older `v1` tags (which predate the move from `internal/llrp` to
+`pkg/llrp`). Pinning at `@main` resolves to a `v1.0.1-0.<timestamp>-<sha>`
+pseudo-version that Go is happy with. If EdgeX ever ships a release
+that fixes the module path, bump to that tagged version.
 
 We pick the EdgeX implementation over the available standalone Go
 LLRP libraries because:
@@ -403,7 +432,7 @@ SSE channel. Verify `docs/rfid.md` matches what actually shipped.
 
 ## Testing strategy
 
-The EdgeX `internal/llrp` package is itself well-tested upstream; the
+The EdgeX `pkg/llrp` package is itself well-tested upstream; the
 integration risk lives in our wrapper and in the diff. Both are
 designed to be testable without hardware:
 

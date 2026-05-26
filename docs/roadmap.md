@@ -131,6 +131,27 @@ These started as deferred roadmap items and are now live in the binary:
   serialized-instance scan as a one-step shortcut. The dialog is the
   sole writer of `Line.original_checkout_user_id`; the commit-time
   foreman+same-group gate stays as the trust boundary.
+- **RFID integration (Impinj R700 / LLRP).** Two modes share one
+  `*llrp.Client` wrapped in `internal/rfid` (imported from EdgeX
+  `device-rfid-llrp-go/pkg/llrp`, pinned at a `@main`
+  pseudo-version). **counter_scan** runs an operator-driven 3-5 s
+  inventory cycle from a button on `CheckoutView` and folds each
+  observed tag into the cart through the existing add path
+  (`POST /api/kiosk/cart/rfid-scan`). **enclosure_diff** is
+  NATS-orchestrated: external access-control fires `cart.start`
+  with `{user_code, door_id}` (idempotent on a secondary cart-store
+  index keyed by that pair), then a camera/occupancy system fires
+  `read.trigger`; the kiosk runs a pure diff against expected-present
+  state via `rfid.Diff` and synthesizes self-return / checkout cart
+  lines. Cross-user returns are skip-and-counted (the commit-time
+  foreman gate would reject them anyway). Every read publishes
+  `event.scan.rfid.observed` for downstream audit. A small SSE
+  channel (`GET /api/kiosk/cart/events`) lets the SPA refetch on any
+  cart write — the same broker absorbs both modes plus the existing
+  HTTP write paths. Trust boundary stays 127.0.0.1; external systems
+  only reach the kiosk via NATS (per-subject ACLs gate them). USB
+  HID badge readers are unchanged — they emit keyboard events and
+  resolve through the existing `scan.Resolver`. See [RFID](rfid.md).
 
 ## Roadmap
 
@@ -160,11 +181,5 @@ subjects are in place to make them additive rather than rewrites.
 - **Tighten PB collection rules in managed mode.** UI gating is the
   v1 story; a follow-up could lock the collection rules themselves
   so a determined admin poking PB directly can't drift the catalog.
-- **RFID reader integration.** Hardware on the way (Impinj R700).
-  Design locked: LLRP vendored from EdgeX, two modes
-  (`counter_scan` and `enclosure_diff`), NATS-orchestrated cart
-  state machine in Mode B, in-process diff against `item_instances`.
-  Phased five-phase rollout plan. See [RFID](rfid.md).
-
 Each of these can be evaluated on demand. None should be built until
 there is a concrete user asking for it.

@@ -170,10 +170,15 @@ Three invariants:
    `event.instance.lifecycle` payload carries `source_audit_id` (the
    kiosk-side `instance_audit.id`) so the controller's projection is
    idempotent under redelivery — same anchor strategy as
-   `event.inventory.adjust`'s `adjustment_id`. The prefix is `"kiosk"` by
-   default and configurable via `nats.subject_prefix`; subjects are built
-   through shared helpers in `internal/events/subjects.go` (single source
-   of truth for both the kiosk publisher and the controller's
+   `event.inventory.adjust`'s `adjustment_id`.
+   `<prefix>.<kiosk_code>.event.scan.rfid.observed` fires after every
+   LLRP inventory cycle in either RFID mode and carries the full
+   deduplicated EPC array (the read-window observability stream —
+   no projector consumes it today; reserved for future drift
+   detection and analytics). The prefix is `"kiosk"` by default and
+   configurable via `nats.subject_prefix`; subjects are built through
+   shared helpers in `internal/events/subjects.go` (single source of
+   truth for both the kiosk publisher and the controller's
    stream/consumer filters) — don't re-string-format these at callsites.
 
    The other two families:
@@ -185,6 +190,15 @@ Three invariants:
      `events.CommandSubject` / `events.CommandSubscribePattern`). Request/
      reply, single attempt, ≤5 s reply timeout. The kiosk's dispatcher
      replies on `msg.Reply` with a `{success, error, data}` envelope.
+     Built-ins today: `inventory.adjust`, `inventory.snapshot`,
+     `checkout.close`, the `instance.*` family
+     (`create`/`edit`/`decommission`/`reactivate`/`snapshot`),
+     `integrity.rebuild`, `ledger.republish`, and the RFID
+     enclosure_diff pair `cart.start` + `read.trigger`. The
+     enclosure_diff handlers reach the cart store / SSE broker /
+     reader through `Dispatcher.KioskHandlers`, set in
+     `cmd/kiosk/main.go` after both `*handlers.Handlers` and the
+     dispatcher exist.
 
    Adding a new event = put it under `event.` and the stream picks it up
    automatically. Adding anything that needs synchronous request/reply or
@@ -206,6 +220,36 @@ and vanish on process restart. A kiosk has at most one active user at a time,
 so contention is nil. Don't add concurrency primitives optimizing for it. The
 HTTP handler accepts a `cart_id` from the client and dispatches against this
 store; commit drops the cart after successfully promoting to a transaction.
+A secondary `byUserDoor` index maps `(user_code, door_id) → *Cart` for the
+RFID `enclosure_diff` flow's `cart.start` idempotency — only populated by
+`Store.StartByExternal`; counter_scan and badge-driven carts don't touch it.
+
+**Cart state changes notify subscribers via SSE.** `internal/cartevents`
+is a tiny per-cart pub/sub broker: Subscribe/Tickle/Close keyed by
+`cart_id`. Every cart write path (CartAdd, CartUpdateLine, CartDeleteLine,
+CartForemanReturn, RFIDScan, PerformReadTrigger) calls `h.CartEvents.Tickle`
+exactly once at the end; CartCommit and CartCancel call `Close`. The
+SPA opens an EventSource on `GET /api/kiosk/cart/events?cart_id=…`,
+listens for `cart.updated` / `cart.gone`, and refetches via
+`GET /api/kiosk/cart` on every tickle — "push the signal, pull the
+data." This exists so server-driven writes (RFID's NATS-orchestrated
+`cart.start` / `read.trigger`, future controller-side cart writes,
+spectator clients) can keep the SPA in sync without polling. The
+shared `addCodeToCart` helper deliberately does NOT tickle — RFIDScan
+calls it in a loop and we want one tickle per HTTP write, not N.
+
+**RFID lives in `internal/rfid`.** Two modes share one LLRP client
+(EdgeX `device-rfid-llrp-go/pkg/llrp`, imported at a `@main`
+pseudo-version because EdgeX's v4 tags are unreachable to Go's
+module system). `counter_scan` is button-driven; `enclosure_diff`
+is NATS-driven via the `cart.start` and `read.trigger` commands
+above. `internal/rfid/diff.go` is a pure function reconciling
+observed EPCs against expected-present state (active serialized
+instances + open_checkouts) — no I/O, no kiosk state, exhaustively
+table-tested. The cross-user-return policy in enclosure_diff is
+"skip and count" rather than synthesize (the commit-time foreman
+gate would reject the line anyway); the count surfaces in the SPA
+toast. See [RFID](docs/rfid.md) for the full design.
 
 **Action defaulting is in the handler, not commit.** When a worker scans an
 item, `handlers.defaultActionFor` (in `internal/handlers/cart.go`) picks the
