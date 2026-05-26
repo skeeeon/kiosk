@@ -48,7 +48,14 @@ type Cart struct {
 	// The server re-reads role from the DB at commit and at the
 	// foreman-return endpoint, so a stale snapshot here is at worst a UI
 	// hint that fails late, never an auth bypass.
-	UserRole  string    `json:"user_role"`
+	UserRole string `json:"user_role"`
+	// DoorID is non-empty when the cart was started via the
+	// enclosure_diff path (an external access-control event firing
+	// cart.start). Combined with UserCode it forms the secondary
+	// index that makes cart.start idempotent — re-fires within the
+	// idle window return the existing cart rather than creating a
+	// new one. Empty on counter_scan / badge-driven carts.
+	DoorID    string    `json:"door_id,omitempty"`
 	StartedAt time.Time `json:"started_at"`
 	ExpiresAt time.Time `json:"expires_at"`
 	Lines     []*Line   `json:"lines"`
@@ -86,6 +93,13 @@ type Store struct {
 	idleTimeout time.Duration
 	now         func() time.Time // injectable for tests
 	carts       map[string]*Cart
+	// byUserDoor is the secondary index that makes cart.start
+	// idempotent for the enclosure_diff path. Key:
+	// userDoorKey(userCode, doorID). Only populated for carts
+	// started via StartByExternal; the regular Start path doesn't
+	// touch it because counter_scan carts have no door identity.
+	// Cleaned up in Delete and on lazy expiry through Get.
+	byUserDoor map[string]*Cart
 }
 
 func NewStore(idleTimeout time.Duration) *Store {
@@ -93,7 +107,15 @@ func NewStore(idleTimeout time.Duration) *Store {
 		idleTimeout: idleTimeout,
 		now:         time.Now,
 		carts:       make(map[string]*Cart),
+		byUserDoor:  make(map[string]*Cart),
 	}
+}
+
+// userDoorKey is the secondary-index key. NUL byte as a separator
+// would collide with neither a valid user code nor a door ID
+// (both come from operator-managed config).
+func userDoorKey(userCode, doorID string) string {
+	return userCode + "\x00" + doorID
 }
 
 // Start returns the user's existing non-expired cart if one exists; otherwise
@@ -107,7 +129,7 @@ func (s *Store) Start(userID, userCode, userName, userRole string) *Cart {
 	now := s.now()
 	for id, c := range s.carts {
 		if now.After(c.ExpiresAt) {
-			delete(s.carts, id)
+			s.removeLocked(id)
 			continue
 		}
 		if c.UserID == userID {
@@ -129,6 +151,75 @@ func (s *Store) Start(userID, userCode, userName, userRole string) *Cart {
 	}
 	s.carts[c.ID] = c
 	return c
+}
+
+// StartByExternal is the enclosure_diff path's cart-start entry. The
+// access-control system fires a cart.start NATS command carrying
+// (user_code, door_id); we look up an existing cart for that key and
+// return it (refreshing the role snapshot like Start does), or
+// create a new one stamped with the door_id and indexed both ways.
+//
+// Idempotency: repeat fires within the idle window collapse to the
+// same cart. After commit / cancel / expiry, the next call creates a
+// fresh cart. The (userCode, doorID) key — not the cart_id — is the
+// dedup contract callers rely on, since the access-control system
+// has no way to learn the cart_id we generated on the first fire.
+//
+// `reused` tells the caller whether this was a hit or a miss in the
+// secondary index, which they can surface to NATS callers as
+// command.cart.start's `{reused: bool}`.
+func (s *Store) StartByExternal(userID, userCode, userName, userRole, doorID string) (cart *Cart, reused bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := s.now()
+	key := userDoorKey(userCode, doorID)
+	if existing, ok := s.byUserDoor[key]; ok {
+		if now.After(existing.ExpiresAt) {
+			s.removeLocked(existing.ID)
+		} else {
+			// Existing cart for this (user, door) within the window —
+			// idempotent. Refresh role + expiry the same way Start
+			// resume does so a role change between fires is picked up.
+			existing.UserRole = userRole
+			existing.ExpiresAt = now.Add(s.idleTimeout)
+			return existing, true
+		}
+	}
+
+	c := &Cart{
+		ID:        newID(),
+		UserID:    userID,
+		UserCode:  userCode,
+		UserName:  userName,
+		UserRole:  userRole,
+		DoorID:    doorID,
+		StartedAt: now,
+		ExpiresAt: now.Add(s.idleTimeout),
+		Lines:     []*Line{},
+	}
+	s.carts[c.ID] = c
+	s.byUserDoor[key] = c
+	return c, false
+}
+
+// GetByUserDoor returns the active cart for an (userCode, doorID)
+// key, or ErrNotFound. The read.trigger command uses this when the
+// caller doesn't carry the cart_id from the original cart.start
+// reply — e.g. a camera/occupancy system that only knows which door
+// fired.
+func (s *Store) GetByUserDoor(userCode, doorID string) (*Cart, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.byUserDoor[userDoorKey(userCode, doorID)]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	if s.now().After(c.ExpiresAt) {
+		s.removeLocked(c.ID)
+		return nil, ErrNotFound
+	}
+	return c, nil
 }
 
 func (s *Store) Get(cartID string) (*Cart, error) {
@@ -251,7 +342,7 @@ func (s *Store) Delete(cartID string) error {
 	if _, ok := s.carts[cartID]; !ok {
 		return ErrNotFound
 	}
-	delete(s.carts, cartID)
+	s.removeLocked(cartID)
 	return nil
 }
 
@@ -261,10 +352,29 @@ func (s *Store) getLocked(cartID string) (*Cart, error) {
 		return nil, ErrNotFound
 	}
 	if s.now().After(c.ExpiresAt) {
-		delete(s.carts, cartID)
+		s.removeLocked(cartID)
 		return nil, ErrNotFound
 	}
 	return c, nil
+}
+
+// removeLocked drops a cart from both the primary and secondary
+// indexes. Centralized so the lazy-expiry path in getLocked,
+// StartByExternal's re-fire-after-expiry path, and explicit Delete
+// stay in sync. Caller holds s.mu.
+func (s *Store) removeLocked(cartID string) {
+	c, ok := s.carts[cartID]
+	if !ok {
+		return
+	}
+	delete(s.carts, cartID)
+	if c.UserCode != "" && c.DoorID != "" {
+		// Only StartByExternal-created carts have a populated DoorID,
+		// so the secondary index only ever holds those. UserCode is
+		// part of the key; we check it defensively in case of a
+		// future refactor that strips it.
+		delete(s.byUserDoor, userDoorKey(c.UserCode, c.DoorID))
+	}
 }
 
 func (s *Store) findLineLocked(lineID string) (*Cart, *Line) {

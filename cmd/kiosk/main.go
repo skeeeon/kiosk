@@ -101,7 +101,10 @@ func main() {
 	// Command bus + heartbeat: best-effort, NATS-only. Kiosks without NATS
 	// boot and serve local checkouts normally; only remote admin from the
 	// controller and the fleet-liveness indicator depend on this wiring.
-	var commandSub interface{ Unsubscribe() error }
+	var (
+		commandSub interface{ Unsubscribe() error }
+		disp       *commands.Dispatcher // captured here so we can set KioskHandlers below
+	)
 	heartbeatCtx, heartbeatCancel := context.WithCancel(context.Background())
 	if pub != nil && cfg.NATS.Enabled {
 		nc, err := events.Conn(pub)
@@ -113,7 +116,7 @@ func main() {
 			// but the dispatcher won't subscribe without a code.
 			log.Printf("commands/heartbeat: kiosk.code is empty — skipping")
 		default:
-			disp := commands.NewDispatcher(app, cfg.Kiosk.Code)
+			disp = commands.NewDispatcher(app, cfg.Kiosk.Code)
 			app.OnServe().BindFunc(func(e *core.ServeEvent) error {
 				sub, err := disp.Register(nc)
 				if err != nil {
@@ -155,6 +158,15 @@ func main() {
 	carts := cart.NewStore(cfg.Session.IdleTimeout.AsDuration())
 	notifier := notifications.New(app)
 	h := handlers.New(app, cfg, carts, notifier)
+
+	// Phase-4 enclosure_diff commands (cart.start, read.trigger) reach
+	// into the cart store and SSE broker via KioskHandlers. Set it
+	// here, after h exists; safe to do unconditionally (no command
+	// has fired yet — subscription happens via OnServe below) and
+	// nil-safe for builds without NATS.
+	if disp != nil {
+		disp.KioskHandlers = h
+	}
 
 	// RFID reader. Constructed here so h.RFID can be set from inside
 	// the OnServe Connect hook. A failed Connect at startup leaves
@@ -242,6 +254,7 @@ func main() {
 		e.Router.POST("/api/kiosk/cart/cancel", h.CartCancel)
 		e.Router.POST("/api/kiosk/cart/commit", h.CartCommit)
 		e.Router.POST("/api/kiosk/cart/rfid-scan", h.RFIDScan)
+		e.Router.POST("/api/kiosk/cart/read-trigger", h.ReadTrigger)
 		e.Router.GET("/api/kiosk/integrity", h.Integrity)
 		e.Router.POST("/api/kiosk/integrity/rebuild", h.RebuildOpenCheckouts)
 		e.Router.GET("/api/kiosk/reports/open-checkouts", h.ReportOpenCheckouts)

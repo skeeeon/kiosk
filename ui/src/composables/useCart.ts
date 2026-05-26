@@ -5,6 +5,7 @@ import type {
   CartAction,
   CartLine,
   CommitResult,
+  ReadTriggerResult,
   RFIDScanResult,
   ScanResult,
 } from '../types'
@@ -94,5 +95,23 @@ export function useCart() {
     return result
   }
 
-  return { scanDispatch, start, refresh, addItem, updateLine, deleteLine, cancel, commit, rfidScan }
+  // readTrigger is the enclosure_diff counterpart to rfidScan: same
+  // window, but the server diffs observed against expected-present
+  // instead of treating every tag as an add. Used by the "Re-read"
+  // button on the outside-enclosure screen when the operator wants
+  // to re-scan after going back into the enclosure for an extra
+  // item. The NATS-driven primary trigger is the camera/occupancy
+  // system's read.trigger command — this HTTP wrapper just exists
+  // for the manual button.
+  async function readTrigger(): Promise<ReadTriggerResult> {
+    if (!session.cart) throw new Error('no active cart')
+    const result = await api.post<ReadTriggerResult>(
+      `/api/kiosk/cart/read-trigger?cart_id=${encodeURIComponent(session.cart.id)}`,
+      {},
+    )
+    if (result.cart) session.setCart(result.cart)
+    return result
+  }
+
+  return { scanDispatch, start, refresh, addItem, updateLine, deleteLine, cancel, commit, rfidScan, readTrigger }
 }

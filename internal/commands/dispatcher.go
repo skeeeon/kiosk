@@ -24,6 +24,7 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 
 	"github.com/skeeeon/kiosk/internal/events"
+	"github.com/skeeeon/kiosk/internal/handlers"
 )
 
 // Reply is the canonical envelope every command handler returns. Encoded to
@@ -41,6 +42,14 @@ type Handler func(ctx context.Context, payload []byte) Reply
 
 // Dispatcher owns the NATS subscription and the routing table. One instance
 // per kiosk process.
+//
+// Most commands only need core.App for DB reads and the existing handlers
+// package's free functions (PerformStockAdjustment etc.). Phase 4's
+// enclosure_diff commands need the cart store, the SSE broker, and the
+// LLRP reader — all of which live on *handlers.Handlers. Rather than
+// thread a half-dozen pointers through NewDispatcher's signature, we
+// expose KioskHandlers as a field set after construction. Commands that
+// need it nil-check; counter_scan and inventory commands never touch it.
 type Dispatcher struct {
 	app       core.App
 	kioskCode string
@@ -51,6 +60,13 @@ type Dispatcher struct {
 	// "kiosk.K01.command.". Cached at construction so subjectSuffix is a
 	// single TrimPrefix with no allocation per message.
 	prefix string
+
+	// KioskHandlers carries dependencies (cart store, RFID reader,
+	// SSE broker) that Phase-4 enclosure_diff commands reach into.
+	// Optional: nil-safe for legacy callers and tests that wire only
+	// inventory/instance commands. cmd/kiosk/main.go sets it after
+	// constructing both the dispatcher and the handlers.
+	KioskHandlers *handlers.Handlers
 }
 
 // NewDispatcher constructs a dispatcher with the built-in command handlers
@@ -74,6 +90,8 @@ func NewDispatcher(app core.App, kioskCode string) *Dispatcher {
 	d.handlers["instance.snapshot"] = d.handleInstanceSnapshot
 	d.handlers["integrity.rebuild"] = d.handleIntegrityRebuild
 	d.handlers["ledger.republish"] = d.handleLedgerRepublish
+	d.handlers["cart.start"] = d.handleCartStart
+	d.handlers["read.trigger"] = d.handleReadTrigger
 	return d
 }
 

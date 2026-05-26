@@ -369,9 +369,22 @@ exhaustive unit tests cover every observed/expected combination.
 Stray observed EPCs that don't resolve are logged at warn level and
 dropped, never affecting the cart.
 
+**Cross-user returns: skip + count.** When the diff sees a returned
+tag whose `open_checkouts` row belongs to a worker other than the
+cart user, we skip the line and increment `SkippedCrossUserCount`
+in the response. The commit-time foreman+same-group gate would
+reject such a line anyway, so synthesizing it would just produce a
+cart the worker can't commit. The count surfaces in the SPA toast
+("3 cart lines from 5 observed (1 skipped — held by another
+worker)") so the operator sees the read wasn't a black hole. If
+real demand for cross-user enclosure returns emerges later, the
+right pattern is probably a foreman-only mode toggle, parallel to
+the existing `CartForemanReturn` dialog — not silent acceptance.
+
 The outside-enclosure screen is the existing `CheckoutView`. The
-manual "trigger another read" button calls the same `read.trigger`
-logic over HTTP for parity with the NATS-driven path.
+manual "Re-read enclosure" button calls the same `read.trigger`
+logic over HTTP (`POST /api/kiosk/cart/read-trigger?cart_id=…`) for
+parity with the NATS-driven path.
 
 **Tests.** Diff function tests (exhaustive). Command handler tests
 with a fake `rfid.Reader` and a real PB app. Idempotency test for

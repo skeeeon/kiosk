@@ -164,6 +164,20 @@ export interface RFIDScanResult {
   unresolved_epcs: string[]
 }
 
+// ReadTriggerResult is the response from POST /api/kiosk/cart/read-trigger
+// (enclosure_diff mode). Mirrors RFIDScanResult but with an additional
+// skipped_cross_user_count: a returned tag whose open_checkout belongs
+// to a different worker is skipped (and counted) since the
+// commit-time foreman+same-group gate would have rejected it anyway —
+// surfacing the count to the operator instead of silently dropping.
+export interface ReadTriggerResult {
+  cart: Cart
+  added_lines: CartLine[]
+  observed_epcs: string[]
+  unresolved_epcs: string[]
+  skipped_cross_user_count: number
+}
+
 // Admin-side records mirror what we persist in PocketBase. These are looser
 // than the kiosk DTOs because admin CRUD must handle partial records during
 // create/edit and PB returns extra fields (created, updated, collectionId).

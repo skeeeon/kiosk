@@ -245,6 +245,19 @@ func InstanceSnapshotCommandSubject(kioskCode string) string {
 	return CommandSubject(kioskCode, "instance.snapshot")
 }
 
+// RFID enclosure_diff command subjects. cart.start is the external
+// trigger (access-control system fires it when a worker badges into
+// the enclosure door); read.trigger is the external read trigger
+// (camera/occupancy system fires it when the door closes). Both are
+// dispatched on the kiosk side by the standard Dispatcher.
+func CartStartCommandSubject(kioskCode string) string {
+	return CommandSubject(kioskCode, "cart.start")
+}
+
+func ReadTriggerCommandSubject(kioskCode string) string {
+	return CommandSubject(kioskCode, "read.trigger")
+}
+
 // Maintenance command subjects. integrity.rebuild wipes + repopulates the
 // kiosk's open_checkouts from its own ledger; ledger.republish re-emits
 // every completed transaction's events (optionally clipped to a window)

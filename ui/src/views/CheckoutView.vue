@@ -199,12 +199,18 @@ useCartEvents(activeCartId, {
   },
 })
 
-// RFID-scan affordance is gated on counter_scan mode. enclosure_diff
-// reads are NATS-command-driven and the operator stands outside —
-// there's no button there. The button stays out of the DOM entirely
-// when the reader isn't configured.
-const rfidButtonVisible = computed(
+// Two RFID button modes, mutually exclusive on the cart toolbar:
+//   - counter_scan: "RFID scan" — operator-initiated read that folds
+//     observed tags into the cart (one tag = one cart line).
+//   - enclosure_diff: "Re-read" — operator manually re-triggers the
+//     diff path that the NATS-driven read.trigger normally fires
+//     when door-occupancy ends. Same backend window, same countdown
+//     style, different semantics (diff vs scan).
+const rfidScanButtonVisible = computed(
   () => identity.value?.rfid_enabled && identity.value?.rfid_mode === 'counter_scan',
+)
+const rfidReReadButtonVisible = computed(
+  () => identity.value?.rfid_enabled && identity.value?.rfid_mode === 'enclosure_diff',
 )
 
 // rfidReadWindowMs is what we draw the "Reading… 3s" countdown over.
@@ -252,6 +258,50 @@ async function onRFIDScan() {
     }
   } catch (e) {
     handleApiError(e, 'RFID scan')
+  } finally {
+    if (rfidTickHandle) {
+      clearInterval(rfidTickHandle)
+      rfidTickHandle = null
+    }
+    rfidScanning.value = false
+    rfidProgress.value = 0
+  }
+}
+
+// onReReadEnclosure is the enclosure_diff variant. Same countdown
+// state (only one read can be in flight at a time per kiosk), but
+// the toast summarizes diff outcomes rather than per-tag adds —
+// checkouts/returns derived from the observed vs expected state,
+// plus the skipped-cross-user count if any tags belonged to another
+// worker.
+async function onReReadEnclosure() {
+  if (!cart.value || rfidScanning.value) return
+  rfidScanning.value = true
+  rfidProgress.value = 0
+  const startedAt = Date.now()
+  rfidTickHandle = setInterval(() => {
+    const elapsed = Date.now() - startedAt
+    rfidProgress.value = Math.min(1, elapsed / RFID_READ_WINDOW_MS)
+  }, 50)
+  try {
+    const result = await c.readTrigger()
+    const added = result.added_lines.length
+    const observed = result.observed_epcs.length
+    const skipped = result.skipped_cross_user_count
+    if (added > 0) {
+      let msg = `Diff: ${added} cart line${added === 1 ? '' : 's'} from ${observed} observed`
+      if (skipped > 0) {
+        msg += ` (${skipped} skipped — held by another worker)`
+      }
+      toast.success(msg, TOP)
+    } else if (observed > 0) {
+      const skippedSuffix = skipped > 0 ? ` (${skipped} held by another worker)` : ''
+      toast.warn(`Observed ${observed} tag${observed === 1 ? '' : 's'} — no diff changes${skippedSuffix}`, TOP)
+    } else {
+      toast.warn('No tags observed in the enclosure', TOP)
+    }
+  } catch (e) {
+    handleApiError(e, 'Re-read')
   } finally {
     if (rfidTickHandle) {
       clearInterval(rfidTickHandle)
@@ -683,7 +733,7 @@ const crossUserSummary = computed(() =>
         Browse items
       </button>
       <button
-        v-if="rfidButtonVisible"
+        v-if="rfidScanButtonVisible"
         type="button"
         class="relative overflow-hidden px-6 py-4 rounded-xl bg-sky-700/80 hover:bg-sky-700 disabled:bg-slate-700 disabled:text-slate-500 text-white text-lg"
         :disabled="rfidScanning"
@@ -700,6 +750,21 @@ const crossUserSummary = computed(() =>
         ></span>
         <template v-if="rfidScanning">Reading… {{ Math.max(0, Math.ceil((1 - rfidProgress) * (RFID_READ_WINDOW_MS / 1000))) }}s</template>
         <template v-else>RFID scan</template>
+      </button>
+      <button
+        v-if="rfidReReadButtonVisible"
+        type="button"
+        class="relative overflow-hidden px-6 py-4 rounded-xl bg-sky-700/80 hover:bg-sky-700 disabled:bg-slate-700 disabled:text-slate-500 text-white text-lg"
+        :disabled="rfidScanning"
+        @click="onReReadEnclosure"
+      >
+        <span
+          v-if="rfidScanning"
+          class="absolute left-0 top-0 h-1 bg-sky-300/80 transition-[width] duration-100"
+          :style="{ width: `${rfidProgress * 100}%` }"
+        ></span>
+        <template v-if="rfidScanning">Reading… {{ Math.max(0, Math.ceil((1 - rfidProgress) * (RFID_READ_WINDOW_MS / 1000))) }}s</template>
+        <template v-else>Re-read enclosure</template>
       </button>
       <button
         v-if="isForeman"
