@@ -8,6 +8,7 @@ import ConfirmDialog from '../components/ConfirmDialog.vue'
 import ForemanReturnDialog from '../components/ForemanReturnDialog.vue'
 import IdentifyPanel from '../components/IdentifyPanel.vue'
 import { useCart } from '../composables/useCart'
+import { useCartEvents } from '../composables/useCartEvents'
 import { useKioskIdentity } from '../composables/useKioskIdentity'
 import { useSessionStore } from '../stores/session'
 import { useToast } from '../composables/useToast'
@@ -176,6 +177,27 @@ const crossUserLines = computed<CartLine[]>(() => {
 })
 
 const isForeman = computed(() => cart.value?.user_role === 'foreman')
+
+// SSE subscription: while a cart is active we listen for server-side
+// tickles (other writers, RFID reads from inside the same kiosk in
+// future multi-window scenarios, Phase 4's NATS-driven cart.start /
+// read.trigger commands in enclosure_diff). On every tickle we
+// refetch via GET cart so the store always reflects the latest
+// canonical state — "push the signal, pull the data."
+const activeCartId = computed(() => cart.value?.id ?? null)
+useCartEvents(activeCartId, {
+  onUpdated: () => {
+    void c.refresh()
+  },
+  onGone: () => {
+    // Server told us the cart is committed/cancelled. The corresponding
+    // local flow (onCommit / onCancel) already cleared session.cart, so
+    // this is a defensive sync for the case where another writer
+    // (a controller-driven admin close in future, an idle timeout we
+    // surface later) terminated the cart out from under us.
+    session.setCart(null)
+  },
+})
 
 // RFID-scan affordance is gated on counter_scan mode. enclosure_diff
 // reads are NATS-command-driven and the operator stands outside —

@@ -10,6 +10,7 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 
 	"github.com/skeeeon/kiosk/internal/cart"
+	"github.com/skeeeon/kiosk/internal/cartevents"
 	"github.com/skeeeon/kiosk/internal/config"
 	"github.com/skeeeon/kiosk/internal/notifications"
 	"github.com/skeeeon/kiosk/internal/rfid"
@@ -21,6 +22,10 @@ type Handlers struct {
 	Cfg      *config.Config
 	Carts    *cart.Store
 	Notifier *notifications.Notifier
+	// CartEvents is the SSE broker. Always non-nil — constructed
+	// alongside Handlers in main.go so write paths can call Tickle /
+	// Close unconditionally without a nil check.
+	CartEvents *cartevents.Broker
 	// RFID is the optional LLRP reader wrapper. nil when rfid.enabled
 	// is false or when the startup connection failed — the RFID
 	// handler short-circuits with 503 in that case. Production wiring
@@ -30,7 +35,13 @@ type Handlers struct {
 }
 
 func New(app core.App, cfg *config.Config, carts *cart.Store, notifier *notifications.Notifier) *Handlers {
-	return &Handlers{App: app, Cfg: cfg, Carts: carts, Notifier: notifier}
+	return &Handlers{
+		App:        app,
+		Cfg:        cfg,
+		Carts:      carts,
+		Notifier:   notifier,
+		CartEvents: cartevents.NewBroker(),
+	}
 }
 
 // requireAdmin enforces that the request carries a valid token for the

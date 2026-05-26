@@ -237,6 +237,8 @@ func main() {
 		e.Router.POST("/api/kiosk/cart/foreman-return", h.CartForemanReturn)
 		e.Router.PATCH("/api/kiosk/cart/lines/{id}", h.CartUpdateLine)
 		e.Router.DELETE("/api/kiosk/cart/lines/{id}", h.CartDeleteLine)
+		e.Router.GET("/api/kiosk/cart", h.CartGet)
+		e.Router.GET("/api/kiosk/cart/events", h.CartEventsStream)
 		e.Router.POST("/api/kiosk/cart/cancel", h.CartCancel)
 		e.Router.POST("/api/kiosk/cart/commit", h.CartCommit)
 		e.Router.POST("/api/kiosk/cart/rfid-scan", h.RFIDScan)

@@ -17,6 +17,24 @@ import (
 	"github.com/skeeeon/kiosk/internal/scan"
 )
 
+// CartGet returns the current state of a cart by id. Used by the SPA
+// to refetch state after an SSE tickle from /api/kiosk/cart/events —
+// "push the signal, pull the data." Returns 404 when the cart has
+// expired or been committed/cancelled. The response shape matches the
+// {cart} envelope every other cart endpoint returns so the existing
+// Pinia store path consumes it without a branch.
+func (h *Handlers) CartGet(re *core.RequestEvent) error {
+	cartID := re.Request.URL.Query().Get("cart_id")
+	if cartID == "" {
+		return re.BadRequestError("cart_id is required", nil)
+	}
+	c, err := h.Carts.Get(cartID)
+	if err != nil {
+		return re.NotFoundError("cart not found or expired", nil)
+	}
+	return re.JSON(http.StatusOK, map[string]any{"cart": c})
+}
+
 // CartStart begins (or resumes) a cart for the badged-in user.
 func (h *Handlers) CartStart(re *core.RequestEvent) error {
 	var body struct {
@@ -62,6 +80,7 @@ func (h *Handlers) CartAdd(re *core.RequestEvent) error {
 	if err != nil {
 		return cartAddErrorToResponse(re, err)
 	}
+	h.CartEvents.Tickle(body.CartID)
 	return re.JSON(http.StatusOK, map[string]any{"cart": c, "line": added})
 }
 
@@ -131,6 +150,10 @@ func (h *Handlers) addCodeToCart(cartID, code string) (*cart.Cart, *cart.Line, e
 	if w, werr := lowStockWarning(h.App, item, added.Action, added.Qty); werr == nil && w != "" {
 		added.Warnings = setLowStockWarning(added.Warnings, w)
 	}
+	// SSE tickling lives at the caller (CartAdd / PerformRFIDScan)
+	// rather than here, because RFIDScan calls this in a loop and we
+	// don't want N tickles per batch — one signal at the end is what
+	// the SPA needs to refetch the merged result.
 	return c, added, nil
 }
 
@@ -406,6 +429,7 @@ func (h *Handlers) CartForemanReturn(re *core.RequestEvent) error {
 		}
 		return re.NotFoundError("cart not found or expired", nil)
 	}
+	h.CartEvents.Tickle(body.CartID)
 	return re.JSON(http.StatusOK, map[string]any{"cart": c, "line": added})
 }
 
@@ -456,6 +480,7 @@ func (h *Handlers) CartUpdateLine(re *core.RequestEvent) error {
 		}
 	}
 
+	h.CartEvents.Tickle(c.ID)
 	return re.JSON(http.StatusOK, map[string]any{"cart": c, "line": line})
 }
 
@@ -469,6 +494,7 @@ func (h *Handlers) CartDeleteLine(re *core.RequestEvent) error {
 	if err != nil {
 		return re.NotFoundError("line not found or cart expired", nil)
 	}
+	h.CartEvents.Tickle(c.ID)
 	return re.JSON(http.StatusOK, map[string]any{"cart": c})
 }
 
@@ -524,6 +550,7 @@ func (h *Handlers) CartCommit(re *core.RequestEvent) error {
 	h.fireLowStockAlerts(c, id)
 
 	_ = h.Carts.Delete(body.CartID)
+	h.CartEvents.Close(body.CartID)
 	return re.JSON(http.StatusOK, result)
 }
 
@@ -605,6 +632,7 @@ func (h *Handlers) CartCancel(re *core.RequestEvent) error {
 	}
 	// Treat already-gone as success — idempotent cancel.
 	_ = h.Carts.Delete(body.CartID)
+	h.CartEvents.Close(body.CartID)
 	return re.JSON(http.StatusOK, map[string]any{"ok": true})
 }
 

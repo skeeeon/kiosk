@@ -24,6 +24,22 @@ export function useCart() {
     return cart
   }
 
+  // refresh re-fetches the current cart from the server. Called by
+  // useCartEvents on every SSE tickle — "push the signal, pull the
+  // data." Quietly clears the local cart on 404 so an expired session
+  // converges to the splash without a stale row hanging around.
+  async function refresh(): Promise<void> {
+    if (!session.cart) return
+    try {
+      const { cart } = await api.get<{ cart: Cart }>(
+        `/api/kiosk/cart?cart_id=${encodeURIComponent(session.cart.id)}`,
+      )
+      session.setCart(cart)
+    } catch {
+      session.setCart(null)
+    }
+  }
+
   async function addItem(itemCode: string): Promise<CartLine> {
     if (!session.cart) throw new Error('no active cart')
     const { cart, line } = await api.post<{ cart: Cart; line: CartLine }>(
@@ -78,5 +94,5 @@ export function useCart() {
     return result
   }
 
-  return { scanDispatch, start, addItem, updateLine, deleteLine, cancel, commit, rfidScan }
+  return { scanDispatch, start, refresh, addItem, updateLine, deleteLine, cancel, commit, rfidScan }
 }

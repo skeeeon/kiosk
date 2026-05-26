@@ -166,6 +166,12 @@ func (h *Handlers) PerformRFIDScan(ctx context.Context, cartID string) (*RFIDSca
 		latestCart = c
 	}
 
+	// One broker tickle for the whole batch (not per-EPC). The SPA
+	// refetches once and sees the merged state regardless of how many
+	// lines landed. Fires even on zero-add reads so subscribers still
+	// know the operator hit the button.
+	h.CartEvents.Tickle(cartID)
+
 	return &RFIDScanResponse{
 		Cart:           latestCart,
 		AddedLines:     addedLines,
