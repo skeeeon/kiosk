@@ -161,7 +161,7 @@ const pagedItems = computed(() => {
 
 <template>
   <section class="space-y-3">
-    <header class="flex items-center justify-between">
+    <header class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
       <div>
         <h3 class="text-sm font-medium text-slate-200">Live inventory</h3>
         <p class="text-xs text-slate-500">
@@ -240,7 +240,7 @@ const pagedItems = computed(() => {
       @update:open="(v) => { if (!v) adjustOpen = false }"
     >
       <form class="flex flex-col gap-4" @submit.prevent="submitAdjust">
-        <div class="grid grid-cols-2 gap-3">
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <label class="flex flex-col gap-1">
             <span class="text-sm text-slate-400">Mode</span>
             <select

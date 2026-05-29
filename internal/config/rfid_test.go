@@ -130,6 +130,71 @@ func TestValidateRFID(t *testing.T) {
 				Reader:  RFIDReaderConfig{Host: "h", Port: 5084},
 			},
 		},
+		{
+			name: "antennas list — multiple ports, distinct ids and powers — ok",
+			in: RFIDConfig{
+				Enabled: true,
+				Mode:    RFIDModeCounterScan,
+				Reader: RFIDReaderConfig{
+					Host: "h", Port: 5084,
+					Antennas: []RFIDAntennaConfig{
+						{ID: 1, TxPowerDBm: 25.0},
+						{ID: 3, TxPowerDBm: 20.5},
+					},
+				},
+			},
+		},
+		{
+			name: "antennas list — zero id — error",
+			in: RFIDConfig{
+				Enabled: true,
+				Mode:    RFIDModeCounterScan,
+				Reader: RFIDReaderConfig{
+					Host: "h", Port: 5084,
+					Antennas: []RFIDAntennaConfig{{ID: 0, TxPowerDBm: 25.0}},
+				},
+			},
+			wantErr: "rfid.reader.antennas[0].id must be >= 1",
+		},
+		{
+			name: "antennas list — negative id — error",
+			in: RFIDConfig{
+				Enabled: true,
+				Mode:    RFIDModeCounterScan,
+				Reader: RFIDReaderConfig{
+					Host: "h", Port: 5084,
+					Antennas: []RFIDAntennaConfig{{ID: -1, TxPowerDBm: 25.0}},
+				},
+			},
+			wantErr: "rfid.reader.antennas[0].id must be >= 1",
+		},
+		{
+			name: "antennas list — duplicate id — error",
+			in: RFIDConfig{
+				Enabled: true,
+				Mode:    RFIDModeCounterScan,
+				Reader: RFIDReaderConfig{
+					Host: "h", Port: 5084,
+					Antennas: []RFIDAntennaConfig{
+						{ID: 1, TxPowerDBm: 25.0},
+						{ID: 1, TxPowerDBm: 20.0},
+					},
+				},
+			},
+			wantErr: "duplicate id 1",
+		},
+		{
+			name: "antennas list — non-positive tx_power_dbm — error",
+			in: RFIDConfig{
+				Enabled: true,
+				Mode:    RFIDModeCounterScan,
+				Reader: RFIDReaderConfig{
+					Host: "h", Port: 5084,
+					Antennas: []RFIDAntennaConfig{{ID: 1, TxPowerDBm: 0}},
+				},
+			},
+			wantErr: "rfid.reader.antennas[0].tx_power_dbm must be > 0",
+		},
 	}
 
 	for _, tc := range cases {

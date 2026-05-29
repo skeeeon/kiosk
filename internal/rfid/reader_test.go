@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/edgexfoundry/device-rfid-llrp-go/pkg/llrp"
+
 	"github.com/skeeeon/kiosk/internal/config"
 )
 
@@ -132,5 +134,170 @@ func TestClose_NeverConnected(t *testing.T) {
 	// Idempotent.
 	if err := r.Close(); err != nil {
 		t.Errorf("second Close should also be a no-op, got %v", err)
+	}
+}
+
+// TestNew_RejectsAntennaOutOfRange catches an antenna ID that the
+// config layer let through (e.g. a future refactor that widens the
+// type) but won't fit on the LLRP wire.
+func TestNew_RejectsAntennaOutOfRange(t *testing.T) {
+	_, err := New(config.RFIDConfig{
+		Enabled: true,
+		Mode:    config.RFIDModeCounterScan,
+		Reader: config.RFIDReaderConfig{
+			Host: "h", Port: 5084,
+			Antennas: []config.RFIDAntennaConfig{{ID: 70000, TxPowerDBm: 25}},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error for antenna id > uint16, got nil")
+	}
+}
+
+// TestNearestPowerIndex covers the dBm → wire-index resolver, which
+// has to (a) prefer the highest entry at or below the request, never
+// silently exceed, (b) clamp upward when every entry is above the
+// request (since the reader can't go lower) and (c) handle the typical
+// half-dBm-step Impinj power table without rounding chaos.
+func TestNearestPowerIndex(t *testing.T) {
+	// Mimics an FCC-region Impinj table: index 1 = 10 dBm, stepping
+	// 0.25 dBm up to index 81 = 30 dBm. We use a coarse subset here.
+	table := []llrp.TransmitPowerLevelTableEntry{
+		{Index: 1, TransmitPowerValue: 1000},  // 10.00 dBm
+		{Index: 2, TransmitPowerValue: 1500},  // 15.00 dBm
+		{Index: 3, TransmitPowerValue: 2000},  // 20.00 dBm
+		{Index: 4, TransmitPowerValue: 2500},  // 25.00 dBm
+		{Index: 5, TransmitPowerValue: 2575},  // 25.75 dBm
+		{Index: 6, TransmitPowerValue: 3000},  // 30.00 dBm
+	}
+	cases := []struct {
+		name     string
+		want     float64
+		wantIdx  uint16
+		wantDBm  float64
+	}{
+		{"exact match — 20 dBm", 20.0, 3, 20.0},
+		{"between 25 and 25.75 → floor to 25", 25.5, 4, 25.0},
+		{"above max → floor to max", 35.0, 6, 30.0},
+		{"below min → clamp up to min", 5.0, 1, 10.0},
+		{"exact min", 10.0, 1, 10.0},
+		{"between 10 and 15 → floor to 10", 12.5, 1, 10.0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			idx, dBm := nearestPowerIndex(table, tc.want)
+			if idx != tc.wantIdx {
+				t.Errorf("idx: got %d, want %d", idx, tc.wantIdx)
+			}
+			if dBm != tc.wantDBm {
+				t.Errorf("dBm: got %v, want %v", dBm, tc.wantDBm)
+			}
+		})
+	}
+}
+
+// TestPickFrequency exercises the three regulatory shapes we care
+// about: a hopping region with a populated hop table, a fixed region
+// with a populated channel table, and the degenerate "neither" case
+// where we hand zeros back and let the reader use its own defaults.
+func TestPickFrequency(t *testing.T) {
+	t.Run("hopping with hop table — uses first hop id, channel 0", func(t *testing.T) {
+		hop, ch := pickFrequency(llrp.FrequencyInformation{
+			Hopping: true,
+			FrequencyHopTables: []llrp.FrequencyHopTable{
+				{HopTableID: 7, Frequencies: []llrp.Kilohertz{902000, 928000}},
+			},
+		})
+		if hop != 7 || ch != 0 {
+			t.Errorf("got (hop=%d ch=%d), want (hop=7 ch=0)", hop, ch)
+		}
+	})
+	t.Run("hopping but empty table — both zero", func(t *testing.T) {
+		hop, ch := pickFrequency(llrp.FrequencyInformation{Hopping: true})
+		if hop != 0 || ch != 0 {
+			t.Errorf("got (hop=%d ch=%d), want (0,0)", hop, ch)
+		}
+	})
+	t.Run("fixed with channels — channel 1, hop 0", func(t *testing.T) {
+		hop, ch := pickFrequency(llrp.FrequencyInformation{
+			Hopping: false,
+			FixedFrequencyTable: &llrp.FixedFrequencyTable{
+				Frequencies: []llrp.Kilohertz{866000},
+			},
+		})
+		if hop != 0 || ch != 1 {
+			t.Errorf("got (hop=%d ch=%d), want (0,1)", hop, ch)
+		}
+	})
+	t.Run("fixed with no table — both zero", func(t *testing.T) {
+		hop, ch := pickFrequency(llrp.FrequencyInformation{Hopping: false})
+		if hop != 0 || ch != 0 {
+			t.Errorf("got (hop=%d ch=%d), want (0,0)", hop, ch)
+		}
+	})
+}
+
+// TestBuildROSpec_NoTxCfg confirms the default-shape behavior: when
+// the operator hasn't configured antennas, the ROSpec uses
+// AntennaIDs={0} ("all antennas, reader's own baseline") and emits no
+// per-antenna AntennaConfiguration override.
+func TestBuildROSpec_NoTxCfg(t *testing.T) {
+	spec := buildROSpec(3*time.Second, nil)
+	if got := spec.AISpecs[0].AntennaIDs; len(got) != 1 || got[0] != 0 {
+		t.Errorf("AntennaIDs: got %v, want [0]", got)
+	}
+	inv := spec.AISpecs[0].InventoryParameterSpecs[0]
+	if len(inv.AntennaConfigurations) != 0 {
+		t.Errorf("expected no AntennaConfigurations, got %d", len(inv.AntennaConfigurations))
+	}
+	if spec.ROBoundarySpec.StopTrigger.DurationTriggerValue != 3000 {
+		t.Errorf("DurationTriggerValue: got %d, want 3000",
+			spec.ROBoundarySpec.StopTrigger.DurationTriggerValue)
+	}
+}
+
+// TestBuildROSpec_WithTxCfg confirms the antenna-tuned path: each
+// configured antenna is listed in AntennaIDs *and* carries its own
+// AntennaConfiguration with the resolved TransmitPowerIndex.
+func TestBuildROSpec_WithTxCfg(t *testing.T) {
+	cfg := &txConfig{
+		hopTableID:   1,
+		channelIndex: 0,
+		antennas: []resolvedAntenna{
+			{id: 1, powerIndex: 41},
+			{id: 3, powerIndex: 27},
+		},
+	}
+	spec := buildROSpec(2*time.Second, cfg)
+
+	gotIDs := spec.AISpecs[0].AntennaIDs
+	if len(gotIDs) != 2 || gotIDs[0] != 1 || gotIDs[1] != 3 {
+		t.Errorf("AntennaIDs: got %v, want [1 3]", gotIDs)
+	}
+
+	inv := spec.AISpecs[0].InventoryParameterSpecs[0]
+	if len(inv.AntennaConfigurations) != 2 {
+		t.Fatalf("AntennaConfigurations: got %d, want 2", len(inv.AntennaConfigurations))
+	}
+	for i, ac := range inv.AntennaConfigurations {
+		want := cfg.antennas[i]
+		if uint16(ac.AntennaID) != want.id {
+			t.Errorf("[%d] AntennaID: got %d, want %d", i, ac.AntennaID, want.id)
+		}
+		if ac.RFTransmitter == nil {
+			t.Fatalf("[%d] RFTransmitter nil", i)
+		}
+		if ac.RFTransmitter.TransmitPowerIndex != want.powerIndex {
+			t.Errorf("[%d] TransmitPowerIndex: got %d, want %d",
+				i, ac.RFTransmitter.TransmitPowerIndex, want.powerIndex)
+		}
+		if ac.RFTransmitter.HopTableID != cfg.hopTableID {
+			t.Errorf("[%d] HopTableID: got %d, want %d",
+				i, ac.RFTransmitter.HopTableID, cfg.hopTableID)
+		}
+		if ac.RFTransmitter.ChannelIndex != cfg.channelIndex {
+			t.Errorf("[%d] ChannelIndex: got %d, want %d",
+				i, ac.RFTransmitter.ChannelIndex, cfg.channelIndex)
+		}
 	}
 }

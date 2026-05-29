@@ -98,5 +98,14 @@ rfid:
   reader:
     host: ""                # reader IP / hostname (required when enabled)
     port: 5084              # standard LLRP port
+    # antennas: enumerate active reader ports + TX power in dBm.
+    # Empty/omitted = let the reader's own baseline stand. When set,
+    # only the listed ports are inventoried and each runs at the given
+    # power (resolved to the reader's nearest available index at Connect).
+    # antennas:
+    #   - id: 1
+    #     tx_power_dbm: 25.0
+    #   - id: 3
+    #     tx_power_dbm: 20.0
   read_window: "3s"         # one inventory cycle; enclosure_diff caps this at 3.5s (runs inside the ~5s command reply)
   door_id: ""               # required when mode=enclosure_diff

@@ -4,10 +4,15 @@
 // EdgeX's device-rfid-llrp-go/pkg/llrp; that import is an
 // implementation detail of impinjReader and is not re-exported.
 //
-// Phase 2 implements ReadFor — one LLRP inventory cycle per call —
-// against the live reader: AddROSpec / EnableROSpec / collect
-// ROAccessReport / DisableROSpec / DeleteROSpec. See docs/rfid.md
-// for the full design.
+// One inventory cycle per ReadFor call: AddROSpec / EnableROSpec /
+// collect ROAccessReport / DisableROSpec / DeleteROSpec. A supervisor
+// goroutine maintains a healthy LLRP connection across reader reboots
+// and network blips — see Connect. When the operator lists antennas in
+// config, the kiosk also queries GET_READER_CAPABILITIES on each
+// connect to resolve requested dBm against the reader's actual power
+// table and embeds the per-antenna config inline in the ROSpec, so a
+// reader power-cycle does not require re-pushing baseline state. See
+// docs/rfid.md for the full design.
 package rfid
 
 import (
@@ -15,6 +20,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
+	"math"
 	"net"
 	"strconv"
 	"strings"
@@ -36,40 +43,63 @@ type EPC string
 // Tests substitute a fake; production code uses impinjReader (created
 // via New).
 type Reader interface {
-	// Connect dials the reader and starts the LLRP client. Returns
-	// quickly even if the LLRP handshake is still in flight — sends
-	// queue until the client is ready. Errors here are dial-level
-	// (host unreachable, refused, etc.) and should be treated as
-	// best-effort by the caller: a kiosk with no reader should still
-	// boot.
+	// Connect starts a supervisor goroutine that maintains an LLRP
+	// session to the reader, retrying on failure with exponential
+	// backoff until Close is called. The error return is reserved for
+	// programmer errors (e.g. calling Connect twice) — connectivity
+	// failures are handled by the supervisor, not surfaced here. The
+	// caller can assume the reader is "wiring up in the background" as
+	// soon as Connect returns; ReadFor calls during a gap return
+	// ErrNotConnected.
 	Connect(ctx context.Context) error
 
 	// ReadFor runs a single inventory cycle for the given duration and
-	// returns the set of observed EPCs. Phase 1 returns
-	// ErrReadForNotImplemented; Phase 2 lands the real impl.
+	// returns the set of observed EPCs. Returns ErrNotConnected if the
+	// supervisor has not yet established a session (or has lost it and
+	// is retrying).
 	ReadFor(ctx context.Context, d time.Duration) ([]EPC, error)
 
-	// Close shuts the LLRP client down cleanly. Safe to call when
-	// Connect was never called or already failed — in that case it's
-	// a no-op.
+	// Close shuts the supervisor down cleanly and tears down any
+	// in-flight LLRP session. Safe to call when Connect was never run
+	// or already failed — in that case it's a no-op. Idempotent.
 	Close() error
 }
 
-// ErrNotConnected is returned by ReadFor when Connect hasn't run or
-// the connection was torn down. Callers can branch on this if they
-// want different behavior from generic LLRP errors (e.g. a kiosk that
-// boots without the reader plugged in but should still serve manual
-// scans).
+// ErrNotConnected is returned by ReadFor when the supervisor has not
+// yet established a session — either because Connect was never called,
+// or because the reader is down and the supervisor is backing off
+// between retries. Callers branch on this if they want different
+// behavior from generic LLRP errors (e.g. a kiosk that boots without
+// the reader plugged in but should still serve manual scans).
 var ErrNotConnected = errors.New("rfid: not connected")
 
-// dialTimeout caps how long we'll wait for the initial TCP handshake.
-// The LLRP-level handshake that follows is asynchronous and not bounded
-// here — sends queue against the client until it's ready.
-const dialTimeout = 5 * time.Second
+const (
+	// dialTimeout caps how long a single connect attempt waits for
+	// the TCP handshake. The supervisor retries on failure so this is
+	// per-attempt, not total.
+	dialTimeout = 5 * time.Second
 
-// shutdownTimeout caps how long Close will wait for the graceful LLRP
-// CloseConnection round-trip before falling back to a hard Close.
-const shutdownTimeout = 2 * time.Second
+	// shutdownTimeout caps each phase of Close (graceful Shutdown,
+	// supervisor join, drain of the connection goroutine).
+	shutdownTimeout = 2 * time.Second
+
+	// capsTimeout caps the GET_READER_CAPABILITIES round-trip we send
+	// on every connect when the operator has configured antennas. If
+	// the reader is reachable but silent here, treat it as a connect
+	// failure and let the supervisor retry — better than running with
+	// stale/zero power indices.
+	capsTimeout = 5 * time.Second
+
+	// reconnectMinBackoff is the supervisor's initial retry delay
+	// after a failed connect. Reset to this value after every
+	// successful connect.
+	reconnectMinBackoff = 1 * time.Second
+
+	// reconnectMaxBackoff caps the supervisor's retry delay. Chosen to
+	// keep "reader is back" recovery within half a minute on the worst
+	// of timing while not hammering a misconfigured endpoint.
+	reconnectMaxBackoff = 30 * time.Second
+)
 
 // New returns a Reader configured from the kiosk's RFID config block.
 // It does not dial yet — call Connect for that. Returns an error only
@@ -83,23 +113,67 @@ func New(cfg config.RFIDConfig) (Reader, error) {
 	if cfg.Reader.Host == "" || cfg.Reader.Port == 0 {
 		return nil, errors.New("rfid: reader host/port not configured")
 	}
+	antennas := make([]configuredAntenna, 0, len(cfg.Reader.Antennas))
+	for _, a := range cfg.Reader.Antennas {
+		if a.ID < 1 || a.ID > math.MaxUint16 {
+			return nil, fmt.Errorf("rfid: antenna id %d out of range", a.ID)
+		}
+		antennas = append(antennas, configuredAntenna{
+			id:         uint16(a.ID),
+			txPowerDBm: a.TxPowerDBm,
+		})
+	}
 	return &impinjReader{
-		addr: net.JoinHostPort(cfg.Reader.Host, strconv.Itoa(cfg.Reader.Port)),
+		addr:     net.JoinHostPort(cfg.Reader.Host, strconv.Itoa(cfg.Reader.Port)),
+		antennas: antennas,
 	}, nil
+}
+
+// configuredAntenna is the immutable cfg-derived per-port intent.
+// Power is in dBm; the LLRP wire wants a 1-based index into a
+// reader-specific power table, which we resolve on each connect.
+type configuredAntenna struct {
+	id         uint16
+	txPowerDBm float64
+}
+
+// txConfig is the per-connection result of fetching GET_READER_CAPABILITIES
+// and resolving the operator's dBm requests against the reader's actual
+// power table. nil when the operator did not configure antennas — the
+// ROSpec then falls back to "all antennas, reader's own baseline."
+type txConfig struct {
+	hopTableID   uint16
+	channelIndex uint16
+	antennas     []resolvedAntenna
+}
+
+type resolvedAntenna struct {
+	id         uint16
+	powerIndex uint16
 }
 
 // impinjReader is the production Reader. The naming reflects that we
 // only test against Impinj R-series hardware in v1 — the wire protocol
-// is LLRP-standard, but vendor quirks (Impinj custom messages,
-// antenna power tuning, etc.) belong here when we add them. The
-// underlying *llrp.Client is vendor-agnostic.
+// is LLRP-standard, but vendor quirks (Impinj custom messages, etc.)
+// belong here when we add them. The underlying *llrp.Client is
+// vendor-agnostic.
 type impinjReader struct {
-	addr string
+	addr     string
+	antennas []configuredAntenna
 
-	mu     sync.Mutex
-	client *llrp.Client
-	conn   net.Conn
-	done   chan error // signals when client.Connect's goroutine exits
+	// supervisor lifecycle. supCancel/supDone are set in Connect and
+	// cleared in Close. Both nil = not connected (or already closed).
+	supCancel context.CancelFunc
+	supDone   chan struct{}
+
+	// mu guards the connection-tied fields below. The supervisor swaps
+	// them as a set on each successful connect, and clears them on
+	// disconnect.
+	mu       sync.Mutex
+	client   *llrp.Client
+	conn     net.Conn
+	connDone chan error // goroutine running client.Connect signals exit here
+	txCfg    *txConfig
 
 	// readMu serializes ReadFor calls so we never have two ROSpecs
 	// fighting over the same ROSpecID, and so the ROAccessReport
@@ -118,46 +192,101 @@ type impinjReader struct {
 	accum   *[]EPC
 }
 
-// Connect dials the reader and starts the LLRP client goroutine. The
-// goroutine runs client.Connect(conn) which blocks until the
-// connection drops or Close is called — its return value lands on
-// r.done for inspection by Close.
-//
-// We do not wait for the LLRP handshake to complete here. The LLRP
-// client queues sends until it's ready, so a ReadFor that arrives
-// before the handshake finishes will simply block briefly. Phase 1
-// has no caller that exercises this; Phase 2 will need to revisit if
-// the queuing semantics turn out to surprise us.
-func (r *impinjReader) Connect(ctx context.Context) error {
+// Connect starts the supervisor goroutine. Returns immediately; the
+// supervisor handles the actual dial + handshake + capabilities query
+// in the background, retrying with exponential backoff on failure
+// until Close is called. The ctx argument is intentionally ignored for
+// the supervisor's own lifetime — it lives until Close — but exists
+// in the signature for symmetry with the rest of the codebase and so
+// a future variant can short-circuit before spawning.
+func (r *impinjReader) Connect(_ context.Context) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.client != nil {
+	if r.supCancel != nil {
+		r.mu.Unlock()
 		return errors.New("rfid: already connected")
 	}
+	supCtx, cancel := context.WithCancel(context.Background())
+	r.supCancel = cancel
+	r.supDone = make(chan struct{})
+	r.mu.Unlock()
 
+	go r.supervisor(supCtx)
+	return nil
+}
+
+// supervisor loops forever until ctx is cancelled (Close). Each
+// iteration attempts a connect; on success it parks on the connection's
+// done channel until either the connection drops (retry) or Close
+// fires (exit). Exponential backoff applies to connect failures only —
+// a healthy session that drops resets to the minimum.
+func (r *impinjReader) supervisor(ctx context.Context) {
+	defer close(r.supDone)
+
+	backoff := reconnectMinBackoff
+
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+
+		if err := r.attemptConnect(ctx); err != nil {
+			log.Printf("rfid: connect to %s failed: %v; retrying in %v", r.addr, err, backoff)
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return
+			}
+			backoff *= 2
+			if backoff > reconnectMaxBackoff {
+				backoff = reconnectMaxBackoff
+			}
+			continue
+		}
+		backoff = reconnectMinBackoff
+
+		r.mu.Lock()
+		done := r.connDone
+		r.mu.Unlock()
+
+		// done should never be nil here — attemptConnect publishes it
+		// before returning success — but guard against a future
+		// refactor that breaks that invariant rather than spin-looping.
+		if done == nil {
+			log.Printf("rfid: internal: no connDone after successful connect; exiting supervisor")
+			return
+		}
+
+		select {
+		case err := <-done:
+			log.Printf("rfid: connection to %s dropped: %v; reconnecting", r.addr, err)
+			r.clearConnection()
+		case <-ctx.Done():
+			// Close will tear down the live connection.
+			return
+		}
+	}
+}
+
+// attemptConnect dials, starts the LLRP client goroutine, runs the
+// capabilities round-trip (when antennas are configured), and on
+// success publishes the new state under mu. On any failure it tears
+// down whatever was half-built before returning so the supervisor's
+// next iteration starts from a clean slate.
+func (r *impinjReader) attemptConnect(ctx context.Context) error {
 	dialCtx, cancel := context.WithTimeout(ctx, dialTimeout)
 	defer cancel()
 
 	conn, err := (&net.Dialer{}).DialContext(dialCtx, "tcp", r.addr)
 	if err != nil {
-		return fmt.Errorf("rfid: dial %s: %w", r.addr, err)
+		return fmt.Errorf("dial: %w", err)
 	}
 
-	// The ROAccessReport handler is the only thing the read-side
-	// goroutine ever pushes into. It must not block — the LLRP client
-	// runs handlers inline with the read loop, so a stalled handler
-	// stalls the whole connection. We do a cheap unmarshal + mutex'd
-	// append and return.
 	client := llrp.NewClient(
 		llrp.WithMessageHandler(llrp.MsgROAccessReport,
 			llrp.MessageHandlerFunc(r.onROAccessReport)),
 	)
 	done := make(chan error, 1)
-
 	go func() {
-		// client.Connect blocks until the connection drops or Close
-		// fires. Normal shutdown returns llrp.ErrClientClosed which we
-		// translate to a nil signal so Close sees "exited cleanly".
 		err := client.Connect(conn)
 		if errors.Is(err, llrp.ErrClientClosed) {
 			err = nil
@@ -165,23 +294,139 @@ func (r *impinjReader) Connect(ctx context.Context) error {
 		done <- err
 	}()
 
+	txCfg, err := r.fetchAndResolveCaps(ctx, client)
+	if err != nil {
+		// Tear down the half-formed connection before returning. We
+		// don't bother with Shutdown here — there's no graceful state
+		// to preserve; the supervisor is going to retry.
+		_ = client.Close()
+		_ = conn.Close()
+		select {
+		case <-done:
+		case <-time.After(shutdownTimeout):
+		}
+		return err
+	}
+
+	r.mu.Lock()
 	r.client = client
 	r.conn = conn
-	r.done = done
+	r.connDone = done
+	r.txCfg = txCfg
+	r.mu.Unlock()
+
+	if txCfg == nil {
+		log.Printf("rfid: connected to %s (using reader's default antenna config)", r.addr)
+	} else {
+		log.Printf("rfid: connected to %s (%d antennas tuned)", r.addr, len(txCfg.antennas))
+	}
 	return nil
+}
+
+// fetchAndResolveCaps queries GET_READER_CAPABILITIES and translates
+// the operator's per-antenna dBm requests into the LLRP wire-level
+// power indices. Returns nil when no antennas are configured (the
+// ROSpec then doesn't override anything and the reader uses its own
+// baseline).
+func (r *impinjReader) fetchAndResolveCaps(ctx context.Context, client *llrp.Client) (*txConfig, error) {
+	if len(r.antennas) == 0 {
+		return nil, nil
+	}
+
+	capsCtx, cancel := context.WithTimeout(ctx, capsTimeout)
+	defer cancel()
+
+	req := &llrp.GetReaderCapabilities{ReaderCapabilitiesRequestedData: llrp.ReaderCapAll}
+	resp := &llrp.GetReaderCapabilitiesResponse{}
+	if err := client.SendFor(capsCtx, req, resp); err != nil {
+		return nil, fmt.Errorf("GET_READER_CAPABILITIES: %w", err)
+	}
+	if st := resp.Status(); st.Status != llrp.StatusSuccess {
+		return nil, fmt.Errorf("GET_READER_CAPABILITIES status %d: %s", st.Status, st.ErrorDescription)
+	}
+	if resp.RegulatoryCapabilities == nil || resp.RegulatoryCapabilities.UHFBandCapabilities == nil {
+		return nil, errors.New("reader returned no UHF band capabilities")
+	}
+	uhf := resp.RegulatoryCapabilities.UHFBandCapabilities
+	if len(uhf.TransmitPowerLevels) == 0 {
+		return nil, errors.New("reader returned empty transmit power table")
+	}
+
+	hopID, chanIdx := pickFrequency(uhf.FrequencyInformation)
+	out := &txConfig{hopTableID: hopID, channelIndex: chanIdx}
+
+	for _, a := range r.antennas {
+		idx, dBm := nearestPowerIndex(uhf.TransmitPowerLevels, a.txPowerDBm)
+		out.antennas = append(out.antennas, resolvedAntenna{id: a.id, powerIndex: idx})
+		log.Printf("rfid: antenna %d requested %.1f dBm, using index %d (%.2f dBm)",
+			a.id, a.txPowerDBm, idx, dBm)
+	}
+	return out, nil
+}
+
+// nearestPowerIndex picks the highest entry at or below want — never
+// silently exceeding the requested ceiling. If every entry is above
+// want (the request is below the reader's minimum), clamp to the
+// reader's lowest available level and log; refusing to operate would
+// be worse than running at the minimum the hardware supports.
+//
+// Returns the chosen index and its actual dBm value (for logging).
+func nearestPowerIndex(table []llrp.TransmitPowerLevelTableEntry, want float64) (uint16, float64) {
+	var bestIdx, lowIdx uint16
+	bestDBm := math.Inf(-1)
+	lowDBm := math.Inf(1)
+	found := false
+	for _, e := range table {
+		dBm := float64(e.TransmitPowerValue) / 100.0
+		if dBm <= want && (!found || dBm > bestDBm) {
+			bestIdx = e.Index
+			bestDBm = dBm
+			found = true
+		}
+		if dBm < lowDBm {
+			lowIdx = e.Index
+			lowDBm = dBm
+		}
+	}
+	if found {
+		return bestIdx, bestDBm
+	}
+	log.Printf("rfid: requested %.1f dBm is below reader minimum %.2f dBm; clamping", want, lowDBm)
+	return lowIdx, lowDBm
+}
+
+// pickFrequency derives the HopTableID + ChannelIndex pair that
+// RFTransmitter expects. In hopping regions (e.g. FCC) the HopTableID
+// is meaningful and ChannelIndex is unused; in fixed-frequency regions
+// (e.g. ETSI) ChannelIndex is the 1-based offset into the fixed table
+// and HopTableID is unused. When the reader returns neither, we pass
+// zeros and let it apply its own defaults.
+func pickFrequency(info llrp.FrequencyInformation) (hopTableID, channelIndex uint16) {
+	if info.Hopping {
+		if len(info.FrequencyHopTables) > 0 {
+			return uint16(info.FrequencyHopTables[0].HopTableID), 0
+		}
+		return 0, 0
+	}
+	if info.FixedFrequencyTable != nil && len(info.FixedFrequencyTable.Frequencies) > 0 {
+		return 0, 1
+	}
+	return 0, 0
 }
 
 // ReadFor runs one LLRP inventory cycle for d and returns the
 // deduplicated EPCs observed. The flow:
 //
-//  1. Reset the in-impinjReader accumulator to a fresh slice.
-//  2. Send AddROSpec; check LLRPStatus.
-//  3. Send EnableROSpec; check LLRPStatus. The ROSpec auto-starts
+//  1. Snapshot the supervisor-published client + txCfg; if no client,
+//     return ErrNotConnected so callers fall back to barcode gracefully.
+//  2. Reset the in-impinjReader accumulator to a fresh slice.
+//  3. Send AddROSpec; check LLRPStatus.
+//  4. Send EnableROSpec; check LLRPStatus. The ROSpec auto-starts
 //     (ROStartTriggerImmediate) and auto-stops after d ms
 //     (ROStopTriggerDuration). ROAccessReport messages flow inbound
 //     during that window and the handler accumulates EPCs.
-//  4. Wait for d, or for ctx to cancel — whichever first.
-//  5. Send DisableROSpec + DeleteROSpec, best-effort, on a fresh
+//  5. Wait for d, or for ctx to cancel — whichever first.
+//  6. Send DisableROSpec + DeleteROSpec, best-effort, on a fresh
 //     short-timeout ctx so cleanup happens even when the caller's ctx
 //     is already dead.
 //
@@ -195,6 +440,7 @@ func (r *impinjReader) ReadFor(ctx context.Context, d time.Duration) ([]EPC, err
 
 	r.mu.Lock()
 	client := r.client
+	txCfg := r.txCfg
 	r.mu.Unlock()
 	if client == nil {
 		return nil, ErrNotConnected
@@ -212,17 +458,17 @@ func (r *impinjReader) ReadFor(ctx context.Context, d time.Duration) ([]EPC, err
 		r.accumMu.Unlock()
 	}()
 
-	spec := buildROSpec(d)
+	spec := buildROSpec(d, txCfg)
 
 	// Add + Enable. Failures on either short-circuit; cleanup is
 	// best-effort but we still try, because the reader may have
 	// accepted Add even if Enable failed.
 	if err := sendAndCheck(ctx, client, spec.Add(), &llrp.AddROSpecResponse{}); err != nil {
-		r.cleanupSpec(spec) // no-op if Add never landed
+		r.cleanupSpec(client, spec) // no-op if Add never landed
 		return nil, fmt.Errorf("rfid: AddROSpec: %w", err)
 	}
 	if err := sendAndCheck(ctx, client, spec.Enable(), &llrp.EnableROSpecResponse{}); err != nil {
-		r.cleanupSpec(spec)
+		r.cleanupSpec(client, spec)
 		return nil, fmt.Errorf("rfid: EnableROSpec: %w", err)
 	}
 
@@ -234,7 +480,7 @@ func (r *impinjReader) ReadFor(ctx context.Context, d time.Duration) ([]EPC, err
 	case <-ctx.Done():
 	}
 
-	r.cleanupSpec(spec)
+	r.cleanupSpec(client, spec)
 
 	// Snapshot + deduplicate the accumulator. ROAccessReport handlers
 	// can fire briefly after Disable as in-flight messages drain
@@ -249,15 +495,14 @@ func (r *impinjReader) ReadFor(ctx context.Context, d time.Duration) ([]EPC, err
 }
 
 // cleanupSpec sends Disable + Delete on a short, independent context
-// so it runs even when the caller's ctx is dead. Errors are logged
-// implicitly via the LLRP client's logger — we don't surface them
-// because the caller already knows the read window completed; whether
+// so it runs even when the caller's ctx is dead. Errors are intentional
+// drops — the caller already knows the read window completed; whether
 // the reader's state is perfectly clean is best-effort.
-func (r *impinjReader) cleanupSpec(spec *llrp.ROSpec) {
+func (r *impinjReader) cleanupSpec(client *llrp.Client, spec *llrp.ROSpec) {
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_ = sendAndCheck(cleanupCtx, r.client, spec.Disable(), &llrp.DisableROSpecResponse{})
-	_ = sendAndCheck(cleanupCtx, r.client, spec.Delete(), &llrp.DeleteROSpecResponse{})
+	_ = sendAndCheck(cleanupCtx, client, spec.Disable(), &llrp.DisableROSpecResponse{})
+	_ = sendAndCheck(cleanupCtx, client, spec.Delete(), &llrp.DeleteROSpecResponse{})
 }
 
 // onROAccessReport is wired in via WithMessageHandler at NewClient
@@ -339,22 +584,47 @@ func sendAndCheck(ctx context.Context, c *llrp.Client, out llrp.Outgoing, in llr
 }
 
 // rfidROSpecID is the single ROSpec slot we (re)use for every
-// counter_scan / enclosure_diff cycle. Phase 4 may pick a different
-// ID for enclosure_diff if it ever wants concurrent reads — for now
-// one slot is enough since readMu serializes everything.
+// counter_scan / enclosure_diff cycle.
 const rfidROSpecID = 1
 
 // buildROSpec returns a minimal ROSpec configured to start
 // immediately, run for d, deliver results when the RO ends, and
-// inventory all antennas using EPC Gen2. Antenna power, channel
-// selection, and Impinj custom extensions are intentionally
-// left to the reader's own configuration — the kiosk doesn't tune
-// from here.
-func buildROSpec(d time.Duration) *llrp.ROSpec {
+// inventory the configured antennas using EPC Gen2. When txCfg is nil
+// (operator didn't configure antennas) the ROSpec uses AntennaIDs={0}
+// — "all antennas, reader's own baseline" — and emits no per-antenna
+// override. When non-nil, the ROSpec carries one AntennaConfiguration
+// per listed antenna with its resolved TransmitPowerIndex, so a reader
+// reboot does not require re-pushing baseline state: every ReadFor
+// re-applies the tuning.
+func buildROSpec(d time.Duration, txCfg *txConfig) *llrp.ROSpec {
 	ms := uint32(d / time.Millisecond)
 	if ms == 0 {
 		ms = 1 // 0 would mean "never stop"; clamp defensively
 	}
+
+	inv := llrp.InventoryParameterSpec{
+		InventoryParameterSpecID: 1,
+		AirProtocolID:            llrp.AirProtoEPCGlobalClass1Gen2,
+	}
+
+	var antennaIDs []llrp.AntennaID
+	if txCfg == nil || len(txCfg.antennas) == 0 {
+		antennaIDs = []llrp.AntennaID{0} // 0 = all antennas
+	} else {
+		for _, a := range txCfg.antennas {
+			antennaIDs = append(antennaIDs, llrp.AntennaID(a.id))
+			inv.AntennaConfigurations = append(inv.AntennaConfigurations,
+				llrp.AntennaConfiguration{
+					AntennaID: llrp.AntennaID(a.id),
+					RFTransmitter: &llrp.RFTransmitter{
+						HopTableID:         txCfg.hopTableID,
+						ChannelIndex:       txCfg.channelIndex,
+						TransmitPowerIndex: a.powerIndex,
+					},
+				})
+		}
+	}
+
 	return &llrp.ROSpec{
 		ROSpecID:           rfidROSpecID,
 		Priority:           0,
@@ -369,14 +639,11 @@ func buildROSpec(d time.Duration) *llrp.ROSpec {
 			},
 		},
 		AISpecs: []llrp.AISpec{{
-			AntennaIDs: []llrp.AntennaID{0}, // 0 = all antennas
+			AntennaIDs: antennaIDs,
 			StopTrigger: llrp.AISpecStopTrigger{
 				Trigger: llrp.AIStopTriggerNone, // bounded by ROSpec stop trigger
 			},
-			InventoryParameterSpecs: []llrp.InventoryParameterSpec{{
-				InventoryParameterSpecID: 1,
-				AirProtocolID:            llrp.AirProtoEPCGlobalClass1Gen2,
-			}},
+			InventoryParameterSpecs: []llrp.InventoryParameterSpec{inv},
 		}},
 		ROReportSpec: &llrp.ROReportSpec{
 			Trigger: llrp.NTagsOrROEnd,
@@ -385,48 +652,76 @@ func buildROSpec(d time.Duration) *llrp.ROSpec {
 				EnableAntennaID:    true,
 				EnablePeakRSSI:     true,
 				EnableTagSeenCount: true,
-				// EPC96 / EPCData come along automatically — that's the
-				// payload we actually use. The other Enable* flags
-				// above are cheap context for future analytics.
 			},
 		},
 	}
 }
 
-// Close shuts the client down. Calls Shutdown first for a graceful
-// CloseConnection round-trip; if that fails or times out, falls back
-// to a hard Close. Either path triggers the goroutine started in
-// Connect to return, which we briefly wait for so the caller knows the
-// reader is fully torn down.
+// Close cancels the supervisor, waits for it to exit, then tears down
+// any live LLRP session with a graceful Shutdown round-trip followed
+// by a hard Close. Safe to call when Connect was never run, and
+// idempotent — a second call is a no-op.
 func (r *impinjReader) Close() error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.client == nil {
+	cancel := r.supCancel
+	supDone := r.supDone
+	r.supCancel = nil
+	r.supDone = nil
+	r.mu.Unlock()
+
+	if cancel == nil {
+		return nil
+	}
+	cancel()
+	if supDone != nil {
+		select {
+		case <-supDone:
+		case <-time.After(shutdownTimeout):
+		}
+	}
+
+	// Supervisor has exited (or timed out). Tear down whichever
+	// connection it had live at exit time, if any.
+	r.mu.Lock()
+	client := r.client
+	conn := r.conn
+	done := r.connDone
+	r.client = nil
+	r.conn = nil
+	r.connDone = nil
+	r.txCfg = nil
+	r.mu.Unlock()
+
+	if client == nil {
 		return nil
 	}
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
-	defer cancel()
-	// Shutdown's error is best-effort — if the reader is already gone
-	// the graceful exchange will fail and we still want to hard-close.
-	_ = r.client.Shutdown(shutdownCtx)
-	_ = r.client.Close()
-
-	// Connect's goroutine exits once Close fires; give it a moment so
-	// the caller sees a fully drained Reader. The timeout here is
-	// generous because we just want to avoid a leaked goroutine, not
-	// to wait for slow network teardown.
-	select {
-	case <-r.done:
-	case <-time.After(shutdownTimeout):
+	shutdownCtx, sc := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer sc()
+	_ = client.Shutdown(shutdownCtx)
+	_ = client.Close()
+	if conn != nil {
+		_ = conn.Close()
 	}
-
-	if r.conn != nil {
-		_ = r.conn.Close()
+	if done != nil {
+		select {
+		case <-done:
+		case <-time.After(shutdownTimeout):
+		}
 	}
+	return nil
+}
 
+// clearConnection nils the connection-tied state without trying to
+// gracefully shut down — used by the supervisor when the read goroutine
+// has already exited because the underlying connection dropped. The
+// client object is already dead; there's nothing to shut down
+// gracefully.
+func (r *impinjReader) clearConnection() {
+	r.mu.Lock()
 	r.client = nil
 	r.conn = nil
-	r.done = nil
-	return nil
+	r.connDone = nil
+	r.txCfg = nil
+	r.mu.Unlock()
 }

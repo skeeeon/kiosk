@@ -171,7 +171,7 @@ const pagedRows = computed(() => {
 
 <template>
   <section class="space-y-3">
-    <header class="flex items-center justify-between">
+    <header class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
       <div>
         <h3 class="text-sm font-medium text-slate-200">Stocked items</h3>
         <p class="text-xs text-slate-500">SKUs this kiosk carries. Empty kiosks receive nothing.</p>

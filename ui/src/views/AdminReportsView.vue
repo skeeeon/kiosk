@@ -828,10 +828,10 @@ const lifecycleColumns = computed<ColumnDef[]>(() => {
       </label>
     </header>
 
-    <nav class="flex gap-1 mb-4 border-b border-slate-800">
+    <nav class="flex gap-1 mb-4 border-b border-slate-800 overflow-x-auto">
       <button
         type="button"
-        class="px-4 py-2 border-b-2 transition-colors"
+        class="px-4 py-2 border-b-2 transition-colors whitespace-nowrap shrink-0"
         :class="tabClasses('currently-out')"
         @click="tab = 'currently-out'"
       >
@@ -839,7 +839,7 @@ const lifecycleColumns = computed<ColumnDef[]>(() => {
       </button>
       <button
         type="button"
-        class="px-4 py-2 border-b-2 transition-colors"
+        class="px-4 py-2 border-b-2 transition-colors whitespace-nowrap shrink-0"
         :class="tabClasses('low-stock')"
         @click="tab = 'low-stock'"
       >
@@ -847,7 +847,7 @@ const lifecycleColumns = computed<ColumnDef[]>(() => {
       </button>
       <button
         type="button"
-        class="px-4 py-2 border-b-2 transition-colors"
+        class="px-4 py-2 border-b-2 transition-colors whitespace-nowrap shrink-0"
         :class="tabClasses('group-activity')"
         @click="tab = 'group-activity'"
       >
@@ -855,7 +855,7 @@ const lifecycleColumns = computed<ColumnDef[]>(() => {
       </button>
       <button
         type="button"
-        class="px-4 py-2 border-b-2 transition-colors"
+        class="px-4 py-2 border-b-2 transition-colors whitespace-nowrap shrink-0"
         :class="tabClasses('recent')"
         @click="tab = 'recent'"
       >
@@ -864,7 +864,7 @@ const lifecycleColumns = computed<ColumnDef[]>(() => {
       <button
         v-if="isController"
         type="button"
-        class="px-4 py-2 border-b-2 transition-colors"
+        class="px-4 py-2 border-b-2 transition-colors whitespace-nowrap shrink-0"
         :class="tabClasses('audit')"
         @click="tab = 'audit'"
       >
@@ -872,7 +872,7 @@ const lifecycleColumns = computed<ColumnDef[]>(() => {
       </button>
       <button
         type="button"
-        class="px-4 py-2 border-b-2 transition-colors"
+        class="px-4 py-2 border-b-2 transition-colors whitespace-nowrap shrink-0"
         :class="tabClasses('lifecycle')"
         @click="tab = 'lifecycle'"
       >
@@ -880,7 +880,7 @@ const lifecycleColumns = computed<ColumnDef[]>(() => {
       </button>
       <button
         type="button"
-        class="px-4 py-2 border-b-2 transition-colors"
+        class="px-4 py-2 border-b-2 transition-colors whitespace-nowrap shrink-0"
         :class="tabClasses('notifications')"
         @click="tab = 'notifications'"
       >

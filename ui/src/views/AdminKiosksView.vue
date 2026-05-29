@@ -212,7 +212,7 @@ async function onSaveAndAdd(data: Partial<KioskRecord>) {
 </script>
 
 <template>
-  <main class="p-6 max-w-7xl mx-auto w-full">
+  <main class="p-4 sm:p-6 max-w-7xl mx-auto w-full">
     <header class="flex items-baseline justify-between mb-4">
       <div>
         <h1 class="text-2xl font-semibold">Kiosks</h1>

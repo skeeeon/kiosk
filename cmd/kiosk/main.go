@@ -175,23 +175,21 @@ func main() {
 		disp.KioskHandlers = h
 	}
 
-	// RFID reader. Constructed here so h.RFID can be set from inside
-	// the OnServe Connect hook. A failed Connect at startup leaves
-	// h.RFID nil and the SPA's RFID button hits 503 instead of
-	// blocking boot — matches the NATS unreachability story.
+	// RFID reader. The supervisor inside rfid.Connect dials in the
+	// background and retries with backoff, so we wire h.RFID up
+	// unconditionally and let ReadFor return ErrNotConnected during
+	// any gaps — the SPA's RFID button then hits 503 gracefully
+	// instead of blocking boot.
 	if cfg.RFID.Enabled {
 		r, err := rfid.New(cfg.RFID)
 		if err != nil {
 			log.Printf("rfid: %v — kiosk will continue without RFID", err)
 		} else {
 			app.OnServe().BindFunc(func(e *core.ServeEvent) error {
-				if err := r.Connect(context.Background()); err != nil {
-					log.Printf("rfid: connect failed — %v; kiosk will continue without RFID", err)
-					return e.Next()
-				}
+				_ = r.Connect(context.Background())
 				rfidReader = r
 				h.RFID = r
-				log.Printf("rfid: connected to %s:%d in %s mode",
+				log.Printf("rfid: supervisor started for %s:%d in %s mode",
 					cfg.RFID.Reader.Host, cfg.RFID.Reader.Port, cfg.RFID.Mode)
 				return e.Next()
 			})
