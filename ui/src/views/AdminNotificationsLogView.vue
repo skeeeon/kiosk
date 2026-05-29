@@ -154,7 +154,7 @@ function onPerPageChange(n: number) {
       Older entries are pruned automatically.
     </p>
 
-    <div class="flex gap-3 mb-3">
+    <div class="flex flex-wrap gap-3 mb-3">
       <select
         v-model="eventTypeFilter"
         class="rounded-lg bg-slate-900 border border-slate-800 px-3 py-2 text-slate-100 text-sm"

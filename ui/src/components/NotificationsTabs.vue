@@ -30,12 +30,12 @@ function tabClasses(name: string) {
 </script>
 
 <template>
-  <nav class="flex gap-1 mb-4 border-b border-slate-800">
+  <nav class="flex gap-1 mb-4 border-b border-slate-800 overflow-x-auto">
     <RouterLink
       v-for="t in tabs"
       :key="t.name"
       :to="{ name: t.name }"
-      class="px-4 py-2 border-b-2 transition-colors"
+      class="px-4 py-2 border-b-2 transition-colors whitespace-nowrap shrink-0"
       :class="tabClasses(t.name)"
     >
       {{ t.label }}

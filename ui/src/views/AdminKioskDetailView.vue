@@ -232,7 +232,7 @@ async function submitRepublish() {
 </script>
 
 <template>
-  <main class="p-6 max-w-6xl mx-auto w-full">
+  <main class="p-4 sm:p-6 max-w-6xl mx-auto w-full">
     <button
       type="button"
       class="text-sm text-slate-400 hover:text-slate-200 mb-3"
@@ -263,12 +263,12 @@ async function submitRepublish() {
 
     <div v-if="loading && !kiosk" class="text-slate-500 text-center py-8">Loading…</div>
 
-    <div v-if="kiosk" class="flex gap-1 mb-4 border-b border-slate-800">
+    <div v-if="kiosk" class="flex gap-1 mb-4 border-b border-slate-800 overflow-x-auto">
       <button
         v-for="t in (['overview','items','inventory','instances'] as TabId[])"
         :key="t"
         type="button"
-        class="px-4 py-2 text-sm border-b-2 -mb-px"
+        class="px-3 sm:px-4 py-2 text-sm border-b-2 -mb-px whitespace-nowrap"
         :class="activeTab === t
           ? 'border-brand-primary text-slate-100'
           : 'border-transparent text-slate-400 hover:text-slate-200'"
@@ -279,7 +279,7 @@ async function submitRepublish() {
     </div>
 
     <div v-if="kiosk && activeTab === 'overview'" class="rounded-2xl bg-slate-900 border border-slate-800 p-5">
-      <div class="grid grid-cols-2 gap-4">
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <label class="flex flex-col gap-1">
           <span class="text-sm text-slate-400">Kiosk code</span>
           <span class="rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-slate-100 font-mono text-sm">

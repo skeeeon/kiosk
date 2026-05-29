@@ -310,7 +310,7 @@ async function onDelete() {
       </div>
     </header>
 
-    <div class="flex gap-3 mb-4">
+    <div class="flex flex-col sm:flex-row gap-3 mb-4">
       <input
         ref="searchInput"
         v-model="search"

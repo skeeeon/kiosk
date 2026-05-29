@@ -87,6 +87,15 @@ function alignClass(align?: 'left' | 'right' | 'center') {
   return 'text-left'
 }
 
+// On mobile the table collapses to stacked label:value cards (see template),
+// where every cell reads left-to-right regardless of its desktop alignment.
+// So a column's `align` only takes effect at sm+; mobile cells stay left.
+function smAlignClass(align?: 'left' | 'right' | 'center') {
+  if (align === 'right') return 'sm:text-right'
+  if (align === 'center') return 'sm:text-center'
+  return ''
+}
+
 // 2-state sort cycle: clicking a different column starts at asc; clicking the
 // same column toggles direction. Returning to null requires the caller to set
 // sort = null externally (e.g. via a "clear sort" affordance).
@@ -119,9 +128,13 @@ function onRowClick(row: T) {
 
 <template>
   <div class="rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden">
+    <!-- Below sm the table collapses to stacked cards: the table/row-group/row/
+         cell display roles are dropped to `block`, the header is hidden, and
+         each cell renders its column label via a `data-label` ::before. At sm+
+         everything reverts to a normal scrollable table. -->
     <div class="overflow-x-auto">
-      <table class="w-full text-left text-sm">
-        <thead class="bg-slate-950/70 text-slate-400">
+      <table class="block sm:table w-full text-left text-sm">
+        <thead class="hidden sm:table-header-group bg-slate-950/70 text-slate-400">
           <tr>
             <th
               v-for="col in columns"
@@ -161,19 +174,19 @@ function onRowClick(row: T) {
             <th v-if="rowClickable" class="w-8" aria-hidden="true" />
           </tr>
         </thead>
-        <tbody class="divide-y divide-slate-800">
-          <tr v-if="loading">
-            <td :colspan="totalCols" class="text-center text-slate-500 py-8">Loading…</td>
+        <tbody class="block sm:table-row-group divide-y divide-slate-800">
+          <tr v-if="loading" class="block sm:table-row">
+            <td :colspan="totalCols" class="block sm:table-cell text-center text-slate-500 py-8">Loading…</td>
           </tr>
-          <tr v-else-if="error">
-            <td :colspan="totalCols" class="text-center py-8">
+          <tr v-else-if="error" class="block sm:table-row">
+            <td :colspan="totalCols" class="block sm:table-cell text-center py-8">
               <slot name="error" :error="error">
                 <span class="text-red-300">{{ error }}</span>
               </slot>
             </td>
           </tr>
-          <tr v-else-if="rows.length === 0">
-            <td :colspan="totalCols" class="text-center text-slate-500 py-8">
+          <tr v-else-if="rows.length === 0" class="block sm:table-row">
+            <td :colspan="totalCols" class="block sm:table-cell text-center text-slate-500 py-8">
               <slot name="empty">{{ emptyText }}</slot>
             </td>
           </tr>
@@ -182,6 +195,7 @@ function onRowClick(row: T) {
             v-else
             :key="rowKey(row)"
             :class="[
+              'block sm:table-row py-1.5 sm:py-0',
               rowClickable ? 'group hover:bg-slate-800/50 cursor-pointer' : '',
               rowClass?.(row) ?? '',
             ]"
@@ -190,13 +204,20 @@ function onRowClick(row: T) {
             <td
               v-for="col in columns"
               :key="col.key"
-              :class="['px-4 py-3', alignClass(col.align), col.cellClass]"
+              :data-label="col.label ?? ''"
+              :class="[
+                'grid grid-cols-[7.5rem_1fr] items-center gap-3 px-4 py-1.5 text-left',
+                'before:content-[attr(data-label)] before:text-slate-500 before:font-medium before:truncate',
+                'sm:table-cell sm:py-3 sm:gap-0 sm:before:hidden',
+                smAlignClass(col.align),
+                col.cellClass,
+              ]"
             >
               <slot :name="`cell-${col.key}`" :row="row" :index="index">
                 {{ (row as Record<string, unknown>)[col.key] ?? '' }}
               </slot>
             </td>
-            <td v-if="rowClickable" class="pr-3 pl-0 text-right">
+            <td v-if="rowClickable" class="hidden sm:table-cell pr-3 pl-0 text-right">
               <svg
                 xmlns="http://www.w3.org/2000/svg"
                 viewBox="0 0 20 20"

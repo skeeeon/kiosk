@@ -180,13 +180,13 @@ const columns: ColumnDef[] = [
     </div>
 
     <template v-if="!(managed && !isController)">
-      <div class="flex gap-1 border-b border-slate-800 mb-4">
+      <div class="flex gap-1 border-b border-slate-800 mb-4 overflow-x-auto">
         <button
           v-for="k in availableKinds"
           :key="k"
           type="button"
           :class="[
-            'px-4 py-2 -mb-px border-b-2 text-sm font-medium transition-colors',
+            'px-4 py-2 -mb-px border-b-2 text-sm font-medium transition-colors whitespace-nowrap shrink-0',
             kind === k
               ? 'border-brand-primary text-slate-100'
               : 'border-transparent text-slate-400 hover:text-slate-200',

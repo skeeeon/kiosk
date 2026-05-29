@@ -136,7 +136,7 @@ const totalExtra = computed(() => {
     </div>
 
     <template v-else>
-      <div class="flex gap-3 mb-4">
+      <div class="flex flex-wrap gap-3 mb-4">
         <button
           type="button"
           class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200"

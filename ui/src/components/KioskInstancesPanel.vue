@@ -274,7 +274,7 @@ const columns: ColumnDef[] = [
 
 <template>
   <section class="space-y-3">
-    <header class="flex items-center justify-between gap-3">
+    <header class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
       <div>
         <h3 class="text-sm font-medium text-slate-200">Item instances</h3>
         <p class="text-xs text-slate-500">
@@ -287,7 +287,7 @@ const columns: ColumnDef[] = [
           v-model="itemFilter"
           type="text"
           placeholder="Filter by item…"
-          class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-1.5 text-slate-100 text-sm w-44"
+          class="flex-1 sm:flex-none rounded-lg bg-slate-800 border border-slate-700 px-3 py-1.5 text-slate-100 text-sm sm:w-44"
         />
         <button
           type="button"
