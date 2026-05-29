@@ -125,22 +125,36 @@ func (a *Aggregator) ProjectOpenCheckoutsInsert(p EventPayload) projectOutcome {
 
 // ProjectOpenCheckoutsClose mirrors commit.closeCheckoutsForLine: delete up
 // to qty rows on a return. Serialized lines target the exact item_instance;
-// non-serialized prefer original_checkout_user_code, falling back to any
-// other user, FIFO by checked_out_at, all scoped to this kiosk_code.
+// non-serialized take the target user's oldest rows (FIFO by checked_out_at),
+// scoped to this kiosk_code — never another user's rows.
 //
-// Idempotency: redelivery deletes rows that no longer exist (a no-op).
-// We don't attempt to recreate deleted rows on duplicate return events;
-// the worst case is the second delete matches different rows, which would
-// be a real correctness issue — but since JetStream delivers in-order and
-// our consumer is single-threaded, the only way to hit this is if the
-// kiosk emits the same return event twice, which is what the kiosk-side
-// idempotency anchors prevent.
+// Idempotency: this DELETES rows, so there's no surviving row to dedupe
+// against. ProjectLine runs in a SEPARATE transaction before this, so
+// "skip if the line already exists" is unsafe — a redelivery after a lost
+// Ack (or AckWait expiry) of an already-applied close would re-select and
+// delete a *different* fungible row. We therefore record the return line in
+// the applied_oc_closes guard table inside the same transaction as the
+// deletes: a redelivery finds the guard row and no-ops atomically.
 func (a *Aggregator) ProjectOpenCheckoutsClose(p EventPayload) projectOutcome {
 	if p.Qty < 1 {
 		return projectAck
 	}
+	if p.LineID == "" {
+		// No idempotency anchor available. A return always carries its line
+		// id (ProjectLine needs it too), so this is a malformed payload —
+		// skip rather than risk a non-idempotent delete.
+		slog.Warn("controller.aggregator.oc_close.missing_line_id", "kiosk_code", p.KioskCode)
+		return projectAck
+	}
 
 	txErr := a.app.RunInTransaction(func(tx core.App) error {
+		already, err := markCloseApplied(tx, "ret:"+p.LineID)
+		if err != nil {
+			return err
+		}
+		if already {
+			return nil // redelivery — this close was already applied
+		}
 		rows, err := candidateOpenRowsControllerSide(tx, p)
 		if err != nil {
 			return err
@@ -158,10 +172,44 @@ func (a *Aggregator) ProjectOpenCheckoutsClose(p EventPayload) projectOutcome {
 		return nil
 	})
 	if txErr != nil {
+		if isUniqueViolation(txErr) {
+			// A concurrent delivery beat us to the guard insert (shouldn't
+			// happen with a single-threaded consumer, but be safe): the
+			// other delivery applied the close. Done.
+			return projectAck
+		}
 		slog.Warn("controller.aggregator.oc_close.tx_failed", "error", txErr)
 		return projectRetry
 	}
 	return projectAck
+}
+
+// markCloseApplied is the open_checkouts close-projection idempotency guard.
+// It inserts key into applied_oc_closes inside the caller's transaction;
+// returns (true, nil) when the key was already present (a redelivery whose
+// close effect already committed). Because the guard insert and the row
+// deletes share one transaction, "guard present" is equivalent to "close
+// already applied" — JetStream redelivery becomes a clean no-op rather than
+// a second, divergent delete.
+func markCloseApplied(tx core.App, key string) (already bool, err error) {
+	existing, err := tx.FindRecordsByFilter("applied_oc_closes",
+		"dedupe_key = {:k}", "", 1, 0, dbx.Params{"k": key})
+	if err != nil {
+		return false, fmt.Errorf("close-guard lookup: %w", err)
+	}
+	if len(existing) > 0 {
+		return true, nil
+	}
+	col, err := tx.FindCollectionByNameOrId("applied_oc_closes")
+	if err != nil {
+		return false, fmt.Errorf("find applied_oc_closes collection: %w", err)
+	}
+	rec := core.NewRecord(col)
+	rec.Set("dedupe_key", key)
+	if err := tx.Save(rec); err != nil {
+		return false, fmt.Errorf("save close-guard %q: %w", key, err)
+	}
+	return false, nil
 }
 
 // candidateOpenRowsControllerSide picks the open_checkouts rows a return
@@ -203,26 +251,20 @@ func candidateOpenRowsControllerSide(tx core.App, p EventPayload) ([]*core.Recor
 		return nil, nil
 	}
 
-	primary, err := tx.FindRecordsByFilter("open_checkouts",
+	// Target user ONLY — no borrowing from other users. Mirrors
+	// commit.candidateOpenRows: a return that exceeds the target's open rows
+	// leaves other workers' rows intact (commit stamps that line
+	// uncorrelated). An earlier version borrowed the deficit from any other
+	// user in FIFO order, which silently closed an innocent worker's checkout
+	// and drifted this projection from the authoritative kiosk state.
+	rows, err := tx.FindRecordsByFilter("open_checkouts",
 		"kiosk_code = {:k} && item = {:item} && user = {:user}",
 		"checked_out_at", p.Qty, 0,
 		dbx.Params{"k": p.KioskCode, "item": item.Id, "user": target.Id})
 	if err != nil {
-		return nil, fmt.Errorf("find primary open rows: %w", err)
+		return nil, fmt.Errorf("find open rows for target user: %w", err)
 	}
-	if len(primary) >= p.Qty {
-		return primary, nil
-	}
-
-	need := p.Qty - len(primary)
-	fallback, err := tx.FindRecordsByFilter("open_checkouts",
-		"kiosk_code = {:k} && item = {:item} && user != {:user}",
-		"checked_out_at", need, 0,
-		dbx.Params{"k": p.KioskCode, "item": item.Id, "user": target.Id})
-	if err != nil {
-		return nil, fmt.Errorf("find fallback open rows: %w", err)
-	}
-	return append(primary, fallback...), nil
+	return rows, nil
 }
 
 // handleCheckoutAdminClose dispatches a checkout.admin_close event. The
@@ -246,6 +288,24 @@ func (a *Aggregator) handleCheckoutAdminClose(msg jetstream.Msg, p EventPayload)
 // row id, so (kiosk, item, user, FIFO) is the equivalent match.
 func (a *Aggregator) ProjectOpenCheckoutsAdminClose(p EventPayload) projectOutcome {
 	txErr := a.app.RunInTransaction(func(tx core.App) error {
+		// Idempotency guard, same rationale as ProjectOpenCheckoutsClose: the
+		// delete leaves no row to dedupe against, so a redelivery would
+		// re-select a different fungible row. We key on the admin_close LINE
+		// id (not the kiosk's open_checkout id): it's unique per close, present
+		// in the live event, AND recoverable by ledger.republish (which can't
+		// recover the open_checkout id — that row was deleted at close time).
+		// Keying on the line id keeps live and republish idempotent against
+		// each other. An empty id means a payload predating the field — skip
+		// the guard and fall back to the original best-effort delete.
+		if p.LineID != "" {
+			already, err := markCloseApplied(tx, "ac:"+p.LineID)
+			if err != nil {
+				return err
+			}
+			if already {
+				return nil
+			}
+		}
 		var (
 			rows []*core.Record
 			err  error
@@ -286,6 +346,9 @@ func (a *Aggregator) ProjectOpenCheckoutsAdminClose(p EventPayload) projectOutco
 		return nil
 	})
 	if txErr != nil {
+		if isUniqueViolation(txErr) {
+			return projectAck // concurrent delivery applied the close
+		}
 		slog.Warn("controller.aggregator.oc_admin_close.tx_failed", "error", txErr)
 		return projectRetry
 	}

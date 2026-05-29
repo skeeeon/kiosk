@@ -48,7 +48,7 @@ watch(
     loading.value = true
     try {
       lines.value = await pb.collection('transaction_lines').getFullList<TxLineRow>({
-        filter: `transaction = "${id}"`,
+        filter: pb.filter('transaction = {:tx}', { tx: id }),
         expand: 'item,original_checkout_user',
         sort: '+created',
       })

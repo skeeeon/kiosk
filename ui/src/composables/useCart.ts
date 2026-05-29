@@ -90,6 +90,10 @@ export function useCart() {
     const result = await api.post<RFIDScanResult>(
       `/api/kiosk/cart/rfid-scan?cart_id=${encodeURIComponent(session.cart.id)}`,
       {},
+      // Blocks server-side for the configured read window; allow generous
+      // headroom over the default so a normal read isn't aborted, while still
+      // bounding a wedged reader.
+      { timeoutMs: 30000 },
     )
     if (result.cart) session.setCart(result.cart)
     return result
@@ -108,6 +112,7 @@ export function useCart() {
     const result = await api.post<ReadTriggerResult>(
       `/api/kiosk/cart/read-trigger?cart_id=${encodeURIComponent(session.cart.id)}`,
       {},
+      { timeoutMs: 30000 },
     )
     if (result.cart) session.setCart(result.cart)
     return result

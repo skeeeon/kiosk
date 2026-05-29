@@ -123,7 +123,7 @@ async function loadStockedAt(itemId: string) {
     const rows = await pb.collection('kiosk_items').getFullList<{
       expand?: { kiosk?: KioskRecord }
     }>({
-      filter: `item = "${itemId}"`,
+      filter: pb.filter('item = {:item}', { item: itemId }),
       expand: 'kiosk',
       sort: '+created',
     })

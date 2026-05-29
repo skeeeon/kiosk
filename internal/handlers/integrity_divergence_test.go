@@ -328,6 +328,189 @@ func TestReplayOpenRows_SerializedInstanceReturn(t *testing.T) {
 	}
 }
 
+// TestReplayOpenRows_NoCrossUserBorrowOnOverReturn is the rebuild-side twin
+// of TestExpectedOpenCheckouts_MatchesActualAfterUncorrelatedReturn. It
+// confirms ledger.ReplayOpenRows (which backs the integrity REBUILD and the
+// reports view) agrees with commit after an over-quantity return: only the
+// returning user's row is removed and other users' rows survive. The old
+// cross-user fallback deleted Bob's row here — the bug that let "rebuild"
+// corrupt state the integrity "check" reported healthy.
+func TestReplayOpenRows_NoCrossUserBorrowOnOverReturn(t *testing.T) {
+	app := setupAppInternal(t)
+
+	users, _ := app.FindCollectionByNameOrId("users")
+	electricalID := ensureGroupForTest(t, app, "electrical")
+	alice := core.NewRecord(users)
+	alice.Set("email", "alice@test.local")
+	alice.Set("name", "Alice")
+	alice.Set("code", "EMP-A")
+	alice.Set("role", "foreman")
+	alice.Set("group", electricalID)
+	alice.Set("active", true)
+	alice.SetPassword("password-aaaaaaaaaaaa")
+	if err := app.Save(alice); err != nil {
+		t.Fatalf("save alice: %v", err)
+	}
+	bob := core.NewRecord(users)
+	bob.Set("email", "bob@test.local")
+	bob.Set("name", "Bob")
+	bob.Set("code", "EMP-B")
+	bob.Set("role", "worker")
+	bob.Set("group", electricalID)
+	bob.Set("active", true)
+	bob.SetPassword("password-bbbbbbbbbbbb")
+	if err := app.Save(bob); err != nil {
+		t.Fatalf("save bob: %v", err)
+	}
+
+	items, _ := app.FindCollectionByNameOrId("items")
+	hammer := core.NewRecord(items)
+	hammer.Set("code", "HAMMER")
+	hammer.Set("name", "Hammer")
+	hammer.Set("type", "tool")
+	hammer.Set("tracking_mode", "quantity")
+	hammer.Set("active", true)
+	if err := app.Save(hammer); err != nil {
+		t.Fatalf("save hammer: %v", err)
+	}
+
+	identity := kioskctx.Identity{KioskCode: "TEST", LocationCode: "T"}
+	noopPublish := func(string, any) {}
+
+	for _, u := range []struct {
+		id, code, name, cartID string
+	}{{bob.Id, "EMP-B", "Bob", "c1"}, {alice.Id, "EMP-A", "Alice", "c2"}} {
+		c := &cart.Cart{
+			ID: u.cartID, UserID: u.id, UserCode: u.code, UserName: u.name,
+			Lines: []*cart.Line{{
+				ItemID: hammer.Id, ItemCode: "HAMMER", ItemName: "Hammer",
+				ItemType: "tool", TrackingMode: "quantity",
+				Action: "checkout", Qty: 1,
+			}},
+		}
+		if _, err := commit.Commit(app, c, identity, commit.DefaultPolicy(), noopPublish); err != nil {
+			t.Fatalf("%s checkout: %v", u.name, err)
+		}
+	}
+
+	// Alice returns qty=2 — over-returns; commit closes only her row.
+	aliceReturn := &cart.Cart{
+		ID: "c3", UserID: alice.Id, UserCode: "EMP-A", UserName: "Alice",
+		Lines: []*cart.Line{{
+			ItemID: hammer.Id, ItemCode: "HAMMER", ItemName: "Hammer",
+			ItemType: "tool", TrackingMode: "quantity",
+			Action: "return", Qty: 2,
+		}},
+	}
+	if _, err := commit.Commit(app, aliceReturn, identity, commit.DefaultPolicy(), noopPublish); err != nil {
+		t.Fatalf("alice return: %v", err)
+	}
+
+	rows, err := ledger.ReplayOpenRows(app, "")
+	if err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("replay after over-return: want 1 row (Bob's), got %d", len(rows))
+	}
+	if rows[0].User != bob.Id {
+		t.Errorf("surviving replay row: want Bob, got %s", rows[0].User)
+	}
+}
+
+// TestReplayOpenRows_AdminCloseRemovesRow confirms admin_close lines are
+// replayed as a subtraction, so neither the integrity check reports false
+// drift nor the rebuild resurrects an administratively-closed checkout.
+func TestReplayOpenRows_AdminCloseRemovesRow(t *testing.T) {
+	app := setupAppInternal(t)
+
+	admins, err := app.FindCollectionByNameOrId("admins")
+	if err != nil {
+		t.Fatalf("find admins: %v", err)
+	}
+	admin := core.NewRecord(admins)
+	admin.Set("email", "admin@test.local")
+	admin.Set("name", "Admin")
+	admin.SetPassword("password-adminadmin")
+	if err := app.Save(admin); err != nil {
+		t.Fatalf("save admin: %v", err)
+	}
+
+	users, _ := app.FindCollectionByNameOrId("users")
+	worker := core.NewRecord(users)
+	worker.Set("email", "w@test.local")
+	worker.Set("name", "Worker")
+	worker.Set("code", "EMP-W")
+	worker.Set("role", "worker")
+	worker.Set("active", true)
+	worker.SetPassword("password-wwwwwwwwwwww")
+	if err := app.Save(worker); err != nil {
+		t.Fatalf("save worker: %v", err)
+	}
+
+	items, _ := app.FindCollectionByNameOrId("items")
+	hammer := core.NewRecord(items)
+	hammer.Set("code", "HAMMER")
+	hammer.Set("name", "Hammer")
+	hammer.Set("type", "tool")
+	hammer.Set("tracking_mode", "quantity")
+	hammer.Set("active", true)
+	if err := app.Save(hammer); err != nil {
+		t.Fatalf("save hammer: %v", err)
+	}
+
+	identity := kioskctx.Identity{KioskCode: "TEST", LocationCode: "T"}
+	noopPublish := func(string, any) {}
+
+	checkout := &cart.Cart{
+		ID: "c1", UserID: worker.Id, UserCode: "EMP-W", UserName: "Worker",
+		Lines: []*cart.Line{{
+			ItemID: hammer.Id, ItemCode: "HAMMER", ItemName: "Hammer",
+			ItemType: "tool", TrackingMode: "quantity",
+			Action: "checkout", Qty: 1,
+		}},
+	}
+	if _, err := commit.Commit(app, checkout, identity, commit.DefaultPolicy(), noopPublish); err != nil {
+		t.Fatalf("checkout: %v", err)
+	}
+
+	openRows, err := app.FindRecordsByFilter("open_checkouts", "", "", 1, 0)
+	if err != nil || len(openRows) != 1 {
+		t.Fatalf("expected 1 open row, got %d (err %v)", len(openRows), err)
+	}
+
+	// returned_offline does not touch inventory — keeps the test focused on
+	// the ledger subtraction rather than the qty side-effect.
+	if _, err := commit.AdminClose(app, commit.AdminCloseInput{
+		OpenCheckoutID: openRows[0].Id,
+		ActorID:        admin.Id,
+		Source:         "local",
+		Reason:         "returned_offline",
+		Identity:       identity,
+	}, noopPublish); err != nil {
+		t.Fatalf("admin close: %v", err)
+	}
+
+	// Rebuild replay must not resurrect the closed row.
+	rows, err := ledger.ReplayOpenRows(app, "")
+	if err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("replay after admin_close: want 0 rows, got %d", len(rows))
+	}
+
+	// Integrity check must net to zero for the holder (raw +1 checkout, -1
+	// admin_close), i.e. no drift.
+	expected, _, err := expectedOpenCheckouts(app)
+	if err != nil {
+		t.Fatalf("expectedOpenCheckouts: %v", err)
+	}
+	if got := expected[openKey{item: hammer.Id, instance: "", user: worker.Id}]; got != 0 {
+		t.Errorf("expected[worker] after admin_close: want 0, got %d", got)
+	}
+}
+
 // ensureGroupForTest returns the id of a groups row with the given code,
 // creating it on first use. Allows tests in this package to set users.group
 // using a human-readable label.

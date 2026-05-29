@@ -148,7 +148,14 @@ func TestProjectOpenCheckouts_ReturnFIFOByTargetUser(t *testing.T) {
 	}
 }
 
-func TestProjectOpenCheckouts_ReturnFallbackAcrossUsers(t *testing.T) {
+// TestProjectOpenCheckouts_ReturnNoCrossUserBorrow confirms the projector
+// mirrors commit exactly: a return against a user with no open rows closes
+// NOTHING and leaves other users' rows intact. Commit stamps such a line
+// uncorrelated and never borrows from another worker; borrowing here would
+// silently close an innocent worker's checkout and drift the controller's
+// view from the kiosk. (This used to assert the opposite — the old fallback
+// closed Bob's row — which was the bug.)
+func TestProjectOpenCheckouts_ReturnNoCrossUserBorrow(t *testing.T) {
 	app := setupApp(t)
 	seedUser(t, app, "WORKER-1", "Alice")
 	seedUser(t, app, "WORKER-2", "Bob")
@@ -165,9 +172,8 @@ func TestProjectOpenCheckouts_ReturnFallbackAcrossUsers(t *testing.T) {
 		Action: "checkout", Qty: 1, CompletedAt: t0,
 	})
 
-	// Alice returns a drill (matches her target user — none — then falls
-	// back to anyone else's row, which is Bob's). This mirrors the
-	// "uncorrelated" fallback the kiosk uses; the projector closes Bob's row.
+	// Alice returns a drill she doesn't have out. Her target-user query
+	// matches nothing; the projector must NOT borrow Bob's row.
 	mustProjectTx(t, agg, "src-tx-R", "WORKER-1", t0.Add(5*time.Minute))
 	mustProject(t, agg, EventPayload{
 		LineID: "src-line-R", KioskCode: "KIOSK-A", TransactionID: "src-tx-R",
@@ -175,8 +181,51 @@ func TestProjectOpenCheckouts_ReturnFallbackAcrossUsers(t *testing.T) {
 		Action: "return", Qty: 1, CompletedAt: t0.Add(5 * time.Minute),
 	})
 
-	if got := countOpenCheckouts(t, app, "KIOSK-A"); got != 0 {
-		t.Fatalf("after fallback return: want 0 rows, got %d", got)
+	rows := listOpenCheckouts(t, app, "KIOSK-A")
+	if len(rows) != 1 {
+		t.Fatalf("after cross-user return: want 1 row (Bob's, untouched), got %d", len(rows))
+	}
+	if rows[0].GetString("user") != userIDByCode(t, app, "WORKER-2") {
+		t.Errorf("surviving row: want Bob's, got user %s", rows[0].GetString("user"))
+	}
+}
+
+// TestProjectOpenCheckouts_CloseIdempotentOnRedelivery confirms a duplicate
+// return delivery (lost-Ack / AckWait-expiry redelivery) does NOT delete a
+// second row. Alice has 2 drills out; a qty=1 return delivered twice must
+// leave exactly 1 row.
+func TestProjectOpenCheckouts_CloseIdempotentOnRedelivery(t *testing.T) {
+	app := setupApp(t)
+	seedUser(t, app, "WORKER-1", "Alice")
+	seedItem(t, app, "DRILL", "Drill")
+
+	agg := NewAggregator(app, nil, "")
+	t0 := time.Now().UTC()
+
+	mustProjectTx(t, agg, "src-tx-A", "WORKER-1", t0)
+	mustProject(t, agg, EventPayload{
+		LineID: "src-line-A", KioskCode: "KIOSK-A", TransactionID: "src-tx-A",
+		ItemCode: "DRILL", UserCode: "WORKER-1",
+		Action: "checkout", Qty: 2, CompletedAt: t0,
+	})
+	if got := countOpenCheckouts(t, app, "KIOSK-A"); got != 2 {
+		t.Fatalf("setup: want 2 rows, got %d", got)
+	}
+
+	ret := EventPayload{
+		LineID: "src-line-R", KioskCode: "KIOSK-A", TransactionID: "src-tx-A",
+		ItemCode: "DRILL", UserCode: "WORKER-1",
+		Action: "return", Qty: 1, CompletedAt: t0.Add(time.Minute),
+	}
+	if out := agg.ProjectOpenCheckoutsClose(ret); out != projectAck {
+		t.Fatalf("first close: %v", out)
+	}
+	// Redelivery of the same return line.
+	if out := agg.ProjectOpenCheckoutsClose(ret); out != projectAck {
+		t.Fatalf("redelivered close: %v", out)
+	}
+	if got := countOpenCheckouts(t, app, "KIOSK-A"); got != 1 {
+		t.Errorf("after redelivered return: want 1 row (one close, not two), got %d", got)
 	}
 }
 
@@ -286,14 +335,33 @@ func TestProjectOpenCheckouts_AdminCloseDeletesRow(t *testing.T) {
 
 	// checkout.admin_close payload — note: the action field is empty since
 	// admin_close doesn't ride item.{action}. The projector keys on
-	// (kiosk_code, item_code, user_code) for non-serialized.
-	if out := agg.ProjectOpenCheckoutsAdminClose(EventPayload{
+	// (kiosk_code, item_code, user_code) for non-serialized. The admin_close
+	// LINE id is the idempotency anchor (stable across live + republish).
+	adminClose := EventPayload{
 		KioskCode: "KIOSK-A", ItemCode: "DRILL", UserCode: "WORKER-1",
-	}); out != projectAck {
+		LineID: "ac-line-1",
+	}
+	if out := agg.ProjectOpenCheckoutsAdminClose(adminClose); out != projectAck {
 		t.Fatalf("ProjectOpenCheckoutsAdminClose: %v", out)
 	}
 	if got := countOpenCheckouts(t, app, "KIOSK-A"); got != 0 {
 		t.Errorf("after admin_close: want 0, got %d", got)
+	}
+
+	// Redelivery must be a no-op (not re-close a now-unrelated row). Re-seed
+	// a fresh checkout for the same user/item, then redeliver the same
+	// admin_close: the guard must keep it from deleting the new row.
+	mustProjectTx(t, agg, "src-tx-B", "WORKER-1", t0.Add(10*time.Minute))
+	mustProject(t, agg, EventPayload{
+		LineID: "src-line-B", KioskCode: "KIOSK-A", TransactionID: "src-tx-B",
+		ItemCode: "DRILL", UserCode: "WORKER-1",
+		Action: "checkout", Qty: 1, CompletedAt: t0.Add(10 * time.Minute),
+	})
+	if out := agg.ProjectOpenCheckoutsAdminClose(adminClose); out != projectAck {
+		t.Fatalf("redelivered admin_close: %v", out)
+	}
+	if got := countOpenCheckouts(t, app, "KIOSK-A"); got != 1 {
+		t.Errorf("redelivered admin_close must not touch the new row: want 1, got %d", got)
 	}
 }
 

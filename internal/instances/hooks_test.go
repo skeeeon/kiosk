@@ -101,6 +101,54 @@ func ensureAdmin(t *testing.T, app core.App, email string) string {
 	return rec.Id
 }
 
+// TestNormalizeEPC_LowercasedOnWrite is the H5 regression: rfid_epc must be
+// stored lower-case (and trimmed) on every write so it matches the LLRP
+// reader's lower-case hex output. Covers both create and update through the
+// model-level hooks Register binds.
+func TestNormalizeEPC_LowercasedOnWrite(t *testing.T) {
+	app := setupApp(t)
+	New().Register(app)
+
+	items, _ := app.FindCollectionByNameOrId("items")
+	item := core.NewRecord(items)
+	item.Set("code", "DRILL-X")
+	item.Set("name", "Drill X")
+	item.Set("type", "tool")
+	item.Set("tracking_mode", "serialized")
+	item.Set("active", true)
+	if err := app.Save(item); err != nil {
+		t.Fatalf("save item: %v", err)
+	}
+
+	instances, _ := app.FindCollectionByNameOrId("item_instances")
+	inst := core.NewRecord(instances)
+	inst.Set("item", item.Id)
+	inst.Set("code", "DRILL-X-1")
+	inst.Set("active", true)
+	inst.Set("rfid_epc", "  E2806890ABCDEF12  ") // upper-case + surrounding space
+	if err := app.Save(inst); err != nil {
+		t.Fatalf("save instance: %v", err)
+	}
+
+	got, err := app.FindRecordById("item_instances", inst.Id)
+	if err != nil {
+		t.Fatalf("reload instance: %v", err)
+	}
+	if want := "e2806890abcdef12"; got.GetString("rfid_epc") != want {
+		t.Errorf("rfid_epc on create: got %q, want %q", got.GetString("rfid_epc"), want)
+	}
+
+	// Update path normalizes too.
+	got.Set("rfid_epc", "AABBCCDD")
+	if err := app.Save(got); err != nil {
+		t.Fatalf("update instance: %v", err)
+	}
+	reloaded, _ := app.FindRecordById("item_instances", inst.Id)
+	if want := "aabbccdd"; reloaded.GetString("rfid_epc") != want {
+		t.Errorf("rfid_epc on update: got %q, want %q", reloaded.GetString("rfid_epc"), want)
+	}
+}
+
 func TestWriteAudit_Create_RowAndEvent(t *testing.T) {
 	app := setupApp(t)
 	_, inst := seedItemWithInstance(t, app)

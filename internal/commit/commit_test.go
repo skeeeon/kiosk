@@ -600,6 +600,92 @@ func TestReturn_SerializedInstance_TargetsOnlyThatInstance(t *testing.T) {
 	}
 }
 
+// TestReturn_SerializedCrossUser_RejectedForNonForeman is the H3 regression:
+// a worker scanning another worker's serialized tool and flipping the line to
+// "return" must NOT silently close that checkout. The cart-write paths don't
+// set OriginalCheckoutUserID for a plain serialized scan, so before the fix
+// the cross-user gate was skipped and commit closed the holder's row by
+// instance with no foreman check. commit now resolves the holder server-side.
+func TestReturn_SerializedCrossUser_RejectedForNonForeman(t *testing.T) {
+	app := setupApp(t)
+	s := seedFixtures(t, app)
+	// Cart user (Alice) is a plain worker — not allowed cross-user returns.
+	setUserRoleAndGroup(t, app, s.UserID, "worker", "electrical")
+
+	// Bob checks out a serialized instance.
+	bobCheckout := newCart(s.OtherUserID, &cart.Line{
+		ItemID: s.ToolSerialID, Action: "checkout", Qty: 1,
+		ItemType: "tool", TrackingMode: "serialized",
+		ItemInstanceID: s.ToolSerialInstanceID,
+	})
+	bobCheckout.UserCode = "EMP-2"
+	bobCheckout.UserName = "Bob"
+	if _, err := commit.Commit(app, bobCheckout, testIdentity, commit.DefaultPolicy(), (&captured{}).publish); err != nil {
+		t.Fatalf("seed bob checkout: %v", err)
+	}
+
+	// Alice (worker) returns Bob's instance WITHOUT supplying
+	// OriginalCheckoutUserID — exactly the scan→flip-to-return path.
+	aliceReturn := newCart(s.UserID, &cart.Line{
+		ItemID: s.ToolSerialID, Action: "return", Qty: 1,
+		ItemType: "tool", TrackingMode: "serialized",
+		ItemInstanceID: s.ToolSerialInstanceID,
+	})
+	if _, err := commit.Commit(app, aliceReturn, testIdentity, commit.DefaultPolicy(), (&captured{}).publish); err == nil {
+		t.Fatal("expected error: non-foreman serialized cross-user return must be blocked")
+	}
+
+	// Bob's open checkout must survive (transaction rolled back).
+	if n := countOpenCheckouts(t, app, "item_instance = {:inst}", dbx.Params{"inst": s.ToolSerialInstanceID}); n != 1 {
+		t.Errorf("bob's serialized open row after rejected return: want 1, got %d", n)
+	}
+}
+
+// TestReturn_SerializedCrossUser_AllowedForForemanSameGroup confirms the gate
+// still permits the legitimate case — a foreman in the holder's group closing
+// another worker's serialized checkout — and attributes the line to the
+// resolved holder even though the client supplied no OriginalCheckoutUserID.
+func TestReturn_SerializedCrossUser_AllowedForForemanSameGroup(t *testing.T) {
+	app := setupApp(t)
+	s := seedFixtures(t, app)
+	setUserRoleAndGroup(t, app, s.UserID, "foreman", "electrical")
+	setUserRoleAndGroup(t, app, s.OtherUserID, "worker", "electrical")
+
+	bobCheckout := newCart(s.OtherUserID, &cart.Line{
+		ItemID: s.ToolSerialID, Action: "checkout", Qty: 1,
+		ItemType: "tool", TrackingMode: "serialized",
+		ItemInstanceID: s.ToolSerialInstanceID,
+	})
+	bobCheckout.UserCode = "EMP-2"
+	bobCheckout.UserName = "Bob"
+	if _, err := commit.Commit(app, bobCheckout, testIdentity, commit.DefaultPolicy(), (&captured{}).publish); err != nil {
+		t.Fatalf("seed bob checkout: %v", err)
+	}
+
+	aliceReturn := newCart(s.UserID, &cart.Line{
+		ItemID: s.ToolSerialID, Action: "return", Qty: 1,
+		ItemType: "tool", TrackingMode: "serialized",
+		ItemInstanceID: s.ToolSerialInstanceID,
+	})
+	if _, err := commit.Commit(app, aliceReturn, testIdentity, commit.DefaultPolicy(), (&captured{}).publish); err != nil {
+		t.Fatalf("foreman serialized cross-user return should succeed: %v", err)
+	}
+
+	if n := countOpenCheckouts(t, app, "item_instance = {:inst}", dbx.Params{"inst": s.ToolSerialInstanceID}); n != 0 {
+		t.Errorf("instance open rows after foreman return: want 0, got %d", n)
+	}
+	// The line must be attributed to the server-resolved holder (Bob).
+	line, err := app.FindFirstRecordByFilter("transaction_lines",
+		"item_instance = {:inst} && action = 'return'", dbx.Params{"inst": s.ToolSerialInstanceID})
+	if err != nil {
+		t.Fatalf("find return line: %v", err)
+	}
+	if line.GetString("original_checkout_user") != s.OtherUserID {
+		t.Errorf("return line original_checkout_user: want Bob (%s), got %q",
+			s.OtherUserID, line.GetString("original_checkout_user"))
+	}
+}
+
 func TestCheckout_SerializedItem_MissingInstance_Rejected(t *testing.T) {
 	app := setupApp(t)
 	s := seedFixtures(t, app)

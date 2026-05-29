@@ -173,6 +173,14 @@ const (
 	RFIDModeEnclosureDiff = "enclosure_diff"
 )
 
+// MaxEnclosureReadWindow caps rfid.read_window in enclosure_diff mode. The
+// read runs synchronously inside a NATS request/reply whose caller (the
+// controller) times out at ~5s; the window must leave headroom for the LLRP
+// AddROSpec/EnableROSpec round-trips, the reconciliation queries, and the
+// command-level deadline (commands.ReadTriggerBudget) that releases the
+// reader lock. Keep this comfortably below that budget.
+const MaxEnclosureReadWindow = 3500 * time.Millisecond
+
 // BrandingConfig customizes the kiosk's visual identity. All fields are
 // optional; empty/missing values fall back to the SPA's built-in defaults.
 //
@@ -431,6 +439,16 @@ func validateRFID(r *RFIDConfig) error {
 	}
 	if r.ReadWindow.AsDuration() == 0 {
 		r.ReadWindow = Duration(3 * time.Second)
+	}
+	// enclosure_diff runs the read synchronously inside a NATS request/reply
+	// bounded by the controller's ~5s command timeout. A read_window at or
+	// near that guarantees the reply misses the window — the caller then
+	// renders "kiosk offline" even though the read succeeded. Cap it with
+	// headroom for the LLRP round-trips + reconciliation queries. counter_scan
+	// is HTTP-driven and not subject to the 5s reply, so it isn't capped here.
+	if r.Mode == RFIDModeEnclosureDiff && r.ReadWindow.AsDuration() > MaxEnclosureReadWindow {
+		return fmt.Errorf("rfid.read_window %s is too long for %q (max %s; the read runs inside a ~5s command reply window)",
+			r.ReadWindow.AsDuration(), RFIDModeEnclosureDiff, MaxEnclosureReadWindow)
 	}
 	return nil
 }

@@ -43,7 +43,7 @@ async function load() {
   try {
     const [membershipRes, itemsRes] = await Promise.all([
       pb.collection('kiosk_items').getFullList<KioskItemRecord & { expand?: { item?: ItemRecord } }>({
-        filter: `kiosk = "${props.kioskId}"`,
+        filter: pb.filter('kiosk = {:kiosk}', { kiosk: props.kioskId }),
         expand: 'item',
         sort: '+created',
       }),

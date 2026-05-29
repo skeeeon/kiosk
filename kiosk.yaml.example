@@ -98,5 +98,5 @@ rfid:
   reader:
     host: ""                # reader IP / hostname (required when enabled)
     port: 5084              # standard LLRP port
-  read_window: "3s"         # how long a single inventory cycle runs
+  read_window: "3s"         # one inventory cycle; enclosure_diff caps this at 3.5s (runs inside the ~5s command reply)
   door_id: ""               # required when mode=enclosure_diff

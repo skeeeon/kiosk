@@ -14,6 +14,7 @@ package instances
 
 import (
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -82,6 +83,22 @@ func (h *Hooks) takePending(id string) (deleteSnapshot, bool) {
 
 // Register binds the hooks on the given app. Safe to call once at boot.
 func (h *Hooks) Register(app core.App) {
+	// Normalize rfid_epc to lower-case hex on EVERY write, regardless of path.
+	// These are model-level hooks (not the *Request variants), so they fire on
+	// the admin SPA's PB-REST writes, the controller command-bus mutations
+	// (instances.Perform* → tx.Save), and seeds alike. The LLRP reader emits
+	// lower-case hex and the scan/diff matchers compare exactly, so a stored
+	// upper-case EPC would never match an observed tag — silently dropping the
+	// tag (counter_scan) or synthesizing a wrong cart line (enclosure_diff).
+	app.OnRecordCreate("item_instances").BindFunc(func(e *core.RecordEvent) error {
+		normalizeEPC(e.Record)
+		return e.Next()
+	})
+	app.OnRecordUpdate("item_instances").BindFunc(func(e *core.RecordEvent) error {
+		normalizeEPC(e.Record)
+		return e.Next()
+	})
+
 	app.OnRecordCreateRequest("item_instances").BindFunc(func(e *core.RecordRequestEvent) error {
 		if err := e.Next(); err != nil {
 			return err
@@ -163,6 +180,19 @@ func (h *Hooks) Register(app core.App) {
 		h.writeAuditFromSnapshot(app, snap)
 		return e.Next()
 	})
+}
+
+// normalizeEPC lower-cases (and trims) the record's rfid_epc in place so the
+// stored form matches the LLRP reader's lower-case hex output. No-op when the
+// field is empty or already normalized. See the Register comment for why.
+func normalizeEPC(rec *core.Record) {
+	epc := rec.GetString("rfid_epc")
+	if epc == "" {
+		return
+	}
+	if norm := strings.ToLower(strings.TrimSpace(epc)); norm != epc {
+		rec.Set("rfid_epc", norm)
+	}
 }
 
 // authAdminID extracts the requesting admin's PB record id. Returns "" when

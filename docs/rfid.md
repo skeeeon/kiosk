@@ -12,6 +12,16 @@ is one tag = one `item_instances` row, matched on the existing
 `rfid_epc` field. Consumables and quantity-tracked tools never
 participate in RFID flows.
 
+EPC matching is **case-insensitive in effect**: `item_instances.rfid_epc`
+is normalized to lower-case, trimmed hex on every write (model hooks in
+[`internal/instances/hooks.go`](../internal/instances/hooks.go), covering
+both the admin SPA's PocketBase writes and the controller command bus),
+backfilled by [`migrations/1792000000_lowercase_rfid_epc.go`](../migrations/1792000000_lowercase_rfid_epc.go).
+The LLRP reader emits lower-case hex and both match paths
+(`scan.scanInstanceByRFID`, `expectedInstanceStates`) fold case
+defensively, so a tag registered in any case resolves reliably against an
+observed read.
+
 There are two distinct RFID input surfaces, deliberately not unified:
 
 - **USB HID badge reader.** A card scan emits keyboard events just like
@@ -176,7 +186,7 @@ rfid:
   reader:
     host: ""                # reader IP / hostname (required when enabled)
     port: 5084              # standard LLRP port
-  read_window: "3s"         # how long a single inventory cycle runs
+  read_window: "3s"         # one inventory cycle; enclosure_diff caps this at 3.5s
   door_id: ""               # required when mode=enclosure_diff
 ```
 
@@ -186,6 +196,11 @@ Validation at startup:
 - When `rfid.enabled=true`, `rfid.reader.host` and `rfid.reader.port`
   are required.
 - When `rfid.mode=enclosure_diff`, `rfid.door_id` is required.
+- When `rfid.mode=enclosure_diff`, `rfid.read_window` must be ≤ 3.5 s
+  (`config.MaxEnclosureReadWindow`) — the read runs synchronously inside the
+  controller's ~5 s command-reply window, so a larger window would push the
+  reply past it. `counter_scan` is HTTP-driven and not capped. Defaults to
+  3 s when unset.
 - Failure to connect to the reader on startup logs a warning but does
   not block the binary — the kiosk falls back to a degraded state
   where RFID endpoints return 503 until the connection comes up. This
@@ -216,7 +231,12 @@ semantics already documented in CLAUDE.md.
 | `<prefix>.<code>.command.read.trigger` | `{cart_id}` *or* `{user_code, door_id}` (+ optional `command_id`) | `{success, error, data: {cart, added_lines, observed_epcs, unresolved_epcs, skipped_cross_user_count}}` |
 
 Both commands MUST reply within the 5 s window even on error —
-silence renders "kiosk offline" at the caller.
+silence renders "kiosk offline" at the caller. To hold that contract for
+`read.trigger` even with a slow or half-open reader, the handler bounds the
+LLRP read with a 4.5 s deadline (`commands.ReadTriggerBudget`, below the 5 s
+window): past it the read unwinds, releases the reader's serialization lock,
+and replies with an error rather than hanging the caller. The `read_window`
+≤ 3.5 s cap above keeps a normal read comfortably inside that budget.
 
 **Events** (fire-and-forget, JetStream-bound):
 
@@ -252,7 +272,14 @@ without the SPA's knowledge. A small SSE endpoint covers it:
 - SPA opens the EventSource when `CheckoutView`'s cart_id becomes
   non-null, refetches via the GET endpoint on every tickle, drops
   the subscription on unmount or on `cart.gone`. Plain
-  `EventSource` — no library.
+  `EventSource` — no library. The browser auto-reconnects only on
+  network-level drops; for a non-2xx response (a transient 503 on
+  restart, or a 404 for an unknown cart_id) it sets `readyState` to
+  CLOSED and gives up. So the composable (`useCartEvents.ts`) detects
+  CLOSED and reconnects itself with capped exponential backoff
+  (1.5 s → 30 s), refetching once on recovery to catch writes missed
+  while the stream was down. `cart.gone` is the one terminal case where
+  it stops for good.
 - `counter_scan` also fires the tickle even though the button press
   is local; this keeps the broker uniform and supports any future
   "spectator" client (e.g., a controller-side watch-this-kiosk view).

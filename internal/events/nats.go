@@ -117,7 +117,10 @@ func Connect(cfg config.NATSConfig, name string) (Publisher, error) {
 		return nil, errors.New("nats.enabled=true but nats.url is empty")
 	}
 
-	opts := buildNATSOptions(cfg, name)
+	opts, err := buildNATSOptions(cfg, name)
+	if err != nil {
+		return nil, err
+	}
 	nc, err := nats.Connect(cfg.URL, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("connect %s: %w", cfg.URL, err)
@@ -133,8 +136,10 @@ func Connect(cfg config.NATSConfig, name string) (Publisher, error) {
 }
 
 // buildNATSOptions translates the config struct into nats.Options. Auth
-// knobs compose so an operator can mix (e.g., TLS + nkey).
-func buildNATSOptions(cfg config.NATSConfig, name string) []nats.Option {
+// knobs compose so an operator can mix (e.g., TLS + nkey). Returns an error
+// only for a structural problem an operator must fix (e.g., an unloadable
+// nkey seed) — network reachability is handled by RetryOnFailedConnect.
+func buildNATSOptions(cfg config.NATSConfig, name string) ([]nats.Option, error) {
 	var opts []nats.Option
 
 	// Identify ourselves for nats-server logs.
@@ -180,11 +185,16 @@ func buildNATSOptions(cfg config.NATSConfig, name string) []nats.Option {
 		opts = append(opts, nats.UserCredentials(cfg.CredentialsFile))
 	}
 	if cfg.NKeySeedFile != "" {
-		if opt, err := nats.NkeyOptionFromSeed(cfg.NKeySeedFile); err == nil {
-			opts = append(opts, opt)
-		} else {
-			slog.Warn("kiosk.nats.nkey_load_failed", "path", cfg.NKeySeedFile, "error", err)
+		opt, err := nats.NkeyOptionFromSeed(cfg.NKeySeedFile)
+		if err != nil {
+			// The operator explicitly asked for nkey auth. Silently
+			// continuing without it would connect unauthenticated (if the
+			// server permits) or fail the handshake later with a confusing
+			// error far from the real cause — a bad seed path/contents. Fail
+			// loud, the same way an unloadable creds file does via nats.Connect.
+			return nil, fmt.Errorf("load nats nkey seed %q: %w", cfg.NKeySeedFile, err)
 		}
+		opts = append(opts, opt)
 	}
 
 	// TLS — explicit knobs override the URL scheme's default.
@@ -198,5 +208,5 @@ func buildNATSOptions(cfg config.NATSConfig, name string) []nats.Option {
 		opts = append(opts, nats.Secure(&tls.Config{InsecureSkipVerify: true})) //nolint:gosec
 	}
 
-	return opts
+	return opts, nil
 }

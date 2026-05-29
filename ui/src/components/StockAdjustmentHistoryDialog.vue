@@ -24,7 +24,7 @@ async function load() {
   error.value = null
   try {
     rows.value = await pb.collection('stock_adjustments').getFullList<StockAdjustmentRecord>({
-      filter: `item = "${props.itemId}"`,
+      filter: pb.filter('item = {:item}', { item: props.itemId }),
       sort: '-created',
       expand: 'admin',
     })

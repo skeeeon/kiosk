@@ -19,14 +19,21 @@ type LedgerRepublishResult struct {
 	To                    string `json:"to,omitempty"`
 	TransactionsPublished int    `json:"transactions_published"`
 	LinesPublished        int    `json:"lines_published"`
-	Skipped               int    `json:"skipped"`
+	// AdminClosesPublished counts admin force-close transactions re-emitted as
+	// a single checkout.admin_close event (the live shape) rather than the
+	// transaction.complete + item.{action} pair the regular walk emits.
+	AdminClosesPublished int `json:"admin_closes_published,omitempty"`
+	Skipped              int `json:"skipped"`
 }
 
 // RepublishLedger walks completed transactions (optionally clipped to a
-// completed_at window) and re-emits transaction.complete +
-// item.{action} events for each. The controller's aggregator is
-// idempotent on (source_kiosk_code, source_transaction_id) and
-// source_line_id, so re-publishing is safe.
+// completed_at window) and re-emits the events the live commit path would
+// have: transaction.complete + item.{action} for ordinary transactions, and
+// a single checkout.admin_close for admin force-close transactions (which
+// commit.AdminClose emits *instead of* the regular pair — so republish must
+// match that shape or the controller would diverge). The controller's
+// aggregator is idempotent on (source_kiosk_code, source_transaction_id),
+// source_line_id, and the admin_close line id, so re-publishing is safe.
 //
 // Use when the controller's projected ledger has drifted from this
 // kiosk's — e.g., the broker was unreachable mid-publish and the
@@ -135,6 +142,52 @@ func republishLedger(app core.App, filter string, params dbx.Params, publish fun
 			continue
 		}
 
+		kioskCode := tx.GetString("kiosk_code")
+		locationCode := tx.GetString("location_code")
+		completedAt := tx.GetDateTime("completed_at").Time()
+
+		// Admin force-close transactions get the LIVE event shape: only a
+		// checkout.admin_close event. commit.AdminClose emits exactly that —
+		// never transaction.complete or item.* — so re-emitting the regular
+		// pair here would (a) add transaction/line rows the controller's live
+		// path never creates, and (b) leave the closed open_checkouts row OPEN
+		// on the controller, because item.admin_close is a no-op for the
+		// open_checkouts projector — only checkout.admin_close deletes the row.
+		// An admin-close transaction always has exactly one line.
+		if len(lines) == 1 && lines[0].GetString("action") == "admin_close" {
+			l := lines[0]
+			itemRec, ierr := app.FindRecordById("items", l.GetString("item"))
+			if ierr != nil {
+				out.Skipped++
+				continue
+			}
+			publish(events.AdminCloseSubject(kioskCode),
+				events.BuildAdminClosePayload(events.AdminCloseInput{
+					TransactionID:  tx.Id,
+					LineID:         l.Id,
+					KioskCode:      kioskCode,
+					LocationCode:   locationCode,
+					ItemID:         itemRec.Id,
+					ItemCode:       itemRec.GetString("code"),
+					ItemName:       itemRec.GetString("name"),
+					UserID:         userRec.Id,
+					UserCode:       userRec.GetString("code"),
+					UserGroup:      tx.GetString("user_group"),
+					ItemInstanceID: l.GetString("item_instance"),
+					Serial:         l.GetString("serial"),
+					Qty:            l.GetInt("qty"),
+					ClosureReason:  l.GetString("closure_reason"),
+					CompletedAt:    completedAt,
+					// OpenCheckoutID intentionally empty: the original
+					// open_checkouts row was deleted at close time and isn't
+					// recoverable. The controller's admin_close projection keys
+					// its idempotency guard on LineID (stable across the live
+					// path and republish) for exactly this reason.
+				}))
+			out.AdminClosesPublished++
+			continue
+		}
+
 		var checkedOut, returned, consumed int
 		for _, l := range lines {
 			switch l.GetString("action") {
@@ -146,10 +199,6 @@ func republishLedger(app core.App, filter string, params dbx.Params, publish fun
 				consumed++
 			}
 		}
-
-		kioskCode := tx.GetString("kiosk_code")
-		locationCode := tx.GetString("location_code")
-		completedAt := tx.GetDateTime("completed_at").Time()
 
 		publish(events.TransactionCompleteSubject(kioskCode),
 			events.BuildTransactionCompletePayload(events.TransactionCompleteInput{

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
@@ -241,6 +242,9 @@ func (h *Handlers) scanInstanceByRFID(epc string) (*scan.InstanceMatch, error) {
 	if epc == "" {
 		return nil, nil
 	}
+	// rfid_epc is stored lower-case (normalized on write + backfilled). Fold
+	// the lookup key to match, so an upper-case scanned/printed EPC resolves.
+	epc = strings.ToLower(strings.TrimSpace(epc))
 	rec, err := h.App.FindFirstRecordByFilter("item_instances", "rfid_epc = {:epc}", dbx.Params{"epc": epc})
 	if isNotFound(err) {
 		return nil, nil

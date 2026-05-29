@@ -512,7 +512,11 @@ func (h *Handlers) CartCommit(re *core.RequestEvent) error {
 		return re.BadRequestError("cart_id is required", nil)
 	}
 
-	c, err := h.Carts.Get(body.CartID)
+	// Snapshot (deep copy under the store lock) rather than Get: commit and
+	// the receipt/low-stock passes below all range over c.Lines, and the RFID
+	// enclosure_diff flow can mutate the live cart concurrently. The snapshot
+	// is the atomic committed view; the live cart is dropped by id afterward.
+	c, err := h.Carts.Snapshot(body.CartID)
 	if err != nil {
 		return re.NotFoundError("cart not found or expired", nil)
 	}

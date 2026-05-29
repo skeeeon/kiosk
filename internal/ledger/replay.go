@@ -71,13 +71,17 @@ func ReadOpenRows(app core.App, kioskCode string) ([]OpenRow, error) {
 
 // ReplayOpenRows walks the transaction_lines ledger in chronological order
 // and reconstructs the open_checkouts rows that should be present right
-// now. Mirrors the kiosk commit hook's closeCheckoutsForLine fallback
-// policy: when a return targets a user with fewer open rows than qty,
-// the deficit is taken from any other user's rows in FIFO order.
+// now. Mirrors the kiosk commit hook exactly (commit.candidateOpenRows):
+// checkout adds qty rows; return and admin_close each subtract qty from the
+// holder's rows only (no cross-user borrowing — see removeRows). A return
+// that over-subtracts leaves other users' rows intact.
 //
 // kioskCodeFilter (optional, empty = no filter) scopes the replay to one
 // kiosk's transactions. Used by the controller's reports view to slice the
-// cross-fleet ledger by originating kiosk.
+// cross-fleet ledger by originating kiosk. (admin_close lines exist only in
+// a kiosk's own ledger — the controller never projects them as lines — so
+// the admin_close case below is live on the kiosk and inert on the
+// controller, which closes those rows via its live event projection.)
 func ReplayOpenRows(app core.App, kioskCodeFilter string) ([]OpenRow, error) {
 	filter := "status = 'completed'"
 	params := dbx.Params{}
@@ -122,7 +126,10 @@ func ReplayOpenRows(app core.App, kioskCodeFilter string) ([]OpenRow, error) {
 						TransactionLine: line.Id,
 					})
 				}
-			case "return":
+			case "return", "admin_close":
+				// admin_close removes the holder's row exactly like a return.
+				// Its line always carries original_checkout_user (the holder);
+				// the txUser fallback is belt-and-suspenders.
 				target := line.GetString("original_checkout_user")
 				if target == "" {
 					target = txUser
@@ -278,10 +285,18 @@ func bulkFetchByIDs(app core.App, collection string, ids map[string]struct{}) (m
 	return out, nil
 }
 
-// removeRows removes up to qty rows mirroring commit's policy: serialized
-// lines (instance != "") close the single matching instance row;
-// non-serialized lines prefer the target user, falling back to any other
-// user in FIFO order.
+// removeRows removes up to qty rows mirroring commit.candidateOpenRows:
+// serialized lines (instance != "") close the single matching instance row;
+// non-serialized lines remove rows belonging to the target user ONLY, FIFO.
+//
+// A shortfall (returning more than the target has out) leaves every other
+// user's rows untouched. Commit deliberately does NOT borrow from another
+// worker here — it stamps the offending line uncorrelated and moves on — so
+// replay must not borrow either. An earlier version fell back to "any other
+// user in FIFO order"; that silently diverged from commit, so the integrity
+// rebuild (which replays through here) could delete an innocent worker's
+// open checkout while the integrity check (which agrees with commit) still
+// reported the table healthy. Keep this target-user-only to stay convergent.
 func removeRows(rows []OpenRow, item, instance, target string, qty int) []OpenRow {
 	if qty <= 0 {
 		return rows
@@ -298,18 +313,6 @@ func removeRows(rows []OpenRow, item, instance, target string, qty int) []OpenRo
 	out := make([]OpenRow, 0, len(rows))
 	for _, r := range rows {
 		if removed < qty && r.Item == item && r.ItemInstance == "" && r.User == target {
-			removed++
-			continue
-		}
-		out = append(out, r)
-	}
-	if removed >= qty {
-		return out
-	}
-	rows = out
-	out = make([]OpenRow, 0, len(rows))
-	for _, r := range rows {
-		if removed < qty && r.Item == item && r.ItemInstance == "" && r.User != target {
 			removed++
 			continue
 		}

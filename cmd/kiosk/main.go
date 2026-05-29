@@ -157,6 +157,13 @@ func main() {
 
 	carts := cart.NewStore(cfg.Session.IdleTimeout.AsDuration())
 	notifier := notifications.New(app)
+	// Drain in-flight notification goroutines on shutdown before PB tears the
+	// DB down — a deliver() waking after the DB closes would panic inside
+	// FindCollectionByNameOrId (see the Notifier docs). Bounded best-effort.
+	app.OnTerminate().BindFunc(func(e *core.TerminateEvent) error {
+		notifier.WaitInFlight(2 * time.Second)
+		return e.Next()
+	})
 	h := handlers.New(app, cfg, carts, notifier)
 
 	// Phase-4 enclosure_diff commands (cart.start, read.trigger) reach

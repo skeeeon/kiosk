@@ -51,7 +51,7 @@ func WriteOpenCheckoutsCSV(w io.Writer, rows []ledger.OpenCheckoutDTO) error {
 			userGroup = r.Expand.User.Group
 		}
 		days := math.Floor(now.Sub(r.CheckedOutAt).Hours() / 24)
-		if err := cw.Write([]string{
+		if err := writeRow(cw, []string{
 			r.CheckedOutAt.Format(time.RFC3339),
 			fmt.Sprintf("%.0f", days),
 			r.KioskCode,
@@ -189,7 +189,7 @@ func WriteGroupActivityCSV(app core.App, w io.Writer, opts GroupActivityOptions)
 			}
 			contactEmail = meta.GetString("contact_email")
 		}
-		if err := cw.Write([]string{
+		if err := writeRow(cw, []string{
 			code, name, contactEmail,
 			fmt.Sprintf("%d", b.txCount),
 			fmt.Sprintf("%d", b.checkedOut),
@@ -305,7 +305,7 @@ func WriteAdjustmentAuditCSV(app core.App, w io.Writer, opts AdjustmentAuditOpti
 		if d := r.GetDateTime("occurred_at").Time(); !d.IsZero() {
 			occurred = d.Format(time.RFC3339)
 		}
-		if err := cw.Write([]string{
+		if err := writeRow(cw, []string{
 			r.GetDateTime("created").Time().Format(time.RFC3339),
 			occurred,
 			r.GetString("kiosk_code"),
@@ -360,7 +360,7 @@ func WriteNotificationsLogCSV(app core.App, w io.Writer, opts NotificationsLogOp
 		return err
 	}
 	for _, r := range rows {
-		if err := cw.Write([]string{
+		if err := writeRow(cw, []string{
 			r.GetDateTime("created").Time().Format(time.RFC3339),
 			r.GetString("event_type"),
 			r.GetString("recipient"),
@@ -410,7 +410,7 @@ func WriteLifecycleAuditCSV(w io.Writer, rows []LifecycleAuditRow) error {
 		return err
 	}
 	for _, r := range rows {
-		if err := cw.Write([]string{
+		if err := writeRow(cw, []string{
 			r.Created.Format(time.RFC3339),
 			r.KioskCode,
 			r.ItemCode, r.ItemName,
@@ -446,7 +446,7 @@ func WriteLowStockCSV(w io.Writer, rows []LowStockRow) error {
 		return err
 	}
 	for _, r := range rows {
-		if err := cw.Write([]string{
+		if err := writeRow(cw, []string{
 			r.KioskCode,
 			r.ItemCode,
 			r.ItemName,

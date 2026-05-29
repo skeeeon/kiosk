@@ -209,7 +209,15 @@ func (a *Aggregator) ensureConsumer(ctx context.Context, stream jetstream.Stream
 		Description:   "kiosk-controller aggregator: projects per-kiosk events into the controller's ledger",
 		DeliverPolicy: jetstream.DeliverAllPolicy,
 		AckPolicy:     jetstream.AckExplicitPolicy,
-		AckWait:       30 * time.Second,
+		// 120s, not 30s: each handler wraps its projection in a SQLite
+		// RunInTransaction, and SQLite is single-writer — under concurrent
+		// HTTP/admin writes or a CSV import a projection can briefly block on
+		// the write lock. A handler that exceeds AckWait is redelivered while
+		// still in flight, causing duplicate work (and, before the
+		// applied_oc_closes guard, a divergent second close). Comfortable
+		// headroom over worst-case projection latency keeps redelivery to the
+		// genuine crash/partition cases the idempotency anchors already cover.
+		AckWait:       120 * time.Second,
 		MaxAckPending: 256,
 		FilterSubjects: []string{
 			events.TransactionCompleteFilter(),
@@ -275,7 +283,7 @@ func (a *Aggregator) handle(ctx context.Context, msg jetstream.Msg) {
 	// internal/controller/heartbeats.go).
 	switch {
 	case strings.HasSuffix(subject, ".transaction.complete"):
-		if err := a.touchKiosk(payload.KioskCode, payload.LocationCode); err != nil {
+		if err := a.touchKiosk(payload.KioskCode, payload.LocationCode, payload.CompletedAt); err != nil {
 			slog.Warn("controller.aggregator.touch_kiosk_failed",
 				"kiosk_code", payload.KioskCode, "error", err)
 			_ = msg.Nak()
@@ -685,25 +693,27 @@ func (a *Aggregator) ProjectLine(p EventPayload) projectOutcome {
 	return projectAck
 }
 
-// TouchKiosk is the exported wrapper around the internal kiosks-registry
-// upsert — exposed for testing the auto-register path.
+// TouchKiosk is the exported wrapper used by HeartbeatRegistry's auto-register
+// on first beat. A heartbeat is not a transaction, so it updates last_seen
+// only and leaves last_transaction_at untouched (the zero time below) — the
+// field then honestly reads "no transactions yet" for a kiosk that's online
+// but hasn't transacted.
 func (a *Aggregator) TouchKiosk(kioskCode, locationCode string) error {
-	return a.touchKiosk(kioskCode, locationCode)
+	return a.touchKiosk(kioskCode, locationCode, time.Time{})
 }
 
 // touchKiosk creates the kiosk's registry row if absent (status=unknown) and
-// bumps last_seen + last_transaction_at otherwise. Called from the
-// transaction.complete branch of handle() and from HeartbeatRegistry's
-// auto-register on first beat:
+// always bumps last_seen. last_transaction_at is set from lastTxAt — the
+// event's completed_at, NOT wall-clock now() — and only ever moves forward
+// (monotonic max). That keeps the field truthful under JetStream redelivery
+// and ledger.republish: replaying an old transaction can't drag it backward,
+// and re-projecting the same event is a no-op rather than a bump to "now."
+// A zero lastTxAt (the heartbeat path) leaves last_transaction_at alone.
 //
-//   - transaction.complete path → both timestamps reflect a real transaction.
-//   - heartbeat auto-register path → both timestamps point at the first beat,
-//     which is the best signal we have until an actual transaction arrives.
-//
-// last_seen is the legacy field; new code reads last_transaction_at. We
-// write both for one release so any consumers still reading last_seen
-// don't break — a future migration drops it.
-func (a *Aggregator) touchKiosk(kioskCode, locationCode string) error {
+// last_seen is the legacy field; new code reads last_transaction_at. We write
+// last_seen for one release so any consumers still reading it don't break — a
+// future migration drops it.
+func (a *Aggregator) touchKiosk(kioskCode, locationCode string, lastTxAt time.Time) error {
 	now := time.Now().UTC()
 	rec, err := a.app.FindFirstRecordByFilter("kiosks",
 		"kiosk_code = {:code}",
@@ -713,7 +723,9 @@ func (a *Aggregator) touchKiosk(kioskCode, locationCode string) error {
 	}
 	if rec != nil {
 		rec.Set("last_seen", now)
-		rec.Set("last_transaction_at", now)
+		if !lastTxAt.IsZero() && lastTxAt.After(rec.GetDateTime("last_transaction_at").Time()) {
+			rec.Set("last_transaction_at", lastTxAt)
+		}
 		return a.app.Save(rec)
 	}
 
@@ -725,7 +737,9 @@ func (a *Aggregator) touchKiosk(kioskCode, locationCode string) error {
 	rec.Set("kiosk_code", kioskCode)
 	rec.Set("location_code", locationCode)
 	rec.Set("last_seen", now)
-	rec.Set("last_transaction_at", now)
+	if !lastTxAt.IsZero() {
+		rec.Set("last_transaction_at", lastTxAt)
+	}
 	rec.Set("status", "unknown")
 	return a.app.Save(rec)
 }

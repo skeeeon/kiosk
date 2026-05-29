@@ -22,10 +22,12 @@ type openKey struct{ item, instance, user string }
 // diffs against actual) and RebuildOpenCheckouts (which overwrites actual).
 //
 // Method per (item, instance, user) tuple:
-//   - checkout line: +qty
-//   - return line:   -qty against the original_checkout_user (or the
+//   - checkout line:     +qty
+//   - return line:       -qty against the original_checkout_user (or the
 //     transaction's user if unset)
-//   - consume line:  ignored
+//   - admin_close line:  -qty, same as a return (the line always carries
+//     original_checkout_user = the holder whose row was force-closed)
+//   - consume line:      ignored
 //
 // Negative balances are surfaced raw; callers decide whether to clamp.
 func expectedOpenCheckouts(app core.App) (map[openKey]int, int, error) {
@@ -66,7 +68,10 @@ func expectedOpenCheckouts(app core.App) (map[openKey]int, int, error) {
 		switch action {
 		case "checkout":
 			expected[openKey{item, instance, tx.GetString("user")}] += qty
-		case "return":
+		case "return", "admin_close":
+			// admin_close subtracts the holder's unit exactly like a return,
+			// so the integrity check no longer reports false drift (and the
+			// rebuild no longer resurrects the row) after an admin force-close.
 			target := line.GetString("original_checkout_user")
 			if target == "" {
 				target = tx.GetString("user")

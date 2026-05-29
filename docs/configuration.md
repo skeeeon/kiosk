@@ -101,10 +101,18 @@ endpoint never does. See [api.md](api.md) for the endpoint signatures.
 ### NATS
 
 The `nats.*` block enables an optional publisher. The kiosk's primary job is
-the local ledger, so NATS is best-effort: an unreachable server at startup
-does **not** block the kiosk from booting (the connection enters a buffering
-state and dials in the background). All `nats.go` auth modes are supported —
-provide whichever your server expects, or leave them blank for anonymous.
+the local ledger, so NATS is best-effort about **reachability**: an
+unreachable server at startup does **not** block the kiosk from booting (the
+connection enters a buffering state and dials in the background). All
+`nats.go` auth modes are supported — provide whichever your server expects,
+or leave them blank for anonymous.
+
+**Structural** config errors are a different matter and are fatal at startup:
+an empty/malformed `nats.url`, or a configured-but-unloadable
+`credentials_file` or `nkey_seed_file`, aborts the binary rather than
+silently connecting unauthenticated. (A bad nkey seed used to log a warning
+and connect without nkey auth — it now fails loud.) Leaving the auth fields
+blank is valid; pointing them at a broken file is treated as operator error.
 
 ### Controller opt-in
 
@@ -137,6 +145,11 @@ Validation at startup:
 - `rfid.reader.host` and `rfid.reader.port` are required when
   `rfid.enabled=true`.
 - `rfid.door_id` is required when `rfid.mode=enclosure_diff`.
+- `rfid.read_window` must be ≤ 3.5 s when `rfid.mode=enclosure_diff`
+  (`config.MaxEnclosureReadWindow`): the read runs synchronously inside the
+  controller's ~5 s NATS command-reply window, so a larger window would push
+  the reply past it and render the kiosk "offline" to the caller.
+  `counter_scan` is HTTP-driven and not capped. Defaults to 3 s when unset.
 - Connect failure at startup logs a warning but does not block the
   binary — RFID endpoints return 503 until the connection comes up.
   Mirrors how NATS unreachability is handled.

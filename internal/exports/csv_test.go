@@ -13,6 +13,30 @@ import (
 	_ "github.com/skeeeon/kiosk/migrations"
 )
 
+// TestCSVSafe pins the formula-injection neutralization: dangerous leading
+// characters get a single-quote prefix, ordinary text and negative numbers
+// pass through unchanged.
+func TestCSVSafe(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"", ""},
+		{"Hammer", "Hammer"},
+		{"=HYPERLINK(\"http://evil\",\"x\")", "'=HYPERLINK(\"http://evil\",\"x\")"},
+		{"+1+1", "'+1+1"},
+		{"@SUM(A1)", "'@SUM(A1)"},
+		{"\tcmd", "'\tcmd"},
+		{"\rcmd", "'\rcmd"},
+		{"-1", "-1"},          // negative number — must NOT be mangled
+		{"-12.5", "-12.5"},    // negative decimal — unchanged
+		{"-1+cmd(1)", "'-1+cmd(1)"}, // leading '-' but not a number — guarded
+		{"EMP-1", "EMP-1"},    // dash mid-string is fine
+	}
+	for _, c := range cases {
+		if got := csvSafe(c.in); got != c.want {
+			t.Errorf("csvSafe(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
 // setupApp mirrors the pattern in internal/commit/commit_test.go: boot a PB
 // in a temp dir, apply migrations explicitly because Automigrate hooks
 // OnServe (not OnBootstrap).

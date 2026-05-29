@@ -144,6 +144,32 @@ func Commit(app core.App, c *cart.Cart, id kioskctx.Identity, policy Policy, pub
 				}
 			}
 
+			// Serialized returns target a specific instance whose open
+			// checkout may belong to another worker. The cross-user gate
+			// below keys on OriginalCheckoutUserID, but the ordinary
+			// cart-write paths never set it for a plain serialized scan (a
+			// worker scanning someone else's tool defaults to checkout, then
+			// may flip the line to return). Resolve the true holder here,
+			// server-side, and overwrite whatever the client supplied — this
+			// field must never be client-trusted. Without this, a non-foreman
+			// could silently close another worker's serialized checkout and
+			// the ledger would misattribute the return. commit is the trust
+			// boundary, so the resolution lives here, before createLine stamps
+			// the line and before the gate fires.
+			if l.Action == "return" && itemRec.GetString("tracking_mode") == "serialized" && l.ItemInstanceID != "" {
+				holder, err := serializedOpenRowHolder(tx, l.ItemInstanceID)
+				if err != nil {
+					return err
+				}
+				if holder != "" && holder != c.UserID {
+					l.OriginalCheckoutUserID = holder
+				} else {
+					// Self-return or no open row — never carry a cross-user
+					// marker the holder doesn't justify.
+					l.OriginalCheckoutUserID = ""
+				}
+			}
+
 			lineRec, err := createLine(tx, linesCol, txRec, l)
 			if err != nil {
 				return err
@@ -160,7 +186,18 @@ func Commit(app core.App, c *cart.Cart, id kioskctx.Identity, policy Policy, pub
 				// Cross-user returns: only a foreman acting within their own
 				// non-empty group can do this. Pre-flight AllowCrossUser kill
 				// switch above already short-circuited the strict-policy case.
+				// OriginalCheckoutUserID is server-resolved: by CartForemanReturn
+				// for non-serialized, and just above (serializedOpenRowHolder)
+				// for serialized — so this gate fires for every cross-user
+				// return regardless of what the client sent.
 				if l.OriginalCheckoutUserID != "" && l.OriginalCheckoutUserID != c.UserID {
+					if !policy.AllowCrossUser {
+						// Serialized cross-user returns resolve their holder
+						// inside this loop, after the pre-flight kill switch ran
+						// on the (empty) client value — so re-check the policy
+						// here to keep a strict deny authoritative for them too.
+						return fmt.Errorf("item %s is checked out to another worker; cross-user returns are not allowed", itemRec.GetString("code"))
+					}
 					if cartUserRole != "foreman" {
 						return fmt.Errorf("item %s is checked out to another worker; only a foreman can return it", itemRec.GetString("code"))
 					}
@@ -380,6 +417,23 @@ func closeCheckoutsForLine(tx core.App, line *cart.Line, lineRec, itemRec *core.
 		deleted++
 	}
 	return deleted < qty, nil
+}
+
+// serializedOpenRowHolder returns the user id currently holding the open
+// checkout for the given serialized instance, or "" if none is open. There
+// is at most one open row per instance. Used to resolve cross-user serialized
+// returns at the trust boundary before the foreman gate runs.
+func serializedOpenRowHolder(tx core.App, instanceID string) (string, error) {
+	rows, err := tx.FindRecordsByFilter("open_checkouts",
+		"item_instance = {:inst}", "", 1, 0,
+		dbx.Params{"inst": instanceID})
+	if err != nil {
+		return "", fmt.Errorf("find serialized open row holder: %w", err)
+	}
+	if len(rows) == 0 {
+		return "", nil
+	}
+	return rows[0].GetString("user"), nil
 }
 
 func candidateOpenRows(tx core.App, line *cart.Line, lineRec, itemRec *core.Record, cartUserID string, qty int) ([]*core.Record, error) {

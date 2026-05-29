@@ -54,7 +54,7 @@ async function loadKiosk() {
   error.value = null
   try {
     const list = await pb.collection('kiosks').getFullList<KioskRecord>({
-      filter: `kiosk_code = "${props.code}"`,
+      filter: pb.filter('kiosk_code = {:code}', { code: props.code }),
     })
     if (list.length === 0) {
       error.value = `No kiosk with code ${props.code}`

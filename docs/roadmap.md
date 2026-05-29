@@ -32,11 +32,14 @@ These started as deferred roadmap items and are now live in the binary:
   each item. Kiosks can also be pre-registered by an admin before
   they phone home so memberships can be assigned ahead of time.
 - **Controller→kiosk command bus.** Core NATS request/reply (not
-  JetStream) under `{prefix}.{kiosk_code}.command.<name>`. Two
-  commands ship in v1: `inventory.adjust` (mutating, idempotent via a
-  server-generated `command_id` unique-indexed on `stock_adjustments`)
-  and `inventory.snapshot` (read-only). Controller endpoints
-  fast-fail with 503 when the kiosk's heartbeat is stale, and pass
+  JetStream) under `{prefix}.{kiosk_code}.command.<name>`. v1 shipped
+  `inventory.adjust` (mutating, idempotent via a server-generated
+  `command_id` unique-indexed on `stock_adjustments`) and
+  `inventory.snapshot` (read-only); the bus has since grown to cover
+  `checkout.close` (admin force-close), the `instance.*` family,
+  `integrity.rebuild`, `ledger.republish`, and the RFID
+  `cart.start`/`read.trigger` pair (see the Wire reference). Controller
+  endpoints fast-fail with 503 when the kiosk's heartbeat is stale, and pass
   the kiosk's reply through unchanged to the SPA.
 - **Heartbeat + online status.** Each kiosk publishes a 45 s heartbeat
   on `{prefix}.{kiosk_code}.heartbeat` (core NATS, no persistence).
@@ -166,12 +169,13 @@ subjects are in place to make them additive rather than rewrites.
   the report query O(1) and survive offline kiosks. Deferred until
   fan-out RTT actually hurts.
 - **More remote commands.** The command bus and dispatcher are in
-  place (`internal/commands/`); v1 wires inventory adjust + snapshot.
-  Natural next commands: force a catalog resync, lock a kiosk to a
-  holding screen, integrity rebuild from the controller, ledger
-  republish. Each is a single handler on the kiosk side plus a
-  controller endpoint that fires `nc.Request` at the appropriate
-  subject.
+  place (`internal/commands/`). Since v1 it has grown well past inventory
+  adjust + snapshot (admin force-close, the `instance.*` family,
+  `integrity.rebuild`, `ledger.republish`, RFID `cart.start`/`read.trigger`
+  — see the shipped entry above). Natural next commands still deferred:
+  force a catalog resync, lock a kiosk to a holding screen. Each is a
+  single handler on the kiosk side plus a controller endpoint that fires
+  `nc.Request` at the appropriate subject.
 - **Drift detection.** Periodic state-hash compare between controller
   and each kiosk; surface discrepancies in the controller admin UI
   for triage.

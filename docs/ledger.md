@@ -159,8 +159,20 @@ Replay rules (from
 - For each completed transaction, walk lines in order.
 - `checkout`: increment the bucket keyed by `(item, item_instance, user)` by `qty`.
 - `return`: decrement the bucket keyed by `(item, item_instance, original_checkout_user OR transaction.user)` by `qty`.
-- `consume` and `admin_close`: ignored (consumables don't open rows;
-  admin closes already deleted the open row at write time).
+- `admin_close`: decrement, identical to `return` — the line always carries
+  `original_checkout_user` (the holder whose row was force-closed). Both the
+  integrity *check* ([`expectedOpenCheckouts`](../internal/handlers/integrity.go))
+  and the *rebuild* ([`ledger.ReplayOpenRows`](../internal/ledger/replay.go))
+  subtract on it, so an admin force-close shows no false drift and the rebuild
+  doesn't resurrect the closed row.
+- `consume`: ignored (consumables don't open rows).
+
+Returns (and admin closes) target the holder's rows **only** — there is no
+borrowing from another user when a return over-subtracts. A shortfall leaves
+other users' rows intact and the line is stamped `uncorrelated`. The replay
+mirrors `commit.candidateOpenRows` exactly on this point; an earlier version
+of the rebuild/projection borrowed FIFO from any user, which silently diverged
+from commit.
 
 Diff against the current `open_checkouts` table:
 
@@ -227,16 +239,20 @@ A JetStream durable consumer named `controller-aggregator`
 binds to the event subject family and projects:
 
 - `event.transaction.complete` → one `transactions` row.
-- `event.item.{action}` → one `transaction_lines` row, plus an
-  `open_checkouts` projection so the controller can answer
+- `event.item.{action}` → one `transaction_lines` row, plus the
+  `open_checkouts` insert/close side-effect so the controller can answer
   "currently-out" without a fan-out to every kiosk.
 - `event.inventory.adjust` → one `inventory_audit` row (idempotent
   via `source_adjustment_id`).
 - `event.instance.lifecycle` → one `instance_lifecycle_audit` row
   (idempotent via `source_audit_id`).
-- `event.integrity.rebuild` and `event.checkout.admin_close` —
-  acknowledged and logged today; the admin-close transaction itself
-  rides `transaction.complete` and is projected normally.
+- `event.checkout.admin_close` → deletes the matching `open_checkouts`
+  row (`ProjectOpenCheckoutsAdminClose`). An admin close publishes **only**
+  this subject — never `transaction.complete` or `item.*` — so the
+  controller's projected `transactions`/`transaction_lines` never contain
+  the admin-close, and this event is the controller's sole view of it.
+- `event.integrity.rebuild` — acknowledged and logged today (audit hook
+  for a future ops view).
 
 The projection is purely additive. The controller never writes back to
 the kiosk's ledger; the data flow is one-directional kiosk → controller
@@ -258,6 +274,7 @@ because the storage layer enforces uniqueness on a stable key:
 | `transaction_lines` projection | unique-when-non-empty `source_line_id` | Same pattern. |
 | `inventory_audit` | unique-when-non-empty `source_adjustment_id` | Same. |
 | `instance_lifecycle_audit` | unique-when-non-empty `source_audit_id` | Same. |
+| `open_checkouts` close (return + admin_close) | unique `dedupe_key` on `applied_oc_closes` (`ret:<return line id>` / `ac:<admin_close line id>`) | The close DELETEs rows, leaving nothing to dedupe against, so each close records its key in `applied_oc_closes` inside the same transaction; a redelivery finds the guard row and no-ops. Both kinds key on the triggering line id — stable across the live path and `ledger.republish`. (The checkout *insert* path needs no guard — it dedupes on the existing `transaction_line` FK.) |
 | Remote `inventory.adjust` command | unique-when-non-empty `command_id` on `stock_adjustments` | Kiosk-side: a retried command finds the prior row and replies with the prior result instead of double-applying. |
 | Remote `checkout.close` command | unique-when-non-empty `command_id` on `transactions` | Same pattern, transaction-scoped. |
 | Remote `instance.{create,decommission,reactivate}` | unique-when-non-empty `command_id` on `instance_audit` | Same. |
@@ -286,13 +303,14 @@ cause it to drift from a kiosk's local ledger:
 
 Two operator tools close this gap:
 
-- `POST /api/kiosk/ledger/republish` — re-emits
-  `transaction.complete` + `item.{action}` events for completed
-  transactions in an optional `{from, to}` ISO8601 window. Payloads
-  are rebuilt from persisted rows with original timestamps and the
-  `kiosk_code`/`location_code` that were stamped at original commit
-  time. Safe to re-run because the controller's projection is
-  idempotent.
+- `POST /api/kiosk/ledger/republish` — re-emits, per completed
+  transaction in an optional `{from, to}` ISO8601 window, the same events
+  the live commit path sent: `transaction.complete` + `item.{action}` for
+  ordinary transactions, and a single `checkout.admin_close` for admin
+  force-close transactions (matching `commit.AdminClose`'s live shape).
+  Payloads are rebuilt from persisted rows with original timestamps and the
+  `kiosk_code`/`location_code` stamped at original commit time. Safe to
+  re-run because the controller's projection is idempotent.
 - `POST /api/controller/kiosks/{code}/ledger/republish` — same thing,
   driven over NATS request/reply from the controller (the operator
   doesn't need shell access to the kiosk).
@@ -324,9 +342,19 @@ The controller is not a database upgrade for the kiosk. It is a
 projection target that happens to share the same row shapes for the
 ledger surface, plus its own audit collections for the non-ledger event
 families. Deleting the controller's `pb_data_controller/` and rebuilding
-it from a `ledger.republish` run across every kiosk produces the same
-projected state — modulo events older than JetStream retention, which
-the next manual export pass would need to cover.
+it from a `ledger.republish` run across every kiosk reproduces the
+transaction / line / open_checkouts surface — modulo events older than
+JetStream retention, which the next manual export pass would need to cover.
+
+Admin force-closes are reproduced faithfully: republish detects an
+admin-close transaction (its single `admin_close` line) and re-emits the
+same `checkout.admin_close` event the live path sends — *not* the
+`transaction.complete` + `item.{action}` pair the regular walk uses — so the
+controller deletes the projected `open_checkouts` row rather than
+re-projecting it as open, and no spurious admin-close transaction/line
+appears. That projection keys its idempotency guard on the admin_close line
+id (stable across the live path and republish), so re-running a republish
+stays a no-op.
 
 ## Pointers
 

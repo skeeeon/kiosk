@@ -59,6 +59,41 @@ func TestValidateRFID(t *testing.T) {
 			},
 		},
 		{
+			name: "enclosure_diff read_window over cap — error (would blow the 5s reply window)",
+			in: RFIDConfig{
+				Enabled:    true,
+				Mode:       RFIDModeEnclosureDiff,
+				Reader:     RFIDReaderConfig{Host: "h", Port: 5084},
+				DoorID:     "BAY-A",
+				ReadWindow: Duration(5 * time.Second),
+			},
+			wantErr: "too long for",
+		},
+		{
+			name: "enclosure_diff read_window at cap — ok",
+			in: RFIDConfig{
+				Enabled:    true,
+				Mode:       RFIDModeEnclosureDiff,
+				Reader:     RFIDReaderConfig{Host: "h", Port: 5084},
+				DoorID:     "BAY-A",
+				ReadWindow: Duration(MaxEnclosureReadWindow),
+			},
+			wantApply: func(t *testing.T, out RFIDConfig) {
+				if out.ReadWindow.AsDuration() != MaxEnclosureReadWindow {
+					t.Errorf("read_window at cap should be preserved, got %v", out.ReadWindow.AsDuration())
+				}
+			},
+		},
+		{
+			name: "counter_scan long read_window — ok (HTTP-driven, not bound by the 5s reply)",
+			in: RFIDConfig{
+				Enabled:    true,
+				Mode:       RFIDModeCounterScan,
+				Reader:     RFIDReaderConfig{Host: "h", Port: 5084},
+				ReadWindow: Duration(10 * time.Second),
+			},
+		},
+		{
 			name:    "enabled with no mode — error",
 			in:      RFIDConfig{Enabled: true, Reader: RFIDReaderConfig{Host: "h", Port: 5084}},
 			wantErr: "rfid.mode is required",

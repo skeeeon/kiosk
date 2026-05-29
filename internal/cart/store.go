@@ -228,6 +228,44 @@ func (s *Store) Get(cartID string) (*Cart, error) {
 	return s.getLocked(cartID)
 }
 
+// Snapshot returns a detached deep copy of the cart for cartID, taken under
+// the store lock. commit operates on the snapshot rather than the live *Cart
+// so a concurrent writer can't mutate c.Lines while commit ranges over it.
+//
+// The "one user at a time" assumption holds for the badge/HID flow, but the
+// RFID enclosure_diff flow is server/NATS-driven (cart.start + read.trigger)
+// and runs concurrently with the SPA — a read.trigger appending lines while
+// CartCommit iterates the same Lines slice is a genuine data race. The
+// snapshot also isolates commit's own line mutations (e.g. resolving a
+// serialized cross-user holder) from store-owned state. Lazy expiry applies
+// like Get.
+func (s *Store) Snapshot(cartID string) (*Cart, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, err := s.getLocked(cartID)
+	if err != nil {
+		return nil, err
+	}
+	return c.clone(), nil
+}
+
+// clone deep-copies a Cart, including independent Line values (and each
+// Line's Warnings slice), so the caller can read/mutate the copy without
+// touching store-owned state. Caller holds s.mu so the source isn't mutated
+// mid-copy.
+func (c *Cart) clone() *Cart {
+	cp := *c
+	cp.Lines = make([]*Line, len(c.Lines))
+	for i, l := range c.Lines {
+		ln := *l
+		if l.Warnings != nil {
+			ln.Warnings = append([]string(nil), l.Warnings...)
+		}
+		cp.Lines[i] = &ln
+	}
+	return &cp
+}
+
 // AddLine appends a line. Non-serialized items with the same item+action are
 // stacked (qty incremented). Serialized items always become a new line.
 func (s *Store) AddLine(cartID string, in *Line) (*Cart, *Line, error) {
@@ -294,7 +332,7 @@ func (s *Store) UpdateLine(lineID string, qty *int, action *string) (*Cart, *Lin
 		return nil, nil, ErrLineNotFound
 	}
 	if s.now().After(c.ExpiresAt) {
-		delete(s.carts, c.ID)
+		s.removeLocked(c.ID) // also clears the byUserDoor secondary index
 		return nil, nil, ErrNotFound
 	}
 	if qty != nil {
@@ -322,7 +360,7 @@ func (s *Store) DeleteLine(lineID string) (*Cart, error) {
 		return nil, ErrLineNotFound
 	}
 	if s.now().After(c.ExpiresAt) {
-		delete(s.carts, c.ID)
+		s.removeLocked(c.ID) // also clears the byUserDoor secondary index
 		return nil, ErrNotFound
 	}
 	for i, l := range c.Lines {

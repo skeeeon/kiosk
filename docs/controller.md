@@ -134,7 +134,13 @@ of truth for catalog plus a unified transaction ledger.
   `lost` / `damaged`, same `instance.lifecycle` event when retiring a
   serialized unit. The controller server-generates the `command_id` so
   retries are idempotent end-to-end (the kiosk's `transactions.command_id`
-  unique-when-non-empty index catches duplicates).
+  unique-when-non-empty index catches duplicates). An admin close publishes
+  only the `checkout.admin_close` event — never `transaction.complete` or
+  `item.*` — so the aggregator projects it specifically:
+  `ProjectOpenCheckoutsAdminClose` deletes the matching projected
+  `open_checkouts` row (idempotent via the `applied_oc_closes` guard). The
+  admin-close transaction/line is therefore *not* present in the
+  controller's projected `transactions`/`transaction_lines`.
 - **Fleet-wide low-stock report.**
   `GET /api/controller/reports/low-stock` fans `inventory.snapshot` to
   every currently-online managed kiosk in parallel, joins each kiosk's
@@ -165,9 +171,11 @@ What it **doesn't** do in v1 (deliberately out of scope):
 
 ## Reports surface
 
-The controller's Reports view exposes eight tabs. Five of them work on
-the projected ledger (`transactions` + `transaction_lines` populated by
-the aggregator); three project from dedicated event subjects:
+The controller's Reports view exposes eight tabs. Five are backed by the
+projected ledger — three read `transactions` + `transaction_lines` directly,
+and "Currently out" / "Aging" read the projected `open_checkouts` table
+(maintained by the aggregator from `item.{action}` and `checkout.admin_close`
+events). The remaining three project from dedicated event subjects:
 
 | Tab | Source | Notes |
 |---|---|---|
@@ -253,10 +261,11 @@ cp controller.yaml.example controller.yaml      # set nats.url + auth
 
 The controller binary uses the **same** `migrations/` package as the
 kiosk plus the controller-only sibling package
-`migrations/controller/`, which holds six additional migrations
+`migrations/controller/`, which holds seven additional migrations
 (kiosks registry, kiosk_items membership, kiosks.last_transaction_at,
-inventory_audit, instance_lifecycle_audit, and the
-open_checkouts.kiosk_code/source_item_instance_id columns). Each one
+inventory_audit, instance_lifecycle_audit, the
+open_checkouts.kiosk_code/source_item_instance_id columns, and the
+`applied_oc_closes` close-projection idempotency guard). Each one
 self-registers via `init()`; `cmd/controller/main.go` blank-imports
 both packages. The kiosk binary doesn't blank-import
 `migrations/controller`, so its DB never sees the controller-only

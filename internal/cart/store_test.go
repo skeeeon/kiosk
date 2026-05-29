@@ -22,6 +22,43 @@ func TestStartReturnsExistingCartForSameUser(t *testing.T) {
 	}
 }
 
+func TestSnapshotIsDetachedDeepCopy(t *testing.T) {
+	s, _ := newTestStore()
+	c := s.Start("u1", "EMP-1", "Alice", "worker")
+	if _, _, err := s.AddLine(c.ID, &Line{
+		ItemID: "i1", ItemType: "tool", TrackingMode: "serialized",
+		Action: "checkout", Qty: 1, ItemInstanceID: "inst-1",
+	}); err != nil {
+		t.Fatalf("seed line: %v", err)
+	}
+
+	snap, err := s.Snapshot(c.ID)
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	if len(snap.Lines) != 1 {
+		t.Fatalf("snapshot lines: want 1, got %d", len(snap.Lines))
+	}
+
+	// Mutating the live cart after the snapshot must NOT affect the snapshot
+	// (this is the data-race isolation the commit path relies on).
+	if _, _, err := s.AddLine(c.ID, &Line{
+		ItemID: "i2", ItemType: "tool", TrackingMode: "serialized",
+		Action: "checkout", Qty: 1, ItemInstanceID: "inst-2",
+	}); err != nil {
+		t.Fatalf("second line: %v", err)
+	}
+	if len(snap.Lines) != 1 {
+		t.Errorf("snapshot must not see post-snapshot writes: got %d lines", len(snap.Lines))
+	}
+	// Distinct line objects (mutating the snapshot's line must not alias live).
+	snap.Lines[0].Action = "return"
+	live, _ := s.Get(c.ID)
+	if live.Lines[0].Action != "checkout" {
+		t.Errorf("snapshot line aliases live line: live action = %q", live.Lines[0].Action)
+	}
+}
+
 func TestStartReturnsNewCartForDifferentUser(t *testing.T) {
 	s, _ := newTestStore()
 	c1 := s.Start("u1", "EMP-1", "Alice", "worker")

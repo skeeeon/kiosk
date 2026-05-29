@@ -342,13 +342,18 @@ The current controller-only files: `2000000000_controller_collections.go`
 `2000100000_add_kiosk_items.go` (kiosk_items membership + opens
 `kiosks.CreateRule`), `2000200000_kiosks_last_transaction_at.go`
 (DateField on kiosks), `2000300000_inventory_audit.go`,
-`2000400000_instance_lifecycle_audit.go`, and
-`2000500000_open_checkouts_kiosk_code.go`.
+`2000400000_instance_lifecycle_audit.go`,
+`2000500000_open_checkouts_kiosk_code.go`, and
+`2000600000_applied_oc_closes.go` (the open_checkouts close-projection
+idempotency guard — see the Controller seam section).
 
-`touchKiosk` in `internal/controller/consumer.go` writes
-both `last_seen` (legacy, kept for one release) and `last_transaction_at`
-on each `transaction.complete` event; the SPA reads
-`last_transaction_at`. **Critical change in this release:** `touchKiosk`
+`touchKiosk` in `internal/controller/consumer.go` writes `last_seen`
+(legacy, kept for one release) on every touch and advances
+`last_transaction_at` only from the event's own `completed_at`,
+monotonically (never wall-clock `now()`) — so a redelivery or a
+`ledger.republish` of an old transaction can't drag it forward, and the
+heartbeat auto-register path (which has no transaction time) leaves it
+empty until a real transaction lands. The SPA reads `last_transaction_at`. **Critical change in this release:** `touchKiosk`
 is no longer called from before the dispatch switch — it now fires only
 inside the `.transaction.complete` branch. Kiosks that emit only
 non-transaction events (heartbeat, inventory.adjust, integrity.rebuild)
@@ -395,14 +400,26 @@ the same row.
   (2) extending the consumer's `FilterSubjects` via those helpers, and
   (3) adding a case to the dispatch switch in `handle`. Today the projected
   events are `transaction.complete` → `transactions`, `item.{action}` →
-  `transaction_lines`, `inventory.adjust` → `inventory_audit`, and
-  `instance.lifecycle` → `instance_lifecycle_audit`. `integrity.rebuild`
-  and `checkout.admin_close` reach the controller but ack-and-log only;
-  the admin_close transaction itself rides `transaction.complete` and is
-  projected normally, so a future projector for the dedicated subject is
-  optional. The audit projections are idempotent against
-  unique-when-non-empty indexes on `source_adjustment_id` /
-  `source_audit_id` — JetStream redelivery is a no-op. The stream name
+  `transaction_lines` (+ the `open_checkouts` insert/close side-effect),
+  `inventory.adjust` → `inventory_audit`, `instance.lifecycle` →
+  `instance_lifecycle_audit`, and `checkout.admin_close` → `open_checkouts`
+  (via `ProjectOpenCheckoutsAdminClose`, which deletes the projected row —
+  admin_close publishes ONLY `checkout.admin_close`, never
+  `transaction.complete` or `item.*`, so that subject is the controller's
+  sole view of an admin close). `integrity.rebuild` still reaches the
+  controller ack-and-log only. The two managed-mode notification subjects
+  `receipt.transaction` and `alert.lowstock` ride the same durable consumer
+  but are dispatched in `handle()` before the flat `EventPayload` decode
+  (they carry nested context payloads) and are rendered + sent via the
+  controller's central SMTP rather than projected into the ledger. The audit
+  projections are idempotent against unique-when-non-empty indexes on
+  `source_adjustment_id` / `source_audit_id`; the `open_checkouts` close
+  projections (return + admin_close) are idempotent against the
+  `applied_oc_closes` dedupe table (the deletes leave no surviving row to
+  dedupe on, so a redelivery would otherwise re-close a *different* fungible
+  row). JetStream redelivery is a no-op across all of them. The
+  `open_checkouts` matching mirrors commit exactly — target-user-only on
+  returns, **no** cross-user borrowing (`candidateOpenRowsControllerSide`). The stream name
   comes from `cfg.NATS.StreamName` (default `events.DefaultStreamName`)
   and is passed to `NewAggregator`.
 - **Catalog publishing:** `internal/controller/catalog_publisher.go`.

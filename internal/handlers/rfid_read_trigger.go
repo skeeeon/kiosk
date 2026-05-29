@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/pocketbase/dbx"
@@ -225,7 +226,10 @@ func (h *Handlers) expectedInstanceStates() ([]rfid.InstanceState, error) {
 
 	out := make([]rfid.InstanceState, 0, len(instances))
 	for _, inst := range instances {
-		epc := inst.GetString("rfid_epc")
+		// Fold to lower-case defensively — stored EPCs are normalized on
+		// write, but this guards pre-backfill rows / manual DB edits so the
+		// diff still matches the reader's lower-case observations.
+		epc := strings.ToLower(inst.GetString("rfid_epc"))
 		userID, isOut := openByInstance[inst.Id]
 		out = append(out, rfid.InstanceState{
 			InstanceID:     inst.Id,

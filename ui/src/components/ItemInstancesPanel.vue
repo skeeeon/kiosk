@@ -31,11 +31,11 @@ async function load() {
   try {
     const [instRes, openRes] = await Promise.all([
       pb.collection('item_instances').getFullList<ItemInstance>({
-        filter: `item = "${props.itemId}"`,
+        filter: pb.filter('item = {:item}', { item: props.itemId }),
         sort: '+code',
       }),
       pb.collection('open_checkouts').getFullList<{ item_instance: string }>({
-        filter: `item = "${props.itemId}"`,
+        filter: pb.filter('item = {:item}', { item: props.itemId }),
         fields: 'item_instance',
       }),
     ])

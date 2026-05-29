@@ -3,15 +3,15 @@ package catalog
 import (
 	"context"
 	"crypto/rand"
-	"database/sql"
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"log/slog"
 
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
+
+	"github.com/skeeeon/kiosk/internal/dberr"
 )
 
 // Watcher subscribes to the catalog KV buckets and projects each update
@@ -412,10 +412,7 @@ func (w *Watcher) softDelete(collection, code string) error {
 }
 
 func isNotFound(err error) bool {
-	if err == nil {
-		return false
-	}
-	return errors.Is(err, sql.ErrNoRows)
+	return dberr.IsNotFound(err)
 }
 
 func randomPassword(nbytes int) (string, error) {

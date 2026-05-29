@@ -96,6 +96,14 @@ func main() {
 	// RegisterEnabled reattaches enabled rows at boot inside OnServe.
 	scheduler.BindRecordHooks(app, notifier.SendTo)
 
+	// Drain in-flight notification goroutines on shutdown before PB tears the
+	// DB down (see the Notifier docs). Bounded best-effort; registered
+	// unconditionally so it also runs when NATS is disabled.
+	app.OnTerminate().BindFunc(func(e *core.TerminateEvent) error {
+		notifier.WaitInFlight(2 * time.Second)
+		return e.Next()
+	})
+
 	// All NATS-dependent setup goes inside OnServe so non-serve subcommands
 	// (--help, seed-catalog, migrate, etc.) don't attempt to connect to a
 	// broker and fail when none is reachable. The seed subcommand brings up

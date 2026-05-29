@@ -154,6 +154,125 @@ func TestRepublishLedger_EmitsAllCompletedTransactions(t *testing.T) {
 	}
 }
 
+// TestRepublishLedger_AdminCloseEmitsCheckoutAdminClose is the regression for
+// the republish/admin_close fix: an admin force-close must be re-emitted as a
+// single checkout.admin_close event (the live shape) — NOT transaction.complete
+// + item.admin_close. Emitting the regular pair would re-project the closed
+// checkout as still-open on the controller (item.admin_close is a no-op for
+// the open_checkouts projector) and add ledger rows the live path never sends.
+func TestRepublishLedger_AdminCloseEmitsCheckoutAdminClose(t *testing.T) {
+	app := setupAppInternal(t)
+
+	admins, _ := app.FindCollectionByNameOrId("admins")
+	admin := core.NewRecord(admins)
+	admin.Set("email", "admin@test.local")
+	admin.Set("name", "Admin")
+	admin.SetPassword("password-adminadmin")
+	if err := app.Save(admin); err != nil {
+		t.Fatalf("save admin: %v", err)
+	}
+
+	users, _ := app.FindCollectionByNameOrId("users")
+	worker := core.NewRecord(users)
+	worker.Set("email", "w@test.local")
+	worker.Set("name", "Worker")
+	worker.Set("code", "EMP-W")
+	worker.Set("role", "worker")
+	worker.Set("active", true)
+	worker.SetPassword("password-wwwwwwwwwwww")
+	if err := app.Save(worker); err != nil {
+		t.Fatalf("save worker: %v", err)
+	}
+
+	items, _ := app.FindCollectionByNameOrId("items")
+	hammer := core.NewRecord(items)
+	hammer.Set("code", "HAMMER")
+	hammer.Set("name", "Hammer")
+	hammer.Set("type", "tool")
+	hammer.Set("tracking_mode", "quantity")
+	hammer.Set("active", true)
+	if err := app.Save(hammer); err != nil {
+		t.Fatalf("save hammer: %v", err)
+	}
+
+	id := kioskctx.Identity{KioskCode: "KIOSK-A", LocationCode: "WEST"}
+	noop := func(string, any) {}
+
+	if _, err := commit.Commit(app, &cart.Cart{
+		ID: "c1", UserID: worker.Id, UserCode: "EMP-W", UserName: "Worker",
+		Lines: []*cart.Line{{
+			ItemID: hammer.Id, ItemCode: "HAMMER", ItemName: "Hammer",
+			ItemType: "tool", TrackingMode: "quantity", Action: "checkout", Qty: 1,
+		}},
+	}, id, commit.DefaultPolicy(), noop); err != nil {
+		t.Fatalf("checkout: %v", err)
+	}
+
+	openRows, err := app.FindRecordsByFilter("open_checkouts", "", "", 1, 0)
+	if err != nil || len(openRows) != 1 {
+		t.Fatalf("expected 1 open row, got %d (err %v)", len(openRows), err)
+	}
+	if _, err := commit.AdminClose(app, commit.AdminCloseInput{
+		OpenCheckoutID: openRows[0].Id,
+		ActorID:        admin.Id,
+		Source:         "local",
+		Reason:         "returned_offline",
+		Identity:       id,
+	}, noop); err != nil {
+		t.Fatalf("admin close: %v", err)
+	}
+
+	sink := &captureSink{}
+	out, err := republishLedger(app, "status = 'completed'", dbx.Params{}, sink.publish)
+	if err != nil {
+		t.Fatalf("republishLedger: %v", err)
+	}
+
+	// Only the checkout transaction takes the regular path; the admin-close
+	// transaction is counted separately and emits no transaction.complete.
+	if out.TransactionsPublished != 1 {
+		t.Errorf("transactions_published: want 1 (checkout only), got %d", out.TransactionsPublished)
+	}
+	if out.AdminClosesPublished != 1 {
+		t.Errorf("admin_closes_published: want 1, got %d", out.AdminClosesPublished)
+	}
+
+	completes, itemAdminCloses, adminCloses := 0, 0, 0
+	var adminCloseEv capturedEvent
+	for _, ev := range sink.events {
+		switch ev.Subject {
+		case "kiosk.KIOSK-A.event.transaction.complete":
+			completes++
+		case "kiosk.KIOSK-A.event.item.admin_close":
+			itemAdminCloses++
+		case "kiosk.KIOSK-A.event.checkout.admin_close":
+			adminCloses++
+			adminCloseEv = ev
+		}
+	}
+	if completes != 1 {
+		t.Errorf("transaction.complete events: want 1 (checkout only), got %d", completes)
+	}
+	if itemAdminCloses != 0 {
+		t.Errorf("republish must NOT emit item.admin_close: got %d", itemAdminCloses)
+	}
+	if adminCloses != 1 {
+		t.Fatalf("want exactly 1 checkout.admin_close, got %d", adminCloses)
+	}
+
+	// The event must carry the line id (the controller's idempotency anchor)
+	// and the holder's identity so ProjectOpenCheckoutsAdminClose can match.
+	if lid, _ := adminCloseEv.Payload["line_id"].(string); lid == "" {
+		t.Error("checkout.admin_close must carry a non-empty line_id")
+	}
+	if adminCloseEv.Payload["item_code"] != "HAMMER" {
+		t.Errorf("admin_close item_code: %v", adminCloseEv.Payload["item_code"])
+	}
+	if adminCloseEv.Payload["user_code"] != "EMP-W" {
+		t.Errorf("admin_close user_code: %v", adminCloseEv.Payload["user_code"])
+	}
+}
+
 // TestRepublishLedger_FromToFilter confirms the date-range scoping. Useful
 // when only the last day's worth of events is suspect and replaying
 // everything would be wasteful.

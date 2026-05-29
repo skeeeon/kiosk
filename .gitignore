@@ -2,8 +2,19 @@
 /pb_data_controller/
 /internal/ui/dist/
 /kiosk.yaml
+/controller.yaml
+# Built binaries — names vary by build command / OS. Cover the documented
+# kiosk-app/* names plus the bare `go build ./cmd/<x>` outputs and editor
+# backups (kiosk.exe~).
 /kiosk-app
 /kiosk-app.exe
+/kiosk
+/kiosk.exe
+/kiosk-controller
+/kiosk-controller.exe
+/controller
+/controller.exe
+*.exe~
 /ui/node_modules/
 /ui/dist/
 /ui/.vite/

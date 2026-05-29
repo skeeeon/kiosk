@@ -17,7 +17,6 @@ package csvimport
 
 import (
 	"crypto/rand"
-	"database/sql"
 	"encoding/base64"
 	"encoding/csv"
 	"encoding/json"
@@ -27,6 +26,8 @@ import (
 	"strings"
 
 	"github.com/pocketbase/pocketbase/core"
+
+	"github.com/skeeeon/kiosk/internal/dberr"
 )
 
 // ActionInsert / ActionUpdate / ActionError are the three terminal states
@@ -240,7 +241,7 @@ func parseCSVBool(s string, defaultVal bool) bool {
 }
 
 func isNotFound(err error) bool {
-	return errors.Is(err, sql.ErrNoRows)
+	return dberr.IsNotFound(err)
 }
 
 // randomPassword returns URL-safe base64 with at least nbytes of entropy.

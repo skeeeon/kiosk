@@ -200,7 +200,10 @@ an `instance.lifecycle` event.
 
 Cosmetic-only field updates (code, serial, rfid_epc, notes). No audit
 row, no `instance.lifecycle` event — these fields don't change inventory
-semantics. Retries overwrite with the same values.
+semantics. Retries overwrite with the same values. `rfid_epc` is stored
+normalized to lower-case, trimmed hex regardless of submitted case (a
+model hook on `item_instances`), so the reader's lower-case observations
+match it.
 
 **Publisher.** controller
 
@@ -398,6 +401,14 @@ result.
 **Errors.** No active cart for the supplied key (anonymous reads are
 **rejected** by design — the doc rationale: failing loud surfaces
 mis-wired access-control events). Reader unreachable. Missing fields.
+Read exceeded the deadline (a slow/half-open reader).
+
+**Deadline.** The handler bounds the LLRP read with a 4.5 s timeout
+(`commands.ReadTriggerBudget`, below the 5 s reply window) so a wedged
+reader can't hold the reader's serialization lock past the window — past
+it the read unwinds and replies with an error rather than timing the caller
+out. Config rejects `rfid.read_window > 3.5 s` in `enclosure_diff` mode for
+the same reason (the read runs synchronously inside this reply window).
 
 ## Events
 

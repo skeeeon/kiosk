@@ -78,7 +78,7 @@ async function loadTransactions(toPage = 1) {
   try {
     const filters: string[] = ['status = "completed"']
     if (kioskFilter.value) {
-      filters.push(`source_kiosk_code = "${kioskFilter.value.replace(/"/g, '\\"')}"`)
+      filters.push(pb.filter('source_kiosk_code = {:k}', { k: kioskFilter.value }))
     }
     if (fromFilter.value) {
       filters.push(`completed_at >= "${dateBoundary(fromFilter.value, false)}"`)

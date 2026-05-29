@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref } from 'vue'
+import { computed, nextTick, onScopeDispose, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import ScanInput from '../components/ScanInput.vue'
 import CartTable from '../components/CartTable.vue'
@@ -331,7 +331,30 @@ function dismissReceipt() {
   success.value = null
 }
 
+// Clear any live interval/timeout on unmount (e.g. operator navigates to
+// /admin/login mid-countdown). Vue tolerates writes to orphaned refs, so this
+// is hygiene rather than a crash fix — but it stops stray timers firing
+// against a torn-down component, matching the cleanup the admin views do.
+onScopeDispose(() => {
+  if (receiptTickHandle) clearInterval(receiptTickHandle)
+  if (rfidTickHandle) clearInterval(rfidTickHandle)
+  if (identifyDismissHandle) clearTimeout(identifyDismissHandle)
+})
+
+// addChain serializes item-add round-trips. A USB HID scanner can emit two
+// barcodes faster than one /cart/add completes; without this, overlapping
+// addItem calls can resolve out of order and leave the store reflecting an
+// earlier server snapshot (a line appears to "not register" until the next
+// SSE tickle). Chaining applies adds in scan order, one at a time.
+let addChain: Promise<void> = Promise.resolve()
+
 async function onScan(raw: string) {
+  // A scan during the success receipt means the next worker (or the same one)
+  // is moving on. Dismiss it first: otherwise a badge scan would start a new
+  // cart that stays hidden behind the previous worker's receipt until the
+  // 8s countdown fires — a shared-kiosk session-bleed footgun.
+  if (success.value) dismissReceipt()
+
   let result
   try {
     result = await c.scanDispatch(raw)
@@ -384,12 +407,17 @@ async function onScan(raw: string) {
     const code = result.type === 'item_instance'
       ? (result.record as InstanceMatch).instance.code
       : (result.record as Item).code
-    try {
-      await c.addItem(code)
-      await scrollCartToBottom()
-    } catch (e) {
-      handleApiError(e)
-    }
+    // Enqueue rather than await directly so concurrent scans serialize in
+    // order. Errors are handled inside the chain so one failed add can't
+    // poison the chain for the next scan.
+    addChain = addChain.then(async () => {
+      try {
+        await c.addItem(code)
+        await scrollCartToBottom()
+      } catch (e) {
+        handleApiError(e)
+      }
+    })
   }
 }
 

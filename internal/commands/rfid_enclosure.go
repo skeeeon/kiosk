@@ -16,11 +16,21 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/pocketbase/dbx"
 
 	"github.com/skeeeon/kiosk/internal/cart"
 )
+
+// ReadTriggerBudget bounds the whole read.trigger command. It must sit below
+// the controller's ~5s command-reply timeout and above the maximum enclosure
+// read_window (config.MaxEnclosureReadWindow) so a normal read completes but
+// a wedged/half-open LLRP reader can't block ReadFor — and therefore the
+// reader's serialization lock — indefinitely. When this deadline fires,
+// ReadFor's ctx.Done() path unwinds, releases readMu, and the handler replies
+// with an error inside the reply window instead of timing the caller out.
+const ReadTriggerBudget = 4500 * time.Millisecond
 
 // cartStartRequest is the payload external systems publish on
 // <prefix>.<kiosk_code>.command.cart.start. command_id is for
@@ -128,6 +138,12 @@ func (d *Dispatcher) handleReadTrigger(ctx context.Context, payload []byte) Repl
 	if d.KioskHandlers.RFID == nil {
 		return Reply{Success: false, Error: "rfid reader is not connected"}
 	}
+
+	// Bound the read so a slow or half-open reader can't hold the reader's
+	// serialization lock past the caller's reply window. The dispatcher hands
+	// us a context.Background() (no deadline); derive one here.
+	ctx, cancel := context.WithTimeout(ctx, ReadTriggerBudget)
+	defer cancel()
 
 	result, err := d.KioskHandlers.PerformReadTrigger(ctx, c)
 	if err != nil {

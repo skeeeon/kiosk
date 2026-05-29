@@ -56,9 +56,9 @@ async function load(p = 1) {
   loading.value = true
   error.value = null
   try {
-    const parts = [`user = "${props.worker.id}"`, 'status = "completed"']
+    const parts = [pb.filter('user = {:u}', { u: props.worker.id }), 'status = "completed"']
     if (props.kioskCode) {
-      parts.push(`kiosk_code = "${props.kioskCode.replace(/"/g, '\\"')}"`)
+      parts.push(pb.filter('kiosk_code = {:k}', { k: props.kioskCode }))
     }
     const res = await pb.collection('transactions').getList<TxRow>(p, perPage.value, {
       filter: parts.join(' && '),

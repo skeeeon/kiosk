@@ -266,7 +266,7 @@ async function loadTransactions(page = 1) {
   try {
     const filterParts = ['status = "completed"']
     if (kioskFilter.value) {
-      filterParts.push(`kiosk_code = "${kioskFilter.value.replace(/"/g, '\\"')}"`)
+      filterParts.push(pb.filter('kiosk_code = {:k}', { k: kioskFilter.value }))
     }
     const res = await pb.collection('transactions').getList<TxRow>(page, txPerPage.value, {
       filter: filterParts.join(' && '),
@@ -361,7 +361,7 @@ function buildGroupActivityFilter(): string {
   const parts = ['status = "completed"']
   if (groupActivityFrom.value) parts.push(`completed_at >= "${groupActivityFrom.value} 00:00:00.000Z"`)
   if (groupActivityTo.value) parts.push(`completed_at <= "${groupActivityTo.value} 23:59:59.999Z"`)
-  if (kioskFilter.value) parts.push(`kiosk_code = "${kioskFilter.value.replace(/"/g, '\\"')}"`)
+  if (kioskFilter.value) parts.push(pb.filter('kiosk_code = {:k}', { k: kioskFilter.value }))
   return parts.join(' && ')
 }
 
@@ -372,7 +372,7 @@ function buildGroupActivityLinesFilter(): string {
   if (groupActivityTo.value)
     parts.push(`transaction.completed_at <= "${groupActivityTo.value} 23:59:59.999Z"`)
   if (kioskFilter.value)
-    parts.push(`transaction.kiosk_code = "${kioskFilter.value.replace(/"/g, '\\"')}"`)
+    parts.push(pb.filter('transaction.kiosk_code = {:k}', { k: kioskFilter.value }))
   return parts.join(' && ')
 }
 
@@ -406,7 +406,7 @@ async function loadAudit(page = 1) {
     // date are stacked into the filter so paging stays correct.
     const parts: string[] = []
     if (kioskFilter.value) {
-      parts.push(`kiosk_code = "${kioskFilter.value.replace(/"/g, '\\"')}"`)
+      parts.push(pb.filter('kiosk_code = {:k}', { k: kioskFilter.value }))
     }
     if (auditSourceFilter.value) {
       parts.push(`source = "${auditSourceFilter.value}"`)
@@ -450,7 +450,7 @@ async function loadLifecycle(page = 1) {
 
     if (isController.value) {
       if (kioskFilter.value) {
-        parts.push(`kiosk_code = "${kioskFilter.value.replace(/"/g, '\\"')}"`)
+        parts.push(pb.filter('kiosk_code = {:k}', { k: kioskFilter.value }))
       }
       const res = await pb.collection('instance_lifecycle_audit').getList<LifecycleAuditRow>(page, lifecyclePerPage.value, {
         filter: parts.join(' && '),
