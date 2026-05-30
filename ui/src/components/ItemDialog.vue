@@ -238,12 +238,18 @@ function onAdjusted(result: StockAdjustmentResult) {
       <div v-if="!isController" class="grid grid-cols-2 gap-3">
         <div class="flex flex-col gap-1">
           <span class="text-sm text-slate-400">
-            {{ form.type === 'tool' ? 'Fleet quantity' : 'Quantity on hand' }}
+            {{ isSerialized ? 'Units in service' : (form.type === 'tool' ? 'Fleet quantity' : 'Quantity on hand') }}
           </span>
+          <!-- Serialized: quantity_on_hand is DERIVED from the count of active
+               instances, so it's read-only here. Add or decommission units in
+               the instances panel below to change it. -->
+          <div v-if="isSerialized" class="rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-slate-100 font-medium tabular-nums">
+            {{ isEdit ? (form.quantity_on_hand ?? 0) : 0 }}
+          </div>
           <!-- In edit mode the quantity is read-only; use the Adjust button
                to change it so the audit log captures who / why. New items
                still take a free-form number for the initial seed. -->
-          <div v-if="isEdit" class="flex items-center gap-2">
+          <div v-else-if="isEdit" class="flex items-center gap-2">
             <span class="rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-slate-100 font-medium tabular-nums flex-1">
               {{ form.quantity_on_hand ?? 0 }}
             </span>
@@ -265,17 +271,22 @@ function onAdjusted(result: StockAdjustmentResult) {
             class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 disabled:opacity-60 disabled:cursor-not-allowed"
           />
           <span class="text-xs text-slate-500">
-            {{ form.type === 'tool'
-              ? 'Total units owned. Does not change on checkout/return.'
-              : 'Current stock. Decrements automatically when consumed.' }}
-            <button
-              v-if="isEdit"
-              type="button"
-              class="ml-1 text-sky-400 hover:text-sky-300 underline-offset-2 hover:underline"
-              @click="historyOpen = true"
-            >
-              View adjustment history
-            </button>
+            <template v-if="isSerialized">
+              Derived from active instances — add or decommission units below to change it.
+            </template>
+            <template v-else>
+              {{ form.type === 'tool'
+                ? 'Total units owned. Does not change on checkout/return.'
+                : 'Current stock. Decrements automatically when consumed.' }}
+              <button
+                v-if="isEdit"
+                type="button"
+                class="ml-1 text-sky-400 hover:text-sky-300 underline-offset-2 hover:underline"
+                @click="historyOpen = true"
+              >
+                View adjustment history
+              </button>
+            </template>
           </span>
         </div>
         <label class="flex flex-col gap-1">
@@ -378,7 +389,7 @@ function onAdjusted(result: StockAdjustmentResult) {
   </AppDialog>
 
   <StockAdjustDialog
-    v-if="!isController && isEdit && form.id"
+    v-if="!isController && !isSerialized && isEdit && form.id"
     :open="adjustOpen"
     :item-id="form.id"
     :item-code="form.code ?? ''"
@@ -388,7 +399,7 @@ function onAdjusted(result: StockAdjustmentResult) {
     @applied="onAdjusted"
   />
   <StockAdjustmentHistoryDialog
-    v-if="!isController && isEdit && form.id"
+    v-if="!isController && !isSerialized && isEdit && form.id"
     :open="historyOpen"
     :item-id="form.id"
     :item-code="form.code ?? ''"

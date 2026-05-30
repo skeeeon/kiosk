@@ -72,17 +72,25 @@ during `npm run build`.
   cross-user return, consume (with `quantity_on_hand` decrement and
   negative-allowed semantics), mixed cart, rollback-on-error, serialized
   constraints, per-instance return targeting, and the policy flags
-  (cross-user / uncorrelated rejection).
+  (cross-user / uncorrelated rejection). Admin force-close covers the
+  lost/damaged qty side-effect for quantity items and the serialized
+  variant (decommission only — no `stock_adjustments` row, two events).
 - `internal/handlers` — stock-adjustment transaction (delta/absolute,
   audit row written, empty reason rejected, item-not-found,
   controller-source routes to `controller_admin_id`, idempotent replay
-  by `command_id` returns prior result without re-applying).
+  by `command_id` returns prior result without re-applying, serialized
+  items rejected with no row written and quantity untouched).
+- `internal/instances` — the audit/lifecycle hooks plus the derived
+  `quantity_on_hand` recompute: create/decommission/reactivate/delete
+  track the active-instance count, inactive instances don't count,
+  non-serialized items are never touched, idempotent command replay
+  doesn't double-count, and cascade-delete of the parent item is safe.
 - `internal/events` — `Publish()` invokes any installed publisher; nil
   publisher is a no-op (NATS path covered by manual smoke).
 - `internal/commands` — kiosk command dispatcher: inventory.adjust happy
-  path, every validation guard (missing fields, unknown item, bad mode),
-  idempotent replay; inventory.snapshot all-items + filter-by-codes;
-  subject-suffix routing.
+  path, every validation guard (missing fields, unknown item, bad mode,
+  serialized-item rejection), idempotent replay; inventory.snapshot
+  all-items + filter-by-codes; subject-suffix routing.
 - `internal/catalog` — payload round-trip with banned-field assertions;
   the watcher's `upsertItem`/`upsertUser` against a real PB DB (verifies
   that kiosk-local `quantity_on_hand` survives a catalog update);

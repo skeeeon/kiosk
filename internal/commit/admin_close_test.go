@@ -604,11 +604,20 @@ func TestAdminClose_Lost_Serialized_DecommissionsInstance(t *testing.T) {
 		t.Errorf("instance_audit.prev_active: want true, got %v", got)
 	}
 
-	// Three events: close + inventory.adjust + instance.lifecycle.
-	if len(pub.events) != 3 {
-		t.Fatalf("events: want 3, got %d (subjects=%v)", len(pub.events), pub.subjects())
+	// Serialized items derive quantity from the active instance count, so a
+	// lost/damaged close decommissions the instance but writes NO
+	// stock_adjustments row (the quantity drop is materialized by the
+	// instances recompute hook off the decommission, not by an adjustment).
+	if adjs := findStockAdjustmentsForItem(t, app, s.ToolSerialID); len(adjs) != 0 {
+		t.Errorf("stock_adjustments rows for serialized close: want 0, got %d", len(adjs))
 	}
-	wantSuffixes := []string{".checkout.admin_close", ".inventory.adjust", ".instance.lifecycle"}
+
+	// Two events: close + instance.lifecycle. No inventory.adjust — that's
+	// the quantity-tracked path only.
+	if len(pub.events) != 2 {
+		t.Fatalf("events: want 2, got %d (subjects=%v)", len(pub.events), pub.subjects())
+	}
+	wantSuffixes := []string{".checkout.admin_close", ".instance.lifecycle"}
 	for i, want := range wantSuffixes {
 		if !strings.HasSuffix(pub.events[i].Subject, want) {
 			t.Errorf("events[%d]: want suffix %q, got %q", i, want, pub.events[i].Subject)

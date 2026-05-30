@@ -48,6 +48,14 @@ type Hooks struct {
 	// any goroutine; a plain mutex is enough at this collection's volume.
 	pendingMu     sync.Mutex
 	pendingDelete map[string]deleteSnapshot
+
+	// pendingRecompute: item_instances.id → parent item id, captured in the
+	// model-level OnRecordDelete (before the row + its FK are gone) and drained
+	// in OnRecordAfterDeleteSuccess to recompute the item's derived quantity.
+	// Unconditional — unlike the audit snapshot above it isn't gated on an
+	// admin, so it also covers superuser /_/ and cascade deletes.
+	pendingRecomputeMu sync.Mutex
+	pendingRecompute   map[string]string
 }
 
 // New constructs a Hooks bound to events.Publish. Use NewWith for tests.
@@ -57,7 +65,11 @@ func New() *Hooks {
 
 // NewWith allows callers (tests) to inject a custom publisher.
 func NewWith(pub publisher) *Hooks {
-	return &Hooks{pub: pub, pendingDelete: map[string]deleteSnapshot{}}
+	return &Hooks{
+		pub:              pub,
+		pendingDelete:    map[string]deleteSnapshot{},
+		pendingRecompute: map[string]string{},
+	}
 }
 
 // storePending captures a snapshot of an item_instance row about to be
@@ -81,6 +93,26 @@ func (h *Hooks) takePending(id string) (deleteSnapshot, bool) {
 	return snap, ok
 }
 
+// storePendingRecompute records the parent item id of an about-to-be-deleted
+// instance so the after-delete hook can recompute the item's quantity.
+func (h *Hooks) storePendingRecompute(id, itemID string) {
+	h.pendingRecomputeMu.Lock()
+	h.pendingRecompute[id] = itemID
+	h.pendingRecomputeMu.Unlock()
+}
+
+// takePendingRecompute returns the captured item id for a deleted instance and
+// removes it. Falls back to ("", false) when nothing was captured.
+func (h *Hooks) takePendingRecompute(id string) (string, bool) {
+	h.pendingRecomputeMu.Lock()
+	itemID, ok := h.pendingRecompute[id]
+	if ok {
+		delete(h.pendingRecompute, id)
+	}
+	h.pendingRecomputeMu.Unlock()
+	return itemID, ok
+}
+
 // Register binds the hooks on the given app. Safe to call once at boot.
 func (h *Hooks) Register(app core.App) {
 	// Normalize rfid_epc to lower-case hex on EVERY write, regardless of path.
@@ -96,6 +128,39 @@ func (h *Hooks) Register(app core.App) {
 	})
 	app.OnRecordUpdate("item_instances").BindFunc(func(e *core.RecordEvent) error {
 		normalizeEPC(e.Record)
+		return e.Next()
+	})
+
+	// Keep items.quantity_on_hand for SERIALIZED items in sync with the count
+	// of active instances. These are model-level *AfterSuccess hooks (not the
+	// *Request variants) so they fire for EVERY persistence path regardless of
+	// auth: the admin SPA + superuser REST writes, the controller command-bus
+	// mutations (instances.Perform* → tx.Save), and commit.AdminClose's
+	// decommission. PB defers AfterSuccess hooks fired inside a transaction to
+	// run post-commit on the parent app (core/db.go), so a recompute here lands
+	// once, after the instance write is durable. RecomputeItemQuantity is a
+	// no-op for non-serialized items and when nothing changed, so binding it
+	// unconditionally is safe and cheap. It saves the items row (never
+	// item_instances), so it can't re-trigger these hooks.
+	app.OnRecordAfterCreateSuccess("item_instances").BindFunc(func(e *core.RecordEvent) error {
+		if err := RecomputeItemQuantity(e.App, e.Record.GetString("item")); err != nil {
+			slog.Warn("instances.recompute.create_failed",
+				"instance_id", e.Record.Id, "error", err)
+		}
+		return e.Next()
+	})
+	app.OnRecordAfterUpdateSuccess("item_instances").BindFunc(func(e *core.RecordEvent) error {
+		if err := RecomputeItemQuantity(e.App, e.Record.GetString("item")); err != nil {
+			slog.Warn("instances.recompute.update_failed",
+				"instance_id", e.Record.Id, "error", err)
+		}
+		return e.Next()
+	})
+	// Capture the parent item id before the delete so the after-hook can
+	// recompute even when PB has voided the record's fields. Model-level +
+	// unconditional so it also covers superuser and cascade deletes.
+	app.OnRecordDelete("item_instances").BindFunc(func(e *core.RecordEvent) error {
+		h.storePendingRecompute(e.Record.Id, e.Record.GetString("item"))
 		return e.Next()
 	})
 
@@ -170,6 +235,19 @@ func (h *Hooks) Register(app core.App) {
 	})
 
 	app.OnRecordAfterDeleteSuccess("item_instances").BindFunc(func(e *core.RecordEvent) error {
+		// Recompute first, and unconditionally — the derived quantity must
+		// stay correct even for deletes the audit path skips (superuser,
+		// cascade). takePendingRecompute gives the captured item id; fall
+		// back to the (possibly-stale) record field if it's missing.
+		itemID, ok := h.takePendingRecompute(e.Record.Id)
+		if !ok {
+			itemID = e.Record.GetString("item")
+		}
+		if err := RecomputeItemQuantity(e.App, itemID); err != nil {
+			slog.Warn("instances.recompute.delete_failed",
+				"instance_id", e.Record.Id, "error", err)
+		}
+
 		snap, ok := h.takePending(e.Record.Id)
 		if !ok {
 			return e.Next()

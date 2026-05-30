@@ -1,6 +1,7 @@
 package handlers_test
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/pocketbase/dbx"
@@ -171,6 +172,67 @@ func TestPerformStockAdjustment_ItemNotFound(t *testing.T) {
 	_, err := handlers.PerformStockAdjustment(app, "no-such-item", s.AdminID, events.SourceLocal, "", "delta", 1, "x")
 	if err == nil {
 		t.Fatal("expected error for missing item")
+	}
+}
+
+// seedSerializedItem creates a serialized tool so we can assert that stock
+// adjustments are rejected for it. quantity_on_hand is seeded non-zero to
+// prove a rejected adjust leaves it untouched.
+func seedSerializedItem(t *testing.T, app core.App, qty int) string {
+	t.Helper()
+	items, err := app.FindCollectionByNameOrId("items")
+	if err != nil {
+		t.Fatalf("find items: %v", err)
+	}
+	item := core.NewRecord(items)
+	item.Set("code", "DRILL-S")
+	item.Set("name", "Serialized Drill")
+	item.Set("type", "tool")
+	item.Set("tracking_mode", "serialized")
+	item.Set("active", true)
+	item.Set("quantity_on_hand", qty)
+	if err := app.Save(item); err != nil {
+		t.Fatalf("save serialized item: %v", err)
+	}
+	return item.Id
+}
+
+// TestPerformStockAdjustment_Serialized_Rejected verifies serialized items
+// can't be adjusted directly (their quantity is derived from active
+// instances), in both delta and absolute modes, and that the rejected attempt
+// writes no stock_adjustments row and leaves quantity_on_hand untouched.
+func TestPerformStockAdjustment_Serialized_Rejected(t *testing.T) {
+	app := setupApp(t)
+	_ = seedItemAndAdmin(t, app, 10) // ensures bootstrap admin exists
+	itemID := seedSerializedItem(t, app, 3)
+	adminID := func() string {
+		rec, _ := app.FindFirstRecordByFilter("admins", "email = {:e}",
+			dbx.Params{"e": "admin@kiosk.local"})
+		return rec.Id
+	}()
+
+	for _, mode := range []string{"delta", "absolute"} {
+		_, err := handlers.PerformStockAdjustment(app, itemID, adminID,
+			events.SourceLocal, "", mode, 5, "should be rejected")
+		if !errors.Is(err, handlers.ErrSerializedNotAdjustable) {
+			t.Fatalf("mode %q: want ErrSerializedNotAdjustable, got %v", mode, err)
+		}
+	}
+
+	// No audit row written.
+	rows, err := app.FindRecordsByFilter("stock_adjustments",
+		"item = {:i}", "created", 0, 0, dbx.Params{"i": itemID})
+	if err != nil {
+		t.Fatalf("list stock_adjustments: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("stock_adjustments rows for serialized item: want 0, got %d", len(rows))
+	}
+
+	// quantity_on_hand untouched.
+	item, _ := app.FindRecordById("items", itemID)
+	if got := item.GetInt("quantity_on_hand"); got != 3 {
+		t.Errorf("quantity_on_hand: want 3 (unchanged), got %d", got)
 	}
 }
 

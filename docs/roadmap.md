@@ -101,9 +101,11 @@ These started as deferred roadmap items and are now live in the binary:
 - **Admin force-close (lost / damaged / returned offline).** Admins
   can now resolve stale `open_checkouts` rows without bypassing the
   ledger. New `action="admin_close"` on `transaction_lines` plus a
-  `closure_reason` enum; `lost` / `damaged` also write a
-  `stock_adjustments` row and (for serialized items) decommission the
-  instance — atomic with the close. The kiosk endpoint and the
+  `closure_reason` enum; `lost` / `damaged` drop the item's inventory
+  count — for quantity-tracked items by writing a `stock_adjustments`
+  row, for serialized items by decommissioning the instance (whose
+  active count the derived quantity follows; no `stock_adjustments` row)
+  — atomic with the close. The kiosk endpoint and the
   controller's NATS-forwarded `checkout.close` command both converge
   on `commit.AdminClose`, so a controller-driven close on a remote
   kiosk behaves identically to a local one (including the qty + audit

@@ -21,6 +21,14 @@ import (
 // silently because no writes happened in this attempt.
 var errIdempotentReplay = errors.New("idempotent replay")
 
+// ErrSerializedNotAdjustable is returned by PerformStockAdjustment for
+// serialized items. Their quantity_on_hand is derived from the count of
+// active item_instances, so a direct stock adjustment has no meaning — the
+// count changes only by adding, decommissioning, reactivating, or deleting
+// instances. Exported so the HTTP handler (→ 400) and the NATS command path
+// (→ reply error) can both recognise it via errors.Is.
+var ErrSerializedNotAdjustable = errors.New("stock adjustments are not allowed for serialized items; change the count by adding, decommissioning, reactivating, or deleting instances")
+
 // AdjustItemStock is the admin endpoint that changes an item's
 // quantity_on_hand while writing an audit row in the same transaction.
 //
@@ -61,6 +69,9 @@ func (h *Handlers) AdjustItemStock(re *core.RequestEvent) error {
 	result, err := PerformStockAdjustment(h.App, itemID, re.Auth.Id, events.SourceLocal, "",
 		body.Mode, body.Value, body.Reason)
 	if err != nil {
+		if errors.Is(err, ErrSerializedNotAdjustable) {
+			return re.BadRequestError(ErrSerializedNotAdjustable.Error(), nil)
+		}
 		if isNotFound(err) {
 			return re.NotFoundError("item not found", nil)
 		}
@@ -140,6 +151,15 @@ func PerformStockAdjustment(app core.App, itemID, actorID, source, commandID, mo
 		item, err := tx.FindRecordById("items", itemID)
 		if err != nil {
 			return err
+		}
+		// Serialized items derive quantity_on_hand from their active
+		// instance count — reject direct adjustment. Checked after the
+		// item load (so a bad id still 404s) and before any write, so the
+		// empty txn rolls back cleanly. This single guard covers both the
+		// local HTTP path and the controller's remote command path, which
+		// both funnel through here.
+		if item.GetString("tracking_mode") == "serialized" {
+			return ErrSerializedNotAdjustable
 		}
 		prev := item.GetInt("quantity_on_hand")
 		var newQty, delta int

@@ -157,7 +157,9 @@ Three invariants:
    stock-adjust handler (both local HTTP and remote command paths emit
    the same shape via `handlers.PublishInventoryAdjustEvent`, and
    `commit.AdminClose` emits the same subject for the qty side-effect of
-   lost/damaged closes); `<prefix>.<kiosk_code>.event.integrity.rebuild`
+   lost/damaged closes of **quantity-tracked** items only — serialized
+   closes decommission the instance instead and never emit
+   `inventory.adjust`); `<prefix>.<kiosk_code>.event.integrity.rebuild`
    from the open_checkouts rebuild handler;
    `<prefix>.<kiosk_code>.event.checkout.admin_close` from
    `commit.AdminClose` (one per row closed; the matching transaction also
@@ -370,6 +372,26 @@ index on `command_id` is the anchor of idempotency for the controller's
 remote inventory.adjust command — see the comment block in
 `internal/handlers/stock_adjust.go::PerformStockAdjustment` for the
 upfront-lookup + unique-violation-catch dance.
+
+**Serialized `quantity_on_hand` is derived, not stored-by-hand.** For
+`tracking_mode="serialized"` items, `quantity_on_hand` is a materialized
+view of the active `item_instances` count (same spirit as
+`open_checkouts`). `PerformStockAdjustment` rejects serialized items
+outright (`ErrSerializedNotAdjustable` → HTTP 400 / NATS reply error), so
+their count moves only through the instance lifecycle. The recompute
+lives in **one place**: model-level `OnRecordAfter{Create,Update,Delete}Success`
+hooks on `item_instances` in `internal/instances/hooks.go` call
+`instances.RecomputeItemQuantity` (a full re-count from source, no-op for
+non-serialized / missing items). Because PB defers in-transaction
+after-success hooks to post-commit on the parent app (see `core/db.go`),
+this single binding covers every write path — admin SPA / superuser REST,
+the controller command-bus `Perform*` mutations, and `commit.AdminClose`'s
+decommission — so neither `mutations.go` nor `admin_close.go` recomputes
+explicitly (admin_close just skips the qty stock-adjustment for serialized
+and lets the decommission drive the count). CSV import ignores a
+`quantity_on_hand` column for serialized rows. The one-shot backfill
+`migrations/1793000000_backfill_serialized_qty.go` reconciles pre-existing
+rows.
 
 **Per-kiosk catalog membership.** Controller-side `kiosk_items` is the
 source of truth for "which SKUs does kiosk X stock." A row exists →

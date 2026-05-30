@@ -221,7 +221,18 @@ const pagedItems = computed(() => {
         </span>
       </template>
       <template #cell-__actions="{ row }">
+        <!-- Serialized items derive their count from active instances, so a
+             direct quantity adjust is rejected server-side. Manage their units
+             on the Instances tab instead. -->
+        <span
+          v-if="row.tracking_mode === 'serialized'"
+          class="text-xs text-slate-500"
+          title="Serialized — change the count on the Instances tab by adding or decommissioning units"
+        >
+          serialized
+        </span>
         <button
+          v-else
           type="button"
           class="px-3 py-1.5 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm border border-slate-700 whitespace-nowrap disabled:opacity-50"
           :disabled="offline"

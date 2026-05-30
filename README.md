@@ -32,13 +32,18 @@ it via config. See [docs/controller.md](docs/controller.md).
   view).
 - **Stock tracking with audit trail.** Items carry `quantity_on_hand`
   and `reorder_threshold`. Consumables decrement automatically on
-  `consume`; admin edits go through an `/adjust` endpoint that writes a
-  `stock_adjustments` audit row in the same transaction as the item
-  update. A Low Stock report surfaces items at or below threshold.
+  `consume`; for quantity-tracked tools and consumables, admin edits go
+  through an `/adjust` endpoint that writes a `stock_adjustments` audit
+  row in the same transaction as the item update. A Low Stock report
+  surfaces items at or below threshold.
 - **Per-unit tracking for serialized tools.** One `items` row is the
   SKU; one `item_instances` row is the physical unit (its scannable
   barcode, printed serial, RFID tag). Returns close the exact instance
   scanned, so three impact drivers under one SKU don't blur together.
+  A serialized SKU's `quantity_on_hand` is **derived** — it tracks the
+  count of active instances automatically as units are added,
+  decommissioned, reactivated, or deleted — so it isn't directly
+  adjustable (the `/adjust` endpoint rejects serialized items).
 - **Optional RFID flows.** A networked LLRP reader (Impinj R700 or
   similar) drives either of two modes: **`counter_scan`** turns the
   reader into a bulk barcode-gun equivalent — operator hits "RFID

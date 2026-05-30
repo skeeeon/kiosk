@@ -136,14 +136,22 @@ The two big takeaways:
 
 ## Adjusting stock
 
-Admins should change `items.quantity_on_hand` through the admin UI's
-**Adjust…** button (next to the read-only quantity in the item dialog),
-not by editing the value directly. The Adjust dialog supports a signed
-delta or an absolute "set to N" mode, both requiring a free-form
-reason. Each submission writes a `stock_adjustments` row in the same
-transaction as the item update, capturing who/what/why. Past
-adjustments for an item are viewable via the **View adjustment history**
-link below the threshold field.
+For quantity-tracked tools and consumables, admins should change
+`items.quantity_on_hand` through the admin UI's **Adjust…** button (next
+to the read-only quantity in the item dialog), not by editing the value
+directly. The Adjust dialog supports a signed delta or an absolute "set
+to N" mode, both requiring a free-form reason. Each submission writes a
+`stock_adjustments` row in the same transaction as the item update,
+capturing who/what/why. Past adjustments for an item are viewable via
+the **View adjustment history** link below the threshold field.
+
+Serialized items have **no** Adjust button: their `quantity_on_hand` is
+derived from the count of active instances and isn't directly editable.
+The item dialog shows it read-only as "Units in service"; change it by
+adding, decommissioning, reactivating, or deleting instances (see
+[Managing instances of serialized tools](#managing-instances-of-serialized-tools)
+below). The `/adjust` endpoint and the controller's `inventory.adjust`
+command both reject serialized items.
 
 The Low Stock tab on Reports surfaces every active item whose available
 quantity is at or below its `reorder_threshold`. For serialized SKUs,
@@ -198,6 +206,14 @@ it first) and gracefully declines when the ledger holds an FK ("uncheck
 Active to retire instead"). The Items list shows an `N inst` badge next
 to the tracking mode for serialized rows so an admin can see at a
 glance how many physical units exist per SKU.
+
+Each of these lifecycle changes — create, decommission, reactivate,
+delete — recomputes the parent SKU's `quantity_on_hand` to the current
+count of **active** instances. That's the only way a serialized SKU's
+quantity moves; it can't be hand-adjusted. A `lost`/`damaged` admin
+close of a serialized unit decommissions its instance the same way, so
+the derived quantity drops by one without writing a `stock_adjustments`
+row.
 
 ## Resetting the bootstrap admin password
 

@@ -118,3 +118,92 @@ func TestMigrationsAreIdempotent(t *testing.T) {
 		t.Fatalf("second run (should be no-op): %v", err)
 	}
 }
+
+// TestBackfillSerializedQty verifies the 1793000000 backfill sets a serialized
+// item's quantity_on_hand to its active instance count, leaves quantity-tracked
+// items alone, handles zero-instance serialized items, and is idempotent. We
+// call backfillSerializedQtyUp directly (re-running it after the initial
+// migration) so we can seed deliberately-drifted data first — the same
+// pre-migration drift the backfill exists to reconcile. Instances are seeded
+// without the recompute hook registered, so the stored quantity stays wrong
+// until the backfill runs.
+func TestBackfillSerializedQty(t *testing.T) {
+	app := newApp(t)
+	runner := core.NewMigrationsRunner(app, core.AppMigrations)
+	if _, err := runner.Up(); err != nil {
+		t.Fatalf("migrations up: %v", err)
+	}
+
+	items, err := app.FindCollectionByNameOrId("items")
+	if err != nil {
+		t.Fatalf("find items: %v", err)
+	}
+	insts, err := app.FindCollectionByNameOrId("item_instances")
+	if err != nil {
+		t.Fatalf("find item_instances: %v", err)
+	}
+
+	mkItem := func(code, mode string, qty int) string {
+		rec := core.NewRecord(items)
+		rec.Set("code", code)
+		rec.Set("name", code)
+		rec.Set("type", "tool")
+		rec.Set("tracking_mode", mode)
+		rec.Set("active", true)
+		rec.Set("quantity_on_hand", qty)
+		if err := app.Save(rec); err != nil {
+			t.Fatalf("save item %s: %v", code, err)
+		}
+		return rec.Id
+	}
+	mkInst := func(itemID, code string, active bool) {
+		rec := core.NewRecord(insts)
+		rec.Set("item", itemID)
+		rec.Set("code", code)
+		rec.Set("active", active)
+		if err := app.Save(rec); err != nil {
+			t.Fatalf("save instance %s: %v", code, err)
+		}
+	}
+
+	// Serialized with drifted qty: 2 active + 1 inactive → should become 2.
+	serID := mkItem("SER-DRIFT", "serialized", 99)
+	mkInst(serID, "SER-DRIFT-1", true)
+	mkInst(serID, "SER-DRIFT-2", true)
+	mkInst(serID, "SER-DRIFT-3", false)
+
+	// Serialized with no instances → should become 0.
+	serEmptyID := mkItem("SER-EMPTY", "serialized", 7)
+
+	// Quantity-tracked item → must be left untouched.
+	qtyID := mkItem("QTY-KEEP", "quantity", 50)
+
+	if err := backfillSerializedQtyUp(app); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	reload := func(id string) int {
+		rec, err := app.FindRecordById("items", id)
+		if err != nil {
+			t.Fatalf("reload %s: %v", id, err)
+		}
+		return rec.GetInt("quantity_on_hand")
+	}
+	if got := reload(serID); got != 2 {
+		t.Errorf("serialized w/ 2 active: want qty 2, got %d", got)
+	}
+	if got := reload(serEmptyID); got != 0 {
+		t.Errorf("serialized w/ 0 instances: want qty 0, got %d", got)
+	}
+	if got := reload(qtyID); got != 50 {
+		t.Errorf("quantity item: want qty 50 (untouched), got %d", got)
+	}
+
+	// Idempotent: a second run yields the same values.
+	if err := backfillSerializedQtyUp(app); err != nil {
+		t.Fatalf("backfill re-run: %v", err)
+	}
+	if got := reload(serID); got != 2 {
+		t.Errorf("after re-run: want qty 2, got %d", got)
+	}
+}

@@ -38,10 +38,12 @@ var validClosureReasons = map[string]struct{}{
 	"other":            {},
 }
 
-// reasonAffectsInventory reports whether the close should also decrement
-// items.quantity_on_hand and (for serialized items) decommission the
-// instance. Lost and damaged both mean "this unit is gone from inventory"
-// — the difference between them is audit categorization, not effect.
+// reasonAffectsInventory reports whether the close should also drop the item's
+// inventory count: for quantity-tracked items by decrementing
+// items.quantity_on_hand, for serialized items by decommissioning the instance
+// (whose active count the quantity is derived from). Lost and damaged both mean
+// "this unit is gone from inventory" — the difference between them is audit
+// categorization, not effect.
 // returned_offline means the unit is back in inventory (no qty change).
 // other is conservative: admin can do a separate stock adjustment if the
 // situation actually warrants one.
@@ -244,11 +246,20 @@ func AdminClose(app core.App, in AdminCloseInput, publish PublishFunc) (*AdminCl
 			return fmt.Errorf("delete open_checkout %s: %w", openRec.Id, err)
 		}
 
-		// Inventory side-effect for lost / damaged: decrement qty, write a
-		// stock_adjustments row, and (for serialized items) flip the
-		// instance to active=false + write an instance_audit row. All in
-		// the same DB transaction so a partial state is impossible. Events
-		// publish post-commit alongside the close event.
+		// Inventory side-effect for lost / damaged: the unit is gone from
+		// inventory. How the count drops depends on tracking mode:
+		//
+		//   - quantity-tracked: decrement quantity_on_hand by 1 + write a
+		//     stock_adjustments row + emit inventory.adjust (handled below).
+		//   - serialized: quantity_on_hand is DERIVED from the active instance
+		//     count, so we only decommission the instance (active→false). The
+		//     instances after-update hook recomputes the item's quantity off
+		//     the back of that write — no stock_adjustments row, no
+		//     inventory.adjust event. The instance.lifecycle event is the
+		//     record of the count change.
+		//
+		// All writes ride this DB transaction so a partial state is impossible.
+		// Events publish post-commit alongside the close event.
 		out = AdminCloseResult{
 			TransactionID:  txRec.Id,
 			LineID:         lineRec.Id,
@@ -298,26 +309,32 @@ func AdminClose(app core.App, in AdminCloseInput, publish PublishFunc) (*AdminCl
 		})
 
 		if reasonAffectsInventory(in.Reason) {
-			adjID, prevQty, newQty, perr := applyLostOrDamagedQtyAdjust(tx, in, itemRec, completedAt)
-			if perr != nil {
-				return perr
-			}
-			pending = append(pending, pendingEvent{
-				Subject: events.InventoryAdjustSubject(in.Identity.KioskCode),
-				Payload: buildAdminCloseInventoryAdjustPayload(in, itemRec, adjID,
-					prevQty, newQty, completedAt),
-			})
-
-			if instanceID != "" {
-				prevActive, auditID, derr := decommissionInstanceForAdminClose(tx, in,
-					instanceID, itemID)
-				if derr != nil {
-					return derr
+			if itemRec.GetString("tracking_mode") == "serialized" {
+				// Serialized: decommission the instance only. The quantity
+				// drop is derived from the active count via the instances
+				// recompute hook; no stock_adjustments row / inventory.adjust
+				// event is emitted for serialized items.
+				if instanceID != "" {
+					prevActive, auditID, derr := decommissionInstanceForAdminClose(tx, in,
+						instanceID, itemID)
+					if derr != nil {
+						return derr
+					}
+					pending = append(pending, pendingEvent{
+						Subject: events.InstanceLifecycleSubject(in.Identity.KioskCode),
+						Payload: buildAdminCloseInstanceLifecyclePayload(in, itemRec,
+							instanceID, auditID, prevActive, completedAt),
+					})
+				}
+			} else {
+				adjID, prevQty, newQty, perr := applyLostOrDamagedQtyAdjust(tx, in, itemRec, completedAt)
+				if perr != nil {
+					return perr
 				}
 				pending = append(pending, pendingEvent{
-					Subject: events.InstanceLifecycleSubject(in.Identity.KioskCode),
-					Payload: buildAdminCloseInstanceLifecyclePayload(in, itemRec,
-						instanceID, auditID, prevActive, completedAt),
+					Subject: events.InventoryAdjustSubject(in.Identity.KioskCode),
+					Payload: buildAdminCloseInventoryAdjustPayload(in, itemRec, adjID,
+						prevQty, newQty, completedAt),
 				})
 			}
 		}

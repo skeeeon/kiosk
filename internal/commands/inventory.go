@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/pocketbase/dbx"
@@ -78,6 +79,9 @@ func (d *Dispatcher) handleInventoryAdjust(_ context.Context, payload []byte) Re
 	result, err := handlers.PerformStockAdjustment(d.app, item.Id, req.ControllerAdminID,
 		events.SourceController, req.CommandID, req.Mode, req.Value, req.Reason)
 	if err != nil {
+		if errors.Is(err, handlers.ErrSerializedNotAdjustable) {
+			return Reply{Success: false, Error: handlers.ErrSerializedNotAdjustable.Error()}
+		}
 		return Reply{Success: false, Error: "adjustment failed: " + err.Error()}
 	}
 

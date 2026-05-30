@@ -61,7 +61,8 @@ routes on the `<name>` suffix.
 
 Mutate `items.quantity_on_hand` and write a `stock_adjustments` audit
 row. Same business logic as the local `POST /api/kiosk/items/{id}/adjust`
-endpoint.
+endpoint — including rejecting **serialized** items (their quantity is
+derived from the active instance count), which replies `success=false`.
 
 **Publisher.** controller
 

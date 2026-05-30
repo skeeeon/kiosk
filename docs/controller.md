@@ -56,8 +56,10 @@ of truth for catalog plus a unified transaction ledger.
   proxies admin clicks to the target kiosk over core NATS
   request/reply on `{prefix}.{kiosk_code}.command.<name>`. The kiosk
   runs the same `PerformStockAdjustment` business logic the local
-  HTTP path does, then publishes the same `inventory.adjust` event
-  the aggregator already knows about. Idempotency is server-side: the
+  HTTP path does — including rejecting serialized items, whose
+  quantity is derived from their active instance count (manage those
+  via the Instances tab) — then publishes the same `inventory.adjust`
+  event the aggregator already knows about. Idempotency is server-side: the
   controller generates a UUID `command_id`; the kiosk's
   `stock_adjustments` schema has it as a unique column, so a retried
   command returns the prior result instead of double-applying. The
@@ -285,8 +287,10 @@ online badges; clicking a row opens the per-kiosk detail view at
   old dialog).
 - **Inventory** — fetches a live snapshot of on-hand quantities from
   the kiosk via the `inventory.snapshot` NATS command, with a per-row
-  Adjust button that drives the corresponding `inventory.adjust`
-  command.
+  Adjust button (quantity-tracked items only) that drives the
+  corresponding `inventory.adjust` command. Serialized rows show a
+  "serialized" marker instead — their count is derived and managed on
+  the Instances tab.
 - **Instances** — the serialized-unit roster fetched via
   `instance.snapshot`. Create, edit (cosmetic), decommission, and
   reactivate each map to a matching NATS command. Decommission +

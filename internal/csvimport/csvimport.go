@@ -305,7 +305,13 @@ func upsertItemRow(app core.App, coll *core.Collection, existing map[string]*cor
 	// Only set quantity fields if the column is present in the CSV — omission
 	// means "leave as-is" on update, "default to 0" on insert (PB's number
 	// field zero-default applies). The csvimport tests pin this contract.
-	if _, ok := headers["quantity_on_hand"]; ok {
+	//
+	// For serialized items quantity_on_hand is DERIVED from the active instance
+	// count (kept in sync by the instances recompute hook), so a CSV value is
+	// meaningless — silently ignore it rather than erroring a whole row over an
+	// optional, now-managed column. reorder_threshold stays settable: it's the
+	// low-stock threshold against the derived count and is still meaningful.
+	if _, ok := headers["quantity_on_hand"]; ok && tracking != "serialized" {
 		data["quantity_on_hand"] = parseCSVInt(csvCol(headers, row, "quantity_on_hand"))
 	}
 	if _, ok := headers["reorder_threshold"]; ok {

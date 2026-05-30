@@ -211,6 +211,38 @@ func TestRun_Items_OmittedQuantityColumnsPreserveExistingValues(t *testing.T) {
 	}
 }
 
+// TestRun_Items_SerializedIgnoresQuantityColumn verifies that a serialized
+// row's quantity_on_hand column is ignored (the value is derived from active
+// instances), without erroring the row. reorder_threshold still applies.
+func TestRun_Items_SerializedIgnoresQuantityColumn(t *testing.T) {
+	app := setupApp(t)
+
+	csvBody := strings.Join([]string{
+		"code,name,type,tracking_mode,active,quantity_on_hand,reorder_threshold",
+		"DRILL-S,Serialized Drill,tool,serialized,true,99,2",
+	}, "\n")
+	result, err := Run(app, KindItems, strings.NewReader(csvBody), false)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.RowsInserted != 1 {
+		t.Fatalf("rows inserted: want 1, got %d (errors=%d)", result.RowsInserted, result.RowsErrored)
+	}
+
+	rec, err := app.FindFirstRecordByFilter("items", "code = {:c}", dbx.Params{"c": "DRILL-S"})
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	// quantity_on_hand column ignored → PB zero-default, not the CSV's 99.
+	if got := rec.GetInt("quantity_on_hand"); got != 0 {
+		t.Errorf("quantity_on_hand: want 0 (CSV value ignored for serialized), got %d", got)
+	}
+	// reorder_threshold still honored.
+	if got := rec.GetInt("reorder_threshold"); got != 2 {
+		t.Errorf("reorder_threshold: want 2, got %d", got)
+	}
+}
+
 func TestRun_Items_PerRowErrorsDontAbortRun(t *testing.T) {
 	app := setupApp(t)
 	csvBody := strings.Join([]string{

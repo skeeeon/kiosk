@@ -23,10 +23,11 @@ instead of replaying history per page load.
 
 Two collections in the same database act as supporting audit logs and
 follow the same append-only discipline: `stock_adjustments` (every
-change to `items.quantity_on_hand`) and `instance_audit` (every
-lifecycle change on a serialized unit). They aren't part of the
-ledger's checkout state machine, but they share the design property
-that every mutation leaves a permanent row behind.
+admin adjustment to a quantity-tracked item's `quantity_on_hand`) and
+`instance_audit` (every lifecycle change on a serialized unit — which
+is also what moves a serialized SKU's derived `quantity_on_hand`). They
+aren't part of the ledger's checkout state machine, but they share the
+design property that every mutation leaves a permanent row behind.
 
 ## The single write path
 
@@ -204,7 +205,10 @@ commit path:
 
 - `event.inventory.adjust` — from admin stock adjustments
   ([`stock_adjust.go`](../internal/handlers/stock_adjust.go)) and as
-  the qty side-effect of `lost`/`damaged` admin closes.
+  the qty side-effect of `lost`/`damaged` admin closes of
+  **quantity-tracked** items. Serialized closes don't emit it — the
+  unit's removal rides `event.instance.lifecycle` instead, and the
+  derived quantity follows the active-instance count.
 - `event.instance.lifecycle` — from `item_instances` PB record hooks
   and from `commit.AdminClose` when retiring a serialized unit.
 

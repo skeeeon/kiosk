@@ -11,13 +11,13 @@ the controller-only `kiosks` registry and `kiosk_items` membership table
 | `users` | Workers (badge-holders). PB default auth collection, real emails kept for future notifications. Workers don't log in in v1. `group` is an optional FK to `groups`. |
 | `admins` | Foremen / admins. Separate PB auth collection. Login via email + password. |
 | `groups` | Sub-contractors / trades. `code` is the stable join key (CSV import, cross-fleet sync); metadata fields (`name`, `contact_email`, `contact_phone`, `notes`) are admin-managed and downstream features like email receipts use them. Optional on workers; deletion sets affected `users.group` to null. |
-| `items` | Tools and consumables (the SKU). `tracking_mode` is `quantity` or `serialized`. Carries `quantity_on_hand` (fleet count for tools / current stock for consumables) and `reorder_threshold` (low-stock alert level; 0 disables the alert). |
+| `items` | Tools and consumables (the SKU). `tracking_mode` is `quantity` or `serialized`. Carries `quantity_on_hand` and `reorder_threshold` (low-stock alert level; 0 disables the alert). `quantity_on_hand` is a stored, admin-adjustable value for `quantity` tools (fleet count) and consumables (current stock); for `serialized` SKUs it is a **derived** materialized view of the active `item_instances` count — kept in sync by the instances recompute hook and not directly editable. |
 | `item_instances` | One physical unit of a serialized SKU. Holds the scannable `code`, the printed `serial`, an optional `rfid_epc`, and `active`. FK to the parent `items` row. |
 | `instance_audit` | Append-only audit log of `item_instances` lifecycle changes. Written by PB record hooks: one row per `create` / `decommission` (active true→false) / `reactivate` (active false→true) / `delete`. Cosmetic edits (code/serial/notes) intentionally don't audit. Mirrors `stock_adjustments` in role; `commit.AdminClose` also writes a row when `closure_reason ∈ {lost, damaged}` retires a serialized instance. |
 | `transactions` | Append-only ledger. `kiosk_code`, `location_code`, `user`, `started_at`, `completed_at`, `status`. Also carries `closed_by_admin` (FK, populated when the row was created by an admin force-close) and `command_id` (unique-when-non-empty, idempotency anchor for controller-forwarded closes). |
 | `transaction_lines` | One per item action within a transaction. `action` is `checkout`, `return`, `consume`, or `admin_close`. Carries optional `item_instance` FK for serialized lines. `original_checkout_user` (the worker whose open_checkout was closed) is set on `return` rows produced by the foreman-return endpoint and on every `admin_close` row. `admin_close` rows additionally carry `closure_reason` (`lost` \| `returned_offline` \| `damaged` \| `other`), `closed_by_admin` (FK for source=local), and `notes`. |
 | `open_checkouts` | Materialized view of "what's out right now." One row per unit out. Carries `item_instance` FK for serialized units. Maintained by the commit hook. |
-| `stock_adjustments` | Append-only audit log of changes to `items.quantity_on_hand` made via `/api/kiosk/items/{id}/adjust` (local) or the controller's `inventory.adjust` command bus (remote). Stores `delta`, `new_quantity` (snapshot), `reason`, the responsible `admin` (FK, populated for `source=local`), `source` ('local' \| 'controller'), `controller_admin_id` (text — controller's admin id, populated for `source=controller`), and `command_id` (UUID, unique-when-non-empty for idempotent replay of remote commands). |
+| `stock_adjustments` | Append-only audit log of changes to a **quantity-tracked** item's `quantity_on_hand` made via `/api/kiosk/items/{id}/adjust` (local) or the controller's `inventory.adjust` command bus (remote). Serialized items are rejected by both paths (their quantity is derived). Stores `delta`, `new_quantity` (snapshot), `reason`, the responsible `admin` (FK, populated for `source=local`), `source` ('local' \| 'controller'), `controller_admin_id` (text — controller's admin id, populated for `source=controller`), and `command_id` (UUID, unique-when-non-empty for idempotent replay of remote commands). |
 | `notification_templates` | One row per event type (`receipt.transaction`, `alert.lowstock`, `digest.open_checkouts`, `digest.daily_activity`). Admin-editable subject/body Go templates plus a `recipients` JSON column (`{worker_email, all_admins, extras}`). Seeded from compiled-in defaults; rows are append-only — editable, not deletable. Both binaries get the schema; on managed kiosks the local rows are dormant (sends fire from the controller's rows instead). |
 | `notification_send_log` | One row per attempted recipient. `status` is `sent` / `failed` / `skipped`. Pruned daily at 90 days. The controller's table holds the fleet-wide audit in managed mode; standalone kiosks log to their own. |
 | `notification_dedupe` | Race-free dedup gate for `SendIfFirst`. Unique on `(event_type, ref, day)`. Receipts use `ref = transaction_id`; low-stock uses `ref = item_id`. Scheduled digests intentionally skip this — repeating cadence is the feature. |
@@ -90,15 +90,18 @@ Common rules:
 
 ```csv
 code,name,type,unit,tracking_mode,category,active,notes,quantity_on_hand,reorder_threshold
-DR-IMPACT-042,Impact Driver,tool,each,serialized,Power Tools,true,,1,0
+DR-IMPACT-042,Impact Driver,tool,each,serialized,Power Tools,true,,,0
 SCREW-DECK-3IN,Deck Screws 3in,consumable,box of 100,quantity,Fasteners,true,,25,5
 ```
 
 `quantity_on_hand` and `reorder_threshold` are optional; if omitted,
 existing rows keep their current values and new rows default to zero.
+For **serialized** rows a `quantity_on_hand` value is ignored (the count
+is derived from active instances); `reorder_threshold` still applies.
 Per-unit serials and RFID EPCs live on `item_instances`, not on the SKU
 row — serialized SKUs created via CSV still need their instances added
-through the admin UI's instances panel.
+through the admin UI's instances panel, which is what drives their
+derived quantity.
 
 ### Workers — `POST /api/kiosk/users/import`
 

@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/pocketbase/pocketbase"
@@ -83,6 +84,50 @@ func TestInventoryAdjust_HappyPath(t *testing.T) {
 	}
 	if out.NewQuantity != 13 || out.Delta != 3 || out.PrevQuantity != 10 {
 		t.Errorf("reply: got %+v, want new=13 delta=3 prev=10", out)
+	}
+}
+
+// TestInventoryAdjust_Serialized_Rejected verifies the remote adjust command
+// refuses serialized items (their quantity is derived from active instances),
+// replying success=false with the serialized message and writing nothing.
+func TestInventoryAdjust_Serialized_Rejected(t *testing.T) {
+	app := setupApp(t)
+	items, err := app.FindCollectionByNameOrId("items")
+	if err != nil {
+		t.Fatalf("find items: %v", err)
+	}
+	item := core.NewRecord(items)
+	item.Set("code", "DRILL-S")
+	item.Set("name", "Serialized Drill")
+	item.Set("type", "tool")
+	item.Set("tracking_mode", "serialized")
+	item.Set("active", true)
+	item.Set("quantity_on_hand", 4)
+	if err := app.Save(item); err != nil {
+		t.Fatalf("save serialized item: %v", err)
+	}
+
+	d := NewDispatcher(app, "KIOSK01")
+	payload, _ := json.Marshal(map[string]any{
+		"command_id":          "cmd-ser",
+		"controller_admin_id": "ctrl-admin",
+		"item_code":           "DRILL-S",
+		"mode":                "delta",
+		"value":               2,
+		"reason":              "restock",
+	})
+	reply := d.handleInventoryAdjust(context.Background(), payload)
+
+	if reply.Success {
+		t.Fatalf("expected failure for serialized adjust, got success")
+	}
+	if !strings.Contains(reply.Error, "not allowed for serialized") {
+		t.Errorf("reply.Error: want serialized rejection, got %q", reply.Error)
+	}
+	// quantity_on_hand untouched.
+	got, _ := app.FindRecordById("items", item.Id)
+	if q := got.GetInt("quantity_on_hand"); q != 4 {
+		t.Errorf("quantity_on_hand: want 4 (unchanged), got %d", q)
 	}
 }
 
