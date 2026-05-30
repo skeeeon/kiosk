@@ -384,6 +384,16 @@ func (s *Store) Delete(cartID string) error {
 	return nil
 }
 
+// Count returns the number of live carts. Used by the metrics snapshot to
+// report active sessions. Expired-but-not-yet-swept carts are counted (lazy
+// expiry only fires on access), which is close enough for an operational gauge
+// on a single-user kiosk.
+func (s *Store) Count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.carts)
+}
+
 func (s *Store) getLocked(cartID string) (*Cart, error) {
 	c, ok := s.carts[cartID]
 	if !ok {

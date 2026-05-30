@@ -28,6 +28,7 @@ type fakeReader struct {
 
 func (f *fakeReader) Connect(context.Context) error { return nil }
 func (f *fakeReader) Close() error                   { return nil }
+func (f *fakeReader) Connected() bool                { return true }
 func (f *fakeReader) ReadFor(_ context.Context, _ time.Duration) ([]rfid.EPC, error) {
 	f.calls++
 	if f.err != nil {

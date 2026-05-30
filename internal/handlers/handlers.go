@@ -6,6 +6,7 @@ package handlers
 import (
 	"database/sql"
 	"errors"
+	"time"
 
 	"github.com/pocketbase/pocketbase/core"
 
@@ -32,6 +33,10 @@ type Handlers struct {
 	// in cmd/kiosk/main.go sets this after the reader's first
 	// successful Connect.
 	RFID rfid.Reader
+	// StartedAt is stamped at construction (once, at boot) and used to
+	// report process uptime in the metrics snapshot. Close enough to
+	// process start for an operational gauge.
+	StartedAt time.Time
 }
 
 func New(app core.App, cfg *config.Config, carts *cart.Store, notifier *notifications.Notifier) *Handlers {
@@ -41,6 +46,7 @@ func New(app core.App, cfg *config.Config, carts *cart.Store, notifier *notifica
 		Carts:      carts,
 		Notifier:   notifier,
 		CartEvents: cartevents.NewBroker(),
+		StartedAt:  time.Now(),
 	}
 }
 

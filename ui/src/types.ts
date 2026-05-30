@@ -323,6 +323,33 @@ export interface KioskOfflineError {
   command_id?: string
 }
 
+// KioskMetrics is the operational + activity snapshot returned by the kiosk's
+// GET /api/kiosk/metrics and, fleet-wide, by the controller's proxy at
+// GET /api/controller/kiosks/:code/metrics (same metrics.Compute on the kiosk).
+export interface KioskMetricsOperational {
+  uptime_seconds: number
+  nats_connected: boolean
+  rfid_enabled: boolean
+  rfid_mode?: string
+  rfid_connected: boolean
+  active_carts: number
+}
+
+export interface KioskMetricsLedger {
+  items_out: number
+  users_with_items_out: number
+  low_stock_skus: number
+  transactions_today: number
+  transactions_week: number
+}
+
+export interface KioskMetrics {
+  kiosk_code: string
+  generated_at: string
+  operational: KioskMetricsOperational
+  ledger: KioskMetricsLedger
+}
+
 // kiosk_items: controller-side membership row tying one item to one kiosk.
 // A row exists iff that kiosk stocks that item; cascade-deletes from either
 // side. Per-kiosk catalog projection is driven by these rows.

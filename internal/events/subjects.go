@@ -220,6 +220,14 @@ func InventorySnapshotCommandSubject(kioskCode string) string {
 	return CommandSubject(kioskCode, "inventory.snapshot")
 }
 
+// MetricsSnapshotCommandSubject is the controller→kiosk read-only command that
+// returns the kiosk's operational + activity metrics snapshot. Drives the
+// controller SPA's per-kiosk Metrics tab. Needs no idempotency key — it
+// mutates nothing.
+func MetricsSnapshotCommandSubject(kioskCode string) string {
+	return CommandSubject(kioskCode, "metrics.snapshot")
+}
+
 // Instance command subjects mirror the inventory family. Mutations
 // (create, edit, decommission, reactivate) are idempotent via command_id;
 // the snapshot read is unconditionally safe to replay. The kiosk's

@@ -1,11 +1,12 @@
 <!-- AdminKioskDetailView is the controller's per-kiosk admin surface. Lifted
-     out of KioskDialog so each tab gets real estate to grow. Four tabs:
+     out of KioskDialog so each tab gets real estate to grow. Tabs:
 
        Overview  — fields + heartbeat-derived online indicator
        Items     — KioskItemsPanel (catalog membership)
        Inventory — KioskInventoryPanel (live qty, remote adjust)
        Instances — KioskInstancesPanel (serialized-unit roster + remote
                    create / edit / decommission / reactivate)
+       Metrics   — KioskMetricsPanel (live operational + activity snapshot)
 
      Path: /admin/kiosks/:code. The :code param is the kiosk_code, not the
      PB record ID, so deep-links are stable across re-registrations. -->
@@ -18,6 +19,7 @@ import { useToast } from '../composables/useToast'
 import KioskItemsPanel from '../components/KioskItemsPanel.vue'
 import KioskInventoryPanel from '../components/KioskInventoryPanel.vue'
 import KioskInstancesPanel from '../components/KioskInstancesPanel.vue'
+import KioskMetricsPanel from '../components/KioskMetricsPanel.vue'
 import AppDialog from '../components/AppDialog.vue'
 import type { HeartbeatsResponse, KioskRecord } from '../types'
 
@@ -30,7 +32,7 @@ const loading = ref(false)
 const error = ref<string | null>(null)
 const saving = ref(false)
 
-type TabId = 'overview' | 'items' | 'inventory' | 'instances'
+type TabId = 'overview' | 'items' | 'inventory' | 'instances' | 'metrics'
 const activeTab = ref<TabId>('overview')
 
 // editable mirror of kiosk fields. kiosk_code is identity once persisted —
@@ -265,7 +267,7 @@ async function submitRepublish() {
 
     <div v-if="kiosk" class="flex gap-1 mb-4 border-b border-slate-800 overflow-x-auto">
       <button
-        v-for="t in (['overview','items','inventory','instances'] as TabId[])"
+        v-for="t in (['overview','items','inventory','instances','metrics'] as TabId[])"
         :key="t"
         type="button"
         class="px-3 sm:px-4 py-2 text-sm border-b-2 -mb-px whitespace-nowrap"
@@ -274,7 +276,7 @@ async function submitRepublish() {
           : 'border-transparent text-slate-400 hover:text-slate-200'"
         @click="activeTab = t"
       >
-        {{ t === 'overview' ? 'Overview' : t === 'items' ? 'Items' : t === 'inventory' ? 'Inventory' : 'Instances' }}
+        {{ t === 'overview' ? 'Overview' : t === 'items' ? 'Items' : t === 'inventory' ? 'Inventory' : t === 'instances' ? 'Instances' : 'Metrics' }}
       </button>
     </div>
 
@@ -371,6 +373,10 @@ async function submitRepublish() {
 
     <div v-if="kiosk && activeTab === 'instances'">
       <KioskInstancesPanel :kiosk-code="kiosk.kiosk_code" />
+    </div>
+
+    <div v-if="kiosk && activeTab === 'metrics'">
+      <KioskMetricsPanel :kiosk-code="kiosk.kiosk_code" />
     </div>
 
     <AppDialog
