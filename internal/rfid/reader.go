@@ -63,6 +63,13 @@ type Reader interface {
 	// in-flight LLRP session. Safe to call when Connect was never run
 	// or already failed — in that case it's a no-op. Idempotent.
 	Close() error
+
+	// Connected reports whether the supervisor currently holds a live
+	// LLRP session. It's a point-in-time read for operational metrics —
+	// a true result can go stale the instant the connection drops, so
+	// callers use it for display, not for gating ReadFor (which has its
+	// own ErrNotConnected path).
+	Connected() bool
 }
 
 // ErrNotConnected is returned by ReadFor when the supervisor has not
@@ -710,6 +717,15 @@ func (r *impinjReader) Close() error {
 		}
 	}
 	return nil
+}
+
+// Connected reports whether a live LLRP session is currently held. Reads the
+// same mutex-guarded conn the supervisor swaps on connect/disconnect, so it's
+// an honest point-in-time signal for metrics.
+func (r *impinjReader) Connected() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.conn != nil
 }
 
 // clearConnection nils the connection-tied state without trying to

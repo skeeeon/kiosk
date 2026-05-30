@@ -81,6 +81,62 @@ type LowStockRow struct {
 	ReorderThreshold int
 }
 
+// ComputeLowStockRows returns the items at or below their reorder threshold,
+// computed exactly the way the low-stock CSV is built: active items with a
+// positive threshold, where a tool's available = on_hand − currently-out drops
+// to the threshold or below. Shared between the CSV report handler and the
+// metrics snapshot so the low-stock count never drifts from the report.
+//
+// kioskCode stamps each row — kioskctx.Get().KioskCode on a kiosk binary; the
+// controller's fan-out builds its rows per-snapshot elsewhere and doesn't call
+// this.
+func ComputeLowStockRows(app core.App, kioskCode string) ([]LowStockRow, error) {
+	items, err := app.FindRecordsByFilter("items", "active = true", "code", 0, 0)
+	if err != nil {
+		return nil, fmt.Errorf("load items: %w", err)
+	}
+	opens, err := app.FindRecordsByFilter("open_checkouts", "", "", 0, 0)
+	if err != nil {
+		return nil, fmt.Errorf("load open_checkouts: %w", err)
+	}
+	openByItem := map[string]int{}
+	for _, o := range opens {
+		openByItem[o.GetString("item")]++
+	}
+
+	out := make([]LowStockRow, 0, len(items))
+	for _, it := range items {
+		threshold := it.GetInt("reorder_threshold")
+		if threshold <= 0 {
+			continue
+		}
+		onHand := it.GetInt("quantity_on_hand")
+		outCount := 0
+		available := onHand
+		if it.GetString("type") == "tool" {
+			outCount = openByItem[it.Id]
+			available = onHand - outCount
+			if available < 0 {
+				available = 0
+			}
+		}
+		if available > threshold {
+			continue
+		}
+		out = append(out, LowStockRow{
+			KioskCode:        kioskCode,
+			ItemCode:         it.GetString("code"),
+			ItemName:         it.GetString("name"),
+			TrackingMode:     it.GetString("tracking_mode"),
+			QuantityOnHand:   onHand,
+			Out:              outCount,
+			Available:        available,
+			ReorderThreshold: threshold,
+		})
+	}
+	return out, nil
+}
+
 // GroupActivityOptions narrows the group-activity export. From/To are
 // YYYY-MM-DD; the writer expands them to inclusive day boundaries against
 // completed_at. KioskCode filters fleet-wide projections on the controller;

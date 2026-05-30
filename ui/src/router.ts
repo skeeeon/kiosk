@@ -11,6 +11,7 @@ import AdminAdminsView from './views/AdminAdminsView.vue'
 import AdminGroupsView from './views/AdminGroupsView.vue'
 import AdminImportView from './views/AdminImportView.vue'
 import AdminReportsView from './views/AdminReportsView.vue'
+import AdminMetricsView from './views/AdminMetricsView.vue'
 import AdminNotificationsView from './views/AdminNotificationsView.vue'
 import AdminNotificationsLogView from './views/AdminNotificationsLogView.vue'
 import AdminScheduledReportsView from './views/AdminScheduledReportsView.vue'
@@ -39,6 +40,7 @@ export const router = createRouter({
         { path: 'groups', name: 'admin-groups', component: AdminGroupsView },
         { path: 'import', name: 'admin-import', component: AdminImportView },
         { path: 'reports', name: 'admin-reports', component: AdminReportsView },
+        { path: 'metrics', name: 'admin-metrics', component: AdminMetricsView },
         { path: 'notifications', name: 'admin-notifications', component: AdminNotificationsView },
         { path: 'notifications/scheduled', name: 'admin-notifications-scheduled', component: AdminScheduledReportsView },
         { path: 'notifications/log', name: 'admin-notifications-log', component: AdminNotificationsLogView },

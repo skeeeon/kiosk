@@ -38,6 +38,11 @@ defineProps<{ name: string }>()
       v-else-if="name === 'admin-reports'"
       d="M3 17h14v1H3v-1Zm2-2V9h2v6H5Zm4 0V5h2v10H9Zm4 0v-4h2v4h-2Z"
     />
+    <!-- Metrics: gauge / chart-pie -->
+    <path
+      v-else-if="name === 'admin-metrics'"
+      d="M10 2a8 8 0 1 0 8 8 .75.75 0 0 0-.75-.75H10.75V2.75A.75.75 0 0 0 10 2Zm-1.5 1.62A6.5 6.5 0 1 0 16.38 11.5H9.25a.75.75 0 0 1-.75-.75V3.62Z"
+    />
     <!-- Notifications: bell -->
     <path
       v-else-if="name === 'admin-notifications'"

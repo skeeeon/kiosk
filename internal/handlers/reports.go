@@ -75,49 +75,9 @@ func (h *Handlers) ReportLowStockCSV(re *core.RequestEvent) error {
 		return err
 	}
 
-	items, err := h.App.FindRecordsByFilter("items", "active = true", "code", 0, 0)
+	out, err := exports.ComputeLowStockRows(h.App, kioskctx.Get().KioskCode)
 	if err != nil {
-		return re.InternalServerError("load items", err)
-	}
-	opens, err := h.App.FindRecordsByFilter("open_checkouts", "", "", 0, 0)
-	if err != nil {
-		return re.InternalServerError("load open_checkouts", err)
-	}
-	openByItem := map[string]int{}
-	for _, o := range opens {
-		openByItem[o.GetString("item")]++
-	}
-
-	id := kioskctx.Get()
-	out := make([]exports.LowStockRow, 0, len(items))
-	for _, it := range items {
-		threshold := it.GetInt("reorder_threshold")
-		if threshold <= 0 {
-			continue
-		}
-		onHand := it.GetInt("quantity_on_hand")
-		outCount := 0
-		available := onHand
-		if it.GetString("type") == "tool" {
-			outCount = openByItem[it.Id]
-			available = onHand - outCount
-			if available < 0 {
-				available = 0
-			}
-		}
-		if available > threshold {
-			continue
-		}
-		out = append(out, exports.LowStockRow{
-			KioskCode:        id.KioskCode,
-			ItemCode:         it.GetString("code"),
-			ItemName:         it.GetString("name"),
-			TrackingMode:     it.GetString("tracking_mode"),
-			QuantityOnHand:   onHand,
-			Out:              outCount,
-			Available:        available,
-			ReorderThreshold: threshold,
-		})
+		return re.InternalServerError("compute low stock", err)
 	}
 
 	w := re.Response
