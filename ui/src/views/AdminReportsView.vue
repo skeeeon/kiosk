@@ -828,7 +828,7 @@ const lifecycleColumns = computed<ColumnDef[]>(() => {
       </label>
     </header>
 
-    <nav class="flex gap-1 mb-4 border-b border-slate-800 overflow-x-auto">
+    <nav class="flex gap-1 mb-4 border-b border-slate-800 tab-scroll">
       <button
         type="button"
         class="px-4 py-2 border-b-2 transition-colors whitespace-nowrap shrink-0"

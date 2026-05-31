@@ -43,6 +43,24 @@ html {
   background-color: #475569; /* slate-600 */
 }
 
+/* Horizontal tab / sub-nav strips (reports tabs, import-kind tabs, kiosk
+   detail tabs) scroll sideways when they outgrow their container — narrow
+   phone widths, or simply many tabs. Two issues this class fixes together:
+     1. Spurious vertical scrollbar: with only `overflow-x: auto` set, the
+        spec makes `overflow-y` compute to `auto`, and the tabs' `-mb-px`
+        border overlap nudges content 1px past the box — enough to trigger a
+        synthesized vertical bar. Pinning `overflow-y: hidden` kills it.
+     2. The horizontal bar itself: swipe / trackpad scroll still works, we
+        just don't paint an 8px bar across the tab row. */
+.tab-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none; /* Firefox */
+}
+.tab-scroll::-webkit-scrollbar {
+  display: none; /* Chromium / WebKit */
+}
+
 /* Cart-specific behavior: reserve the scrollbar's gutter even when the
    list isn't yet long enough to need it, so adding the line that crosses
    the overflow threshold doesn't shift every row sideways. The visual

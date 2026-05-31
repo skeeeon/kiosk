@@ -265,7 +265,7 @@ async function submitRepublish() {
 
     <div v-if="loading && !kiosk" class="text-slate-500 text-center py-8">Loading…</div>
 
-    <div v-if="kiosk" class="flex gap-1 mb-4 border-b border-slate-800 overflow-x-auto">
+    <div v-if="kiosk" class="flex gap-1 mb-4 border-b border-slate-800 tab-scroll">
       <button
         v-for="t in (['overview','items','inventory','instances','metrics'] as TabId[])"
         :key="t"

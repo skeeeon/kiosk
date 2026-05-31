@@ -180,7 +180,7 @@ const columns: ColumnDef[] = [
     </div>
 
     <template v-if="!(managed && !isController)">
-      <div class="flex gap-1 border-b border-slate-800 mb-4 overflow-x-auto">
+      <div class="flex gap-1 border-b border-slate-800 mb-4 tab-scroll">
         <button
           v-for="k in availableKinds"
           :key="k"
