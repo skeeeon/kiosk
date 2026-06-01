@@ -18,6 +18,9 @@ const emit = defineEmits<{
   save: [data: Partial<WorkerRecord>]
   'save-and-add-another': [data: Partial<WorkerRecord>]
   'create-group': []
+  // Edit mode only. The host closes this sheet and runs its own delete
+  // confirmation (which preserves the friendly FK-constraint message).
+  delete: []
 }>()
 
 const form = reactive<Partial<WorkerRecord>>({
@@ -166,6 +169,14 @@ function onSubmitAndAdd() {
       </label>
 
       <div class="flex justify-end gap-3 mt-2">
+        <button
+          v-if="!managed && isEdit"
+          type="button"
+          class="mr-auto px-4 py-2 rounded-lg bg-red-950/60 hover:bg-red-900/60 text-red-200 border border-red-800/70 text-sm font-medium"
+          @click="emit('delete')"
+        >
+          Delete
+        </button>
         <button
           type="button"
           class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200"

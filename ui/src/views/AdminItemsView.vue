@@ -167,7 +167,6 @@ const visibleColumns = computed<ColumnDef[]>(() => {
   cols.push(
     { key: 'category', label: 'Category' },
     { key: 'active', label: 'Active' },
-    { key: '__actions', align: 'right' },
   )
   return cols
 })
@@ -262,6 +261,16 @@ async function exportCsv() {
   } catch (e) {
     toast.error(`Export failed: ${(e as Error).message}`)
   }
+}
+
+// Delete now lives in the edit sheet. Hand off to the existing confirm flow:
+// close the sheet, then open the ConfirmDialog (which still surfaces the
+// friendly FK-constraint message on rejection).
+function requestDelete() {
+  const target = editing.value
+  if (!target?.id) return
+  deleting.value = target as ItemRecord
+  editing.value = null
 }
 
 async function onDelete() {
@@ -394,16 +403,6 @@ async function onDelete() {
         <span v-if="row.active" class="text-emerald-400">●</span>
         <span v-else class="text-slate-600">●</span>
       </template>
-      <template #cell-__actions="{ row }">
-        <button
-          v-if="!managed"
-          type="button"
-          class="px-3 py-1.5 rounded-md bg-red-950/60 hover:bg-red-900/60 text-red-200 text-sm border border-red-800/70 whitespace-nowrap"
-          @click.stop="deleting = row"
-        >
-          Delete
-        </button>
-      </template>
     </DataTable>
 
     <ItemDialog
@@ -414,6 +413,7 @@ async function onDelete() {
       @update:open="(v) => { if (!v) { editing = null; void load() } }"
       @save="onSave"
       @save-and-add-another="onSaveAndAdd"
+      @delete="requestDelete"
     />
 
     <ConfirmDialog

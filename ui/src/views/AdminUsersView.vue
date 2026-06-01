@@ -212,6 +212,16 @@ async function onSaveAndAdd(data: Partial<WorkerRecord>) {
   }
 }
 
+// Delete now lives in the edit sheet. Hand off to the existing confirm flow:
+// close the sheet, then open the ConfirmDialog (which still surfaces the
+// friendly FK-constraint message on rejection).
+function requestDelete() {
+  const target = editing.value
+  if (!target?.id) return
+  deleting.value = target as WorkerRecord
+  editing.value = null
+}
+
 async function onDelete() {
   if (!deleting.value) return
   error.value = null
@@ -311,23 +321,13 @@ async function onCreateGroupFromUser(data: Partial<GroupRecord>) {
         <span v-else class="text-slate-600">●</span>
       </template>
       <template #cell-__actions="{ row }">
-        <span class="inline-flex items-center gap-2 whitespace-nowrap">
-          <button
-            type="button"
-            class="px-3 py-1.5 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm border border-slate-700"
-            @click.stop="viewingHistory = row"
-          >
-            History
-          </button>
-          <button
-            v-if="!managed"
-            type="button"
-            class="px-3 py-1.5 rounded-md bg-red-950/60 hover:bg-red-900/60 text-red-200 text-sm border border-red-800/70"
-            @click.stop="deleting = row"
-          >
-            Delete
-          </button>
-        </span>
+        <button
+          type="button"
+          class="px-3 py-1.5 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm border border-slate-700 whitespace-nowrap"
+          @click.stop="viewingHistory = row"
+        >
+          History
+        </button>
       </template>
     </DataTable>
 
@@ -340,6 +340,7 @@ async function onCreateGroupFromUser(data: Partial<GroupRecord>) {
       @save="onSave"
       @save-and-add-another="onSaveAndAdd"
       @create-group="creatingGroup = {}"
+      @delete="requestDelete"
     />
 
     <GroupDialog

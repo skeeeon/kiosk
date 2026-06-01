@@ -87,7 +87,6 @@ const columns: ColumnDef[] = [
   { key: 'contact_email', label: 'Contact email' },
   { key: 'contact_phone', label: 'Phone' },
   { key: 'active', label: 'Active' },
-  { key: '__actions', align: 'right' },
 ]
 
 const emptyText = computed(() => {
@@ -135,6 +134,15 @@ async function onSaveAndAdd(data: Partial<GroupRecord>) {
     error.value = msg
     toast.error(msg)
   }
+}
+
+// Delete now lives in the edit sheet. Hand off to the existing confirm flow:
+// close the sheet, then open the ConfirmDialog.
+function requestDelete() {
+  const target = editing.value
+  if (!target?.id) return
+  deleting.value = target as GroupRecord
+  editing.value = null
 }
 
 async function onDelete() {
@@ -213,16 +221,6 @@ async function onDelete() {
         <span v-if="row.active" class="text-emerald-400">●</span>
         <span v-else class="text-slate-600">●</span>
       </template>
-      <template #cell-__actions="{ row }">
-        <button
-          v-if="!managed"
-          type="button"
-          class="px-3 py-1.5 rounded-md bg-red-950/60 hover:bg-red-900/60 text-red-200 text-sm border border-red-800/70 whitespace-nowrap"
-          @click.stop="deleting = row"
-        >
-          Delete
-        </button>
-      </template>
     </DataTable>
 
     <GroupDialog
@@ -232,6 +230,7 @@ async function onDelete() {
       @update:open="(v) => { if (!v) editing = null }"
       @save="onSave"
       @save-and-add-another="onSaveAndAdd"
+      @delete="requestDelete"
     />
 
     <ConfirmDialog
