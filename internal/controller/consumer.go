@@ -590,26 +590,63 @@ func (a *Aggregator) ProjectTransaction(p EventPayload) projectOutcome {
 }
 
 func (a *Aggregator) handleItemAction(msg jetstream.Msg, p EventPayload) {
-	// ProjectLine must come first — the open_checkouts projector needs the
-	// projected line FK in hand. Both projectors are idempotent against
-	// redelivery, so a partial success on the first attempt (line written,
-	// open_checkouts row not) just means the next redelivery skips ProjectLine
-	// and retries the open_checkouts side.
+	// Item actions only project the ledger line. "What's currently out" is
+	// derived on demand by replaying transaction_lines (ledger.ReplayOpenRows),
+	// so there's no separate open_checkouts row to maintain here — the line IS
+	// the source of truth. ProjectLine is idempotent on source_line_id, so a
+	// redelivery is a no-op.
 	switch a.ProjectLine(p) {
 	case projectAck:
-		// proceed
+		_ = msg.Ack()
 	case projectRetry:
-		// For "parent not yet here", a delay is better than immediate
-		// redelivery so the transaction.complete has time to land.
+		// Usually "parent transaction.complete not here yet" — delay so it has
+		// time to land before we retry.
 		_ = msg.NakWithDelay(2 * time.Second)
-		return
 	}
-	switch a.projectOpenCheckoutsForItemAction(p) {
+}
+
+// handleCheckoutAdminClose dispatches a checkout.admin_close event. The audit
+// log lives in the parent handle(); this projects the close into the ledger.
+func (a *Aggregator) handleCheckoutAdminClose(msg jetstream.Msg, p EventPayload) {
+	switch a.ProjectAdminCloseToLedger(p) {
 	case projectAck:
 		_ = msg.Ack()
 	case projectRetry:
 		_ = msg.NakWithDelay(2 * time.Second)
 	}
+}
+
+// ProjectAdminCloseToLedger records an admin force-close as a completed
+// transaction + one admin_close line, mirroring what the kiosk writes to its
+// own ledger in commit.AdminClose. admin_close rides its own subject (never
+// transaction.complete / item.{action}), so without this the controller's
+// ledger would have no record of the close and ledger.ReplayOpenRows would
+// leave the holder's row open forever — the divergence this whole approach
+// removes. There is no separate open_checkouts mutation: the line IS the close,
+// and replay drops the row.
+//
+// The holder (p.UserCode) becomes both the transaction user and the line's
+// original_checkout_user — exactly as commit.AdminClose stamps them — so
+// replay's removeRows targets the holder's row whether it reads the line FK or
+// falls back to the transaction user. Both writes are idempotent on their
+// source ids (source_transaction_id / source_line_id), so redelivery no-ops.
+func (a *Aggregator) ProjectAdminCloseToLedger(p EventPayload) projectOutcome {
+	p.Action = "admin_close"
+	if p.Qty < 1 {
+		p.Qty = 1 // admin_close always closes exactly one row
+	}
+	if p.LinesCount == 0 {
+		p.LinesCount = 1
+	}
+	if p.StartedAt.IsZero() {
+		p.StartedAt = p.CompletedAt
+	}
+	p.OriginalCheckoutUserCode = p.UserCode
+
+	if out := a.ProjectTransaction(p); out != projectAck {
+		return out
+	}
+	return a.ProjectLine(p)
 }
 
 // ProjectLine is the pure-state effect of an item.{action} event: idempotently
@@ -677,11 +714,15 @@ func (a *Aggregator) ProjectLine(p EventPayload) projectOutcome {
 			rec.Set("original_checkout_user", u.Id)
 		}
 	}
-	// We deliberately don't write the item_instance RelationField on the
-	// controller's transaction_lines — instances are kiosk-local, so the
-	// FK would fail to resolve. The serialized-return matching that needs
-	// the instance identifier lives on open_checkouts via the parallel
-	// source_item_instance_id text column.
+	// We deliberately don't write the item_instance RelationField — instances
+	// are kiosk-local, so the FK would fail to resolve against the controller's
+	// own (always-empty) item_instances collection. Instead we persist the
+	// kiosk-local instance id in the parallel source_item_instance_id text
+	// column, so ledger.ReplayOpenRows can match a serialized checkout to its
+	// return when it reconstructs the open-checkouts view.
+	if p.ItemInstanceID != "" {
+		rec.Set("source_item_instance_id", p.ItemInstanceID)
+	}
 	rec.Set("source_line_id", p.LineID)
 	if err := a.app.Save(rec); err != nil {
 		if isUniqueViolation(err) {

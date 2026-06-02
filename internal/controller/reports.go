@@ -13,40 +13,21 @@ import (
 )
 
 // ReportOpenCheckouts mirrors the kiosk's reports endpoint for cross-fleet
-// use. The controller's open_checkouts table is maintained incrementally
-// by ProjectOpenCheckouts as item.{checkout,return} + checkout.admin_close
-// events flow in, so this endpoint reads it directly rather than replaying
-// the ledger. The ?kiosk_code= filter slices the fleet view to one kiosk.
+// use, computed by replaying the projected transaction_lines ledger — the
+// same single code path the kiosk uses (handlers.ReportOpenCheckouts). The
+// controller no longer materializes an open_checkouts table; replaying the
+// ledger on demand is convergent by construction, so the controller's view
+// can't drift from a kiosk's the way an incrementally-maintained projection
+// could. The ?kiosk_code= filter slices the fleet view to one kiosk.
 func (h *Handlers) ReportOpenCheckouts(re *core.RequestEvent) error {
 	if err := h.requireAdmin(re); err != nil {
 		return err
 	}
 	kioskCode := re.Request.URL.Query().Get("kiosk_code")
 
-	filter := ""
-	params := dbx.Params{}
-	if kioskCode != "" {
-		filter = "kiosk_code = {:k}"
-		params["k"] = kioskCode
-	}
-	recs, err := h.App.FindRecordsByFilter("open_checkouts",
-		filter, "checked_out_at", 0, 0, params)
+	rows, err := ledger.ReplayOpenRows(h.App, kioskCode)
 	if err != nil {
-		return re.InternalServerError("load open_checkouts", err)
-	}
-
-	rows := make([]ledger.OpenRow, 0, len(recs))
-	for _, r := range recs {
-		rows = append(rows, ledger.OpenRow{
-			Item: r.GetString("item"),
-			// source_item_instance_id is the cross-binary identifier; the
-			// RelationField on the row stays empty on the controller.
-			ItemInstance:    r.GetString("source_item_instance_id"),
-			User:            r.GetString("user"),
-			Serial:          r.GetString("serial"),
-			CheckedOutAt:    r.GetDateTime("checked_out_at").Time(),
-			TransactionLine: r.GetString("transaction_line"),
-		})
+		return re.InternalServerError("replay open rows", err)
 	}
 	dtos, err := ledger.Hydrate(h.App, rows)
 	if err != nil {
@@ -55,36 +36,17 @@ func (h *Handlers) ReportOpenCheckouts(re *core.RequestEvent) error {
 	return re.JSON(http.StatusOK, dtos)
 }
 
-// ReportOpenCheckoutsCSV mirrors ReportOpenCheckouts as a CSV download. Reads
-// the projected open_checkouts table (same source as the JSON endpoint) so
-// the export stays consistent with what's on screen.
+// ReportOpenCheckoutsCSV mirrors ReportOpenCheckouts as a CSV download. Same
+// data path (replay + hydrate) so the export stays consistent with the screen.
 func (h *Handlers) ReportOpenCheckoutsCSV(re *core.RequestEvent) error {
 	if err := h.requireAdmin(re); err != nil {
 		return err
 	}
 	kioskCode := re.Request.URL.Query().Get("kiosk_code")
 
-	filter := ""
-	params := dbx.Params{}
-	if kioskCode != "" {
-		filter = "kiosk_code = {:k}"
-		params["k"] = kioskCode
-	}
-	recs, err := h.App.FindRecordsByFilter("open_checkouts",
-		filter, "checked_out_at", 0, 0, params)
+	rows, err := ledger.ReplayOpenRows(h.App, kioskCode)
 	if err != nil {
-		return re.InternalServerError("load open_checkouts", err)
-	}
-	rows := make([]ledger.OpenRow, 0, len(recs))
-	for _, r := range recs {
-		rows = append(rows, ledger.OpenRow{
-			Item:            r.GetString("item"),
-			ItemInstance:    r.GetString("source_item_instance_id"),
-			User:            r.GetString("user"),
-			Serial:          r.GetString("serial"),
-			CheckedOutAt:    r.GetDateTime("checked_out_at").Time(),
-			TransactionLine: r.GetString("transaction_line"),
-		})
+		return re.InternalServerError("replay open rows", err)
 	}
 	dtos, err := ledger.Hydrate(h.App, rows)
 	if err != nil {

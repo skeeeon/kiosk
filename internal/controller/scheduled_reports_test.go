@@ -11,21 +11,18 @@ import (
 	"github.com/skeeeon/kiosk/internal/scheduler"
 )
 
-// TestRunOpenCheckoutsDigest_ControllerSide drives the open-checkouts runner
-// against the controller's open_checkouts table. The kiosk_code field on
-// the schedule row scopes the digest; empty = fleet-wide.
+// TestRunOpenCheckoutsDigest_ControllerSide drives the open-checkouts runner,
+// which replays the controller's projected transaction_lines ledger. The
+// kiosk_code field on the schedule row scopes the digest; empty = fleet-wide.
 func TestRunOpenCheckoutsDigest_ControllerSide(t *testing.T) {
 	app := setupApp(t)
 	seedUser(t, app, "WORKER-1", "Alice")
-	itemAID := seedItem(t, app, "DRILL-A", "Drill A")
-	itemBID := seedItem(t, app, "HAMMER", "Hammer")
-	userID := userIDByCode(t, app, "WORKER-1")
-	lineA := seedFakeProjectedLine(t, app, "src-line-1", "KIOSK-A")
-	lineB := seedFakeProjectedLine(t, app, "src-line-2", "KIOSK-B")
-
-	now := time.Now().UTC()
-	seedOpenCheckoutRow(t, app, "KIOSK-A", itemAID, userID, lineA, now)
-	seedOpenCheckoutRow(t, app, "KIOSK-B", itemBID, userID, lineB, now)
+	seedItem(t, app, "DRILL-A", "Drill A")
+	seedItem(t, app, "HAMMER", "Hammer")
+	// One open checkout per kiosk, as projected ledger lines (the digest now
+	// replays these rather than reading a materialized open_checkouts table).
+	seedFakeProjectedLine(t, app, "src-line-1", "KIOSK-A")
+	seedFakeProjectedLine(t, app, "src-line-2", "KIOSK-B")
 
 	// Fleet-wide: empty kiosk_code → both kiosks' rows show up.
 	_, data, err := scheduler.RunReport(app, "open_checkouts", scheduleRowCtrl(t, app, "open_checkouts", ""))
@@ -158,21 +155,4 @@ func seedFakeProjectedLine(t *testing.T, app core.App, sourceLineID, kioskCode s
 		t.Fatalf("save line: %v", err)
 	}
 	return line.Id
-}
-
-func seedOpenCheckoutRow(t *testing.T, app core.App, kioskCode, itemID, userID, lineID string, checkedOutAt time.Time) {
-	t.Helper()
-	col, err := app.FindCollectionByNameOrId("open_checkouts")
-	if err != nil {
-		t.Fatalf("find open_checkouts: %v", err)
-	}
-	rec := core.NewRecord(col)
-	rec.Set("kiosk_code", kioskCode)
-	rec.Set("item", itemID)
-	rec.Set("user", userID)
-	rec.Set("transaction_line", lineID)
-	rec.Set("checked_out_at", checkedOutAt)
-	if err := app.Save(rec); err != nil {
-		t.Fatalf("save open_checkout: %v", err)
-	}
 }

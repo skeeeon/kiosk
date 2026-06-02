@@ -71,6 +71,15 @@ func seedItem(t *testing.T, app core.App, code, name string) string {
 	return rec.Id
 }
 
+func userIDByCode(t *testing.T, app core.App, code string) string {
+	t.Helper()
+	rec, err := app.FindFirstRecordByFilter("users", "code = {:c}", dbx.Params{"c": code})
+	if err != nil {
+		t.Fatalf("find user by code %q: %v", code, err)
+	}
+	return rec.Id
+}
+
 func TestAggregator_ProjectTransaction_Idempotent(t *testing.T) {
 	app := setupApp(t)
 	seedUser(t, app, "WORKER-1", "Alice")

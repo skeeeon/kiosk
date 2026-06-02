@@ -64,20 +64,22 @@ func RunReport(app core.App, key string, row *core.Record) (string, any, error) 
 	return runner(app, row)
 }
 
-// runOpenCheckoutsDigest builds an OpenChecksDigestContext by reading the
-// (locally maintained or projected) open_checkouts table. Empty rows
-// return a populated context with zero count so the digest still fires
-// and the template renders the "no items currently checked out" branch.
+// runOpenCheckoutsDigest builds an OpenChecksDigestContext by replaying the
+// transaction_lines ledger (ledger.ReplayOpenRows) — the same path the kiosk's
+// and controller's Currently-out reports use. Empty rows return a populated
+// context with zero count so the digest still fires and the template renders
+// the "no items currently checked out" branch.
 //
 // kiosk_code on the schedule row scopes the report. Empty = "this kiosk"
 // on a standalone deployment or "fleet-wide" on a controller; set = one
 // kiosk in the fleet (controller-only path — the kiosk's scheduler is
-// disabled in managed mode).
+// disabled in managed mode). Replay works the same on both binaries: on the
+// kiosk it walks the local ledger, on the controller the projected one.
 func runOpenCheckoutsDigest(app core.App, row *core.Record) (string, any, error) {
 	rowKioskCode := row.GetString("kiosk_code")
-	rows, err := ledger.ReadOpenRows(app, rowKioskCode)
+	rows, err := ledger.ReplayOpenRows(app, rowKioskCode)
 	if err != nil {
-		return "", nil, fmt.Errorf("read open rows: %w", err)
+		return "", nil, fmt.Errorf("replay open rows: %w", err)
 	}
 	dtos, err := ledger.Hydrate(app, rows)
 	if err != nil {

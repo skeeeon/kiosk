@@ -276,11 +276,11 @@ func lowStockRowsForKiosk(app core.App, kioskCode string, rawData json.RawMessag
 		return nil, err
 	}
 
-	// Out-count per item_code. ReadOpenRows queries the projected
-	// open_checkouts table directly (maintained by ProjectOpenCheckouts);
-	// the map through the catalog joins item_id → item_code so the count
-	// pairs with the snapshot's item_code field.
-	openRows, err := ledger.ReadOpenRows(app, kioskCode)
+	// Out-count per item_code. ReplayOpenRows reconstructs the open rows from
+	// the projected transaction_lines ledger (the controller no longer
+	// materializes open_checkouts); the map through the catalog joins
+	// item_id → item_code so the count pairs with the snapshot's item_code.
+	openRows, err := ledger.ReplayOpenRows(app, kioskCode)
 	if err != nil {
 		return nil, err
 	}
