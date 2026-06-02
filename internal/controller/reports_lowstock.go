@@ -27,7 +27,7 @@ import (
 //     inventory panel.
 //
 // Out-counts are computed locally from the controller's projected
-// open_checkouts table (`ledger.ReadOpenRows`) rather than over the wire,
+// ledger (`ledger.ReplayOpenRows`) rather than over the wire,
 // so the snapshot command's payload doesn't need to grow. The two sources
 // are joined by item_code (the cross-fleet stable identifier).
 //

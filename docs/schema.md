@@ -16,7 +16,7 @@ the controller-only `kiosks` registry and `kiosk_items` membership table
 | `instance_audit` | Append-only audit log of `item_instances` lifecycle changes. Written by PB record hooks: one row per `create` / `decommission` (active true→false) / `reactivate` (active false→true) / `delete`. Cosmetic edits (code/serial/notes) intentionally don't audit. Mirrors `stock_adjustments` in role; `commit.AdminClose` also writes a row when `closure_reason ∈ {lost, damaged}` retires a serialized instance. |
 | `transactions` | Append-only ledger. `kiosk_code`, `location_code`, `user`, `started_at`, `completed_at`, `status`. Also carries `closed_by_admin` (FK, populated when the row was created by an admin force-close) and `command_id` (unique-when-non-empty, idempotency anchor for controller-forwarded closes). |
 | `transaction_lines` | One per item action within a transaction. `action` is `checkout`, `return`, `consume`, or `admin_close`. Carries optional `item_instance` FK for serialized lines. `original_checkout_user` (the worker whose open_checkout was closed) is set on `return` rows produced by the foreman-return endpoint and on every `admin_close` row. `admin_close` rows additionally carry `closure_reason` (`lost` \| `returned_offline` \| `damaged` \| `other`), `closed_by_admin` (FK for source=local), and `notes`. |
-| `open_checkouts` | Materialized view of "what's out right now." One row per unit out. Carries `item_instance` FK for serialized units. Maintained by the commit hook. |
+| `open_checkouts` | Materialized view of "what's out right now." One row per unit out. Carries `item_instance` FK for serialized units. Maintained by the commit hook **on the kiosk**. The controller does not maintain this table — it derives "currently out" on demand by replaying `transaction_lines` (`ledger.ReplayOpenRows`). |
 | `stock_adjustments` | Append-only audit log of changes to a **quantity-tracked** item's `quantity_on_hand` made via `/api/kiosk/items/{id}/adjust` (local) or the controller's `inventory.adjust` command bus (remote). Serialized items are rejected by both paths (their quantity is derived). Stores `delta`, `new_quantity` (snapshot), `reason`, the responsible `admin` (FK, populated for `source=local`), `source` ('local' \| 'controller'), `controller_admin_id` (text — controller's admin id, populated for `source=controller`), and `command_id` (UUID, unique-when-non-empty for idempotent replay of remote commands). |
 | `notification_templates` | One row per event type (`receipt.transaction`, `alert.lowstock`, `digest.open_checkouts`, `digest.daily_activity`). Admin-editable subject/body Go templates plus a `recipients` JSON column (`{worker_email, all_admins, extras}`). Seeded from compiled-in defaults; rows are append-only — editable, not deletable. Both binaries get the schema; on managed kiosks the local rows are dormant (sends fire from the controller's rows instead). |
 | `notification_send_log` | One row per attempted recipient. `status` is `sent` / `failed` / `skipped`. Pruned daily at 90 days. The controller's table holds the fleet-wide audit in managed mode; standalone kiosks log to their own. |
@@ -26,29 +26,33 @@ the controller-only `kiosks` registry and `kiosk_items` membership table
 | `kiosk_items` | **Controller-only.** Membership rows tying items to kiosks. One row = one (kiosk, item) pair = "this kiosk stocks that SKU." Cascade-deletes from either side. Drives per-kiosk catalog publishing; absent rows mean the kiosk never receives that item over JetStream KV. |
 | `inventory_audit` | **Controller-only.** Fleet-wide append-only projection of every `inventory.adjust` event the aggregator sees. One row per adjustment, denormalized (`kiosk_code`, `item_code`, `item_name`, `delta`, `prev_quantity`, `new_quantity`, `reason`, `source`, `admin_id`). `source_adjustment_id` carries the originating kiosk's `stock_adjustments.id` and is unique-when-non-empty so JetStream redelivery never duplicates a row. Drives the Reports → Adjustment audit tab on the controller. |
 | `instance_lifecycle_audit` | **Controller-only.** Fleet-wide append-only projection of every `instance.lifecycle` event the aggregator sees. One row per lifecycle event, denormalized (`kiosk_code`, `item_code`, `item_name`, `instance_id`, `instance_code`, `action`, `prev_active`, `new_active`, `reason`, `source`, `admin_id`). `source_audit_id` carries the originating kiosk's `instance_audit.id` and is unique-when-non-empty so JetStream redelivery never duplicates a row. Drives the Reports → Instance lifecycle tab on the controller; the standalone kiosk's Reports tab reads its local `instance_audit` for the same view. |
-| `applied_oc_closes` | **Controller-only.** Idempotency guard for the `open_checkouts` close projections (return + admin_close), which DELETE rows and so leave nothing to dedupe against. One row per applied close, keyed `dedupe_key` (`ret:<line id>` for returns, `ac:<line id>` for admin closes — both the triggering transaction_line id, stable across the live path and `ledger.republish`), unique-indexed. Written inside the same transaction as the deletes so a JetStream redelivery finds the guard row and no-ops instead of closing a different fungible row. Internal dedupe ledger — not exposed over the API. |
 
 ## Controller-only fields
 
 The controller's `transactions` and `transaction_lines` collections carry
-two extra fields not present on standalone kiosks:
+extra fields not present on standalone kiosks:
 `source_kiosk_code` + `source_transaction_id` on transactions (unique
-pair index, idempotency key for redelivery) and `source_line_id` on
-transaction_lines (unique-when-non-empty index). These — along with the
-`kiosks`, `kiosk_items`, `inventory_audit`,
-`instance_lifecycle_audit`, and `applied_oc_closes` collections,
-`kiosks.last_transaction_at`, and the `open_checkouts.kiosk_code` +
-`source_item_instance_id` columns — are added by seven controller-only
-migrations living in the sibling package `migrations/controller/`
+pair index, idempotency key for redelivery) and `source_line_id` +
+`source_item_instance_id` on transaction_lines (the former unique-when-non-empty
+for idempotency; the latter the kiosk-local instance id, so the
+open-checkouts replay can pair a serialized checkout with its return).
+These — along with the `kiosks`, `kiosk_items`, `inventory_audit`, and
+`instance_lifecycle_audit` collections, `kiosks.last_transaction_at`, and
+the `open_checkouts.kiosk_code` + `source_item_instance_id` columns — are
+added by the controller-only migrations living in the sibling package
+`migrations/controller/`
 (`2000000000_controller_collections.go`,
 `2000100000_add_kiosk_items.go`,
 `2000200000_kiosks_last_transaction_at.go`,
 `2000300000_inventory_audit.go`,
 `2000400000_instance_lifecycle_audit.go`,
-`2000500000_open_checkouts_kiosk_code.go`, and
-`2000600000_applied_oc_closes.go`). Each self-registers via
-`init()`. The kiosk binary doesn't import that package, so its DB
-never sees these.
+`2000500000_open_checkouts_kiosk_code.go`,
+`2000700000_tx_lines_source_instance.go`, and the
+`2000600000`/`2000800000` create-then-drop of `applied_oc_closes` — the
+idempotency guard for the old materialized open-checkouts projection, no
+longer needed now that the controller replays the ledger). Each
+self-registers via `init()`. The kiosk binary doesn't import that package,
+so its DB never sees these.
 
 ## Cardinality rules for `open_checkouts`
 

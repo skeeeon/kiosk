@@ -345,9 +345,15 @@ The current controller-only files: `2000000000_controller_collections.go`
 `kiosks.CreateRule`), `2000200000_kiosks_last_transaction_at.go`
 (DateField on kiosks), `2000300000_inventory_audit.go`,
 `2000400000_instance_lifecycle_audit.go`,
-`2000500000_open_checkouts_kiosk_code.go`, and
-`2000600000_applied_oc_closes.go` (the open_checkouts close-projection
-idempotency guard — see the Controller seam section).
+`2000500000_open_checkouts_kiosk_code.go`,
+`2000600000_applied_oc_closes.go` (created the open_checkouts
+close-projection idempotency guard — now removed, see below),
+`2000700000_tx_lines_source_instance.go` (`source_item_instance_id` on
+transaction_lines, so the ledger replay can pair a serialized
+checkout with its return — see the Controller seam section), and
+`2000800000_drop_applied_oc_closes.go` (drops the now-unused guard table:
+the controller no longer materializes open_checkouts, it replays the
+ledger on demand).
 
 `touchKiosk` in `internal/controller/consumer.go` writes `last_seen`
 (legacy, kept for one release) on every touch and advances
@@ -422,28 +428,35 @@ the same row.
   (2) extending the consumer's `FilterSubjects` via those helpers, and
   (3) adding a case to the dispatch switch in `handle`. Today the projected
   events are `transaction.complete` → `transactions`, `item.{action}` →
-  `transaction_lines` (+ the `open_checkouts` insert/close side-effect),
-  `inventory.adjust` → `inventory_audit`, `instance.lifecycle` →
-  `instance_lifecycle_audit`, and `checkout.admin_close` → `open_checkouts`
-  (via `ProjectOpenCheckoutsAdminClose`, which deletes the projected row —
-  admin_close publishes ONLY `checkout.admin_close`, never
-  `transaction.complete` or `item.*`, so that subject is the controller's
-  sole view of an admin close). `integrity.rebuild` still reaches the
-  controller ack-and-log only. The two managed-mode notification subjects
-  `receipt.transaction` and `alert.lowstock` ride the same durable consumer
-  but are dispatched in `handle()` before the flat `EventPayload` decode
-  (they carry nested context payloads) and are rendered + sent via the
-  controller's central SMTP rather than projected into the ledger. The audit
-  projections are idempotent against unique-when-non-empty indexes on
-  `source_adjustment_id` / `source_audit_id`; the `open_checkouts` close
-  projections (return + admin_close) are idempotent against the
-  `applied_oc_closes` dedupe table (the deletes leave no surviving row to
-  dedupe on, so a redelivery would otherwise re-close a *different* fungible
-  row). JetStream redelivery is a no-op across all of them. The
-  `open_checkouts` matching mirrors commit exactly — target-user-only on
-  returns, **no** cross-user borrowing (`candidateOpenRowsControllerSide`). The stream name
-  comes from `cfg.NATS.StreamName` (default `events.DefaultStreamName`)
-  and is passed to `NewAggregator`.
+  `transaction_lines`, `inventory.adjust` → `inventory_audit`,
+  `instance.lifecycle` → `instance_lifecycle_audit`, and
+  `checkout.admin_close` → `transactions` + `transaction_lines` (via
+  `ProjectAdminCloseToLedger`, which mirrors the ledger rows
+  `commit.AdminClose` writes locally: a completed transaction + one
+  `admin_close` line. admin_close publishes ONLY `checkout.admin_close`,
+  never `transaction.complete` or `item.*`, so that subject is the
+  controller's sole view of an admin close — projecting it as a line is
+  what lets the replay drop the row). The controller does **not**
+  materialize an `open_checkouts` table; "what's currently out" is computed
+  on demand by replaying `transaction_lines` (`ledger.ReplayOpenRows`, the
+  same path the kiosk uses), so it is convergent by construction and cannot
+  drift from a kiosk's. Serialized returns pair via `source_item_instance_id`
+  on the projected line; the matching mirrors commit exactly —
+  target-user-only on returns, **no** cross-user borrowing
+  (`ledger.removeRows`). `integrity.rebuild` reaches the controller
+  ack-and-log only — there is nothing materialized to rebuild. The two
+  managed-mode notification subjects `receipt.transaction` and
+  `alert.lowstock` ride the same durable consumer but are dispatched in
+  `handle()` before the flat `EventPayload` decode (they carry nested
+  context payloads) and are rendered + sent via the controller's central
+  SMTP rather than projected into the ledger. The audit projections are
+  idempotent against unique-when-non-empty indexes on
+  `source_adjustment_id` / `source_audit_id`; the ledger projections
+  (`transactions`, `transaction_lines`, including the admin_close pair) are
+  idempotent against `source_transaction_id` / `source_line_id`. JetStream
+  redelivery is a no-op across all of them. The stream name comes from
+  `cfg.NATS.StreamName` (default `events.DefaultStreamName`) and is passed
+  to `NewAggregator`.
 - **Catalog publishing:** `internal/controller/catalog_publisher.go`.
   Items are **not broadcast** — `publishItemToMembers` loops over
   `KiosksForItem` (in `internal/controller/membership.go`) and writes one

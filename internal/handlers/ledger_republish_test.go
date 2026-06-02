@@ -261,7 +261,8 @@ func TestRepublishLedger_AdminCloseEmitsCheckoutAdminClose(t *testing.T) {
 	}
 
 	// The event must carry the line id (the controller's idempotency anchor)
-	// and the holder's identity so ProjectOpenCheckoutsAdminClose can match.
+	// and the holder's identity so ProjectAdminCloseToLedger can project the
+	// admin_close line for the right holder.
 	if lid, _ := adminCloseEv.Payload["line_id"].(string); lid == "" {
 		t.Error("checkout.admin_close must carry a non-empty line_id")
 	}

@@ -213,10 +213,10 @@ func (a *Aggregator) ensureConsumer(ctx context.Context, stream jetstream.Stream
 		// RunInTransaction, and SQLite is single-writer — under concurrent
 		// HTTP/admin writes or a CSV import a projection can briefly block on
 		// the write lock. A handler that exceeds AckWait is redelivered while
-		// still in flight, causing duplicate work (and, before the
-		// applied_oc_closes guard, a divergent second close). Comfortable
-		// headroom over worst-case projection latency keeps redelivery to the
-		// genuine crash/partition cases the idempotency anchors already cover.
+		// still in flight, causing duplicate work. Comfortable headroom over
+		// worst-case projection latency keeps redelivery to the genuine
+		// crash/partition cases the idempotency anchors already cover (every
+		// projection is a lookup-first idempotent insert keyed on a source id).
 		AckWait:       120 * time.Second,
 		MaxAckPending: 256,
 		FilterSubjects: []string{

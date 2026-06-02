@@ -139,15 +139,18 @@ of truth for catalog plus a unified transaction ledger.
   unique-when-non-empty index catches duplicates). An admin close publishes
   only the `checkout.admin_close` event — never `transaction.complete` or
   `item.*` — so the aggregator projects it specifically:
-  `ProjectOpenCheckoutsAdminClose` deletes the matching projected
-  `open_checkouts` row (idempotent via the `applied_oc_closes` guard). The
-  admin-close transaction/line is therefore *not* present in the
-  controller's projected `transactions`/`transaction_lines`.
+  `ProjectAdminCloseToLedger` writes the same ledger rows the kiosk records
+  locally (a completed `transactions` row + one `admin_close`
+  `transaction_lines` row), idempotent on `source_transaction_id` /
+  `source_line_id`. Because "what's currently out" is computed by replaying
+  `transaction_lines`, projecting the close as a line is what makes the
+  holder's row drop on the controller — there is no separate
+  `open_checkouts` mutation.
 - **Fleet-wide low-stock report.**
   `GET /api/controller/reports/low-stock` fans `inventory.snapshot` to
   every currently-online managed kiosk in parallel, joins each kiosk's
-  reply with `out` counts read from the controller's projected
-  `open_checkouts` table via `ledger.ReadOpenRows`, and returns rows
+  reply with `out` counts computed by replaying the projected
+  `transaction_lines` ledger (`ledger.ReplayOpenRows`), and returns rows
   whose `available ≤ reorder_threshold`. Offline kiosks surface under
   `errors` so the SPA can show "partial result — N kiosks excluded"
   instead of hiding the limitation. Honors `?kiosk_code=` so the
@@ -263,11 +266,13 @@ cp controller.yaml.example controller.yaml      # set nats.url + auth
 
 The controller binary uses the **same** `migrations/` package as the
 kiosk plus the controller-only sibling package
-`migrations/controller/`, which holds seven additional migrations
+`migrations/controller/`, which holds nine additional migrations
 (kiosks registry, kiosk_items membership, kiosks.last_transaction_at,
 inventory_audit, instance_lifecycle_audit, the
-open_checkouts.kiosk_code/source_item_instance_id columns, and the
-`applied_oc_closes` close-projection idempotency guard). Each one
+open_checkouts.kiosk_code/source_item_instance_id columns,
+source_item_instance_id on transaction_lines, and the create-then-drop
+of the `applied_oc_closes` idempotency guard — which the now
+replay-based open-checkouts view no longer needs). Each one
 self-registers via `init()`; `cmd/controller/main.go` blank-imports
 both packages. The kiosk binary doesn't blank-import
 `migrations/controller`, so its DB never sees the controller-only
