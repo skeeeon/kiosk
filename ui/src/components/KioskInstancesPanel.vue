@@ -24,6 +24,9 @@ interface InstanceRow {
   notes: string
   created: string
   updated: string
+  // Derived by the controller from its projected ledger: is this unit
+  // currently checked out? Mirrors the local kiosk's per-instance status.
+  out: boolean
 }
 
 const props = defineProps<{ kioskCode: string }>()
@@ -223,6 +226,9 @@ function hydrateRow(r: Partial<InstanceRow>): InstanceRow {
     notes: r.notes ?? '',
     created: r.created ?? '',
     updated: r.updated ?? '',
+    // A just-created/edited unit's reply doesn't carry out-status; a fresh
+    // unit isn't out, and a refresh re-derives it from the ledger anyway.
+    out: r.out ?? false,
   }
 }
 
@@ -268,6 +274,7 @@ const columns: ColumnDef[] = [
   { key: 'serial', label: 'Serial' },
   { key: 'rfid_epc', label: 'RFID' },
   { key: 'active', label: 'Active' },
+  { key: 'status', label: 'Status' },
   { key: '__actions', align: 'right' },
 ]
 </script>
@@ -348,6 +355,10 @@ const columns: ColumnDef[] = [
       <template #cell-active="{ row }">
         <span v-if="row.active" class="text-emerald-400">●</span>
         <span v-else class="text-slate-600">●</span>
+      </template>
+      <template #cell-status="{ row }">
+        <span v-if="row.out" class="text-amber-300">currently out</span>
+        <span v-else class="text-slate-500">available</span>
       </template>
       <template #cell-__actions="{ row }">
         <div class="inline-flex justify-end gap-2">

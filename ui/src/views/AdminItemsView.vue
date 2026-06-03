@@ -9,6 +9,7 @@ import { useToast } from '../composables/useToast'
 import { useKioskIdentity } from '../composables/useKioskIdentity'
 import { useListShortcuts } from '../composables/useListShortcuts'
 import { useUrlQuerySync } from '../composables/useUrlQuerySync'
+import { availableFor as available, isLowStock as lowStock } from '../lib/inventory'
 import type { ItemRecord } from '../types'
 
 const toast = useToast()
@@ -112,15 +113,11 @@ function outFor(item: ItemRecord): number {
 }
 
 function availableFor(item: ItemRecord): number {
-  if (item.type === 'tool') {
-    return Math.max(0, (item.quantity_on_hand ?? 0) - outFor(item))
-  }
-  return item.quantity_on_hand ?? 0
+  return available(item.quantity_on_hand ?? 0, outFor(item), item.type)
 }
 
 function isLowStock(item: ItemRecord): boolean {
-  const t = item.reorder_threshold ?? 0
-  return t > 0 && availableFor(item) <= t
+  return lowStock(availableFor(item), item.reorder_threshold ?? 0)
 }
 
 onMounted(async () => {

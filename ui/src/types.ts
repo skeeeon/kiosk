@@ -296,6 +296,12 @@ export interface InventorySnapshotItem {
   reorder_threshold: number
   tracking_mode: 'quantity' | 'serialized'
   active: boolean
+  // Derived by the controller from its projected ledger + catalog (the kiosk's
+  // snapshot doesn't carry these) so the panel can show out/available exactly
+  // like the local kiosk Items view. `out` is units currently checked out;
+  // `type` distinguishes tools (which have "out") from consumables.
+  out: number
+  type: 'tool' | 'consumable'
 }
 
 export interface InventorySnapshotResponse {

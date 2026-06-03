@@ -11,6 +11,7 @@ import { computed, ref, watch } from 'vue'
 import AppDialog from './AppDialog.vue'
 import DataTable, { type ColumnDef } from './DataTable.vue'
 import { api, ApiError } from '../lib/api'
+import { availableFor, isLowStock } from '../lib/inventory'
 import { useToast } from '../composables/useToast'
 import type {
   InventoryAdjustResponse,
@@ -145,12 +146,21 @@ const columns: ColumnDef[] = [
   { key: 'item_code', label: 'Code' },
   { key: 'item_name', label: 'Name' },
   { key: 'quantity_on_hand', label: 'On hand', align: 'right' },
+  { key: 'out', label: 'Out', align: 'right' },
+  { key: 'available', label: 'Available', align: 'right' },
   { key: 'reorder_threshold', label: 'Reorder ≤', align: 'right' },
   { key: '__actions', align: 'right' },
 ]
 
+// available + low-stock use the shared helper so this panel matches the local
+// kiosk Items view exactly. `out` is supplied by the controller (derived from
+// its projected ledger); `type` distinguishes tools from consumables.
+function availableOf(it: InventorySnapshotItem): number {
+  return availableFor(it.quantity_on_hand, it.out ?? 0, it.type)
+}
+
 function isLow(it: InventorySnapshotItem): boolean {
-  return it.reorder_threshold > 0 && it.quantity_on_hand <= it.reorder_threshold
+  return isLowStock(availableOf(it), it.reorder_threshold)
 }
 
 const pagedItems = computed(() => {
@@ -210,10 +220,17 @@ const pagedItems = computed(() => {
         <span class="text-slate-300">{{ row.item_name }}</span>
       </template>
       <template #cell-quantity_on_hand="{ row }">
+        <span class="tabular-nums font-mono text-slate-200">{{ row.quantity_on_hand }}</span>
+      </template>
+      <template #cell-out="{ row }">
+        <span class="tabular-nums font-mono text-slate-400">{{ row.out ?? 0 }}</span>
+      </template>
+      <template #cell-available="{ row }">
         <span
           class="tabular-nums font-mono"
           :class="isLow(row) ? 'text-amber-300' : 'text-slate-200'"
-        >{{ row.quantity_on_hand }}</span>
+          :title="isLow(row) ? 'At or below reorder threshold' : undefined"
+        >{{ availableOf(row) }}</span>
       </template>
       <template #cell-reorder_threshold="{ row }">
         <span class="tabular-nums font-mono text-slate-500">

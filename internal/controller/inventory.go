@@ -165,7 +165,9 @@ func (h *Handlers) InventoryAdjust(nc *nats.Conn, reg *HeartbeatRegistry) func(*
 
 // InventorySnapshot returns the GET /api/controller/kiosks/:code/inventory
 // handler. Read-only command: same offline behavior as InventoryAdjust but
-// no command_id (replays are harmless).
+// no command_id (replays are harmless). The kiosk's reply is enriched with
+// out/type the controller derives from its own ledger + catalog before it
+// reaches the SPA (see enrichInventorySnapshot).
 func (h *Handlers) InventorySnapshot(nc *nats.Conn, reg *HeartbeatRegistry) func(*core.RequestEvent) error {
 	return func(re *core.RequestEvent) error {
 		if err := h.requireAdmin(re); err != nil {
@@ -176,39 +178,16 @@ func (h *Handlers) InventorySnapshot(nc *nats.Conn, reg *HeartbeatRegistry) func
 			return re.BadRequestError("kiosk code is required", nil)
 		}
 
-		if !reg.IsLikelyOnline(kioskCode, heartbeatFreshness) {
-			if time.Since(reg.StartedAt()) > heartbeatFreshness {
-				return re.JSON(http.StatusServiceUnavailable, kioskOfflineResponse{
-					Error:     "kiosk_offline",
-					KioskCode: kioskCode,
-				})
-			}
-		}
-
 		// Empty request body = "all items" on the kiosk side.
-		subject := events.InventorySnapshotCommandSubject(kioskCode)
-		msg, err := nc.Request(subject, []byte("{}"), commandTimeout)
-		if err != nil {
-			if errors.Is(err, nats.ErrTimeout) || errors.Is(err, nats.ErrNoResponders) {
-				return re.JSON(http.StatusServiceUnavailable, kioskOfflineResponse{
-					Error:     "kiosk_offline",
-					KioskCode: kioskCode,
-				})
-			}
-			return re.InternalServerError("nats request failed", err)
+		raw, done, err := fetchKioskData(re, nc, reg, kioskCode,
+			events.InventorySnapshotCommandSubject(kioskCode), "", []byte("{}"))
+		if done {
+			return err
 		}
-
-		var env kioskCommandEnvelope
-		if err := json.Unmarshal(msg.Data, &env); err != nil {
-			return re.InternalServerError("decode kiosk reply", err)
+		enriched, eerr := enrichInventorySnapshot(h.App, kioskCode, raw)
+		if eerr != nil {
+			return re.InternalServerError("enrich inventory snapshot", eerr)
 		}
-		if !env.Success {
-			return re.JSON(http.StatusBadGateway, map[string]any{
-				"error":      "kiosk_error",
-				"detail":     env.Error,
-				"kiosk_code": kioskCode,
-			})
-		}
-		return re.JSON(http.StatusOK, json.RawMessage(env.Data))
+		return re.JSON(http.StatusOK, enriched)
 	}
 }

@@ -290,16 +290,22 @@ online badges; clicking a row opens the per-kiosk detail view at
   indicator and last-transaction timestamp.
 - **Items** — the "Stocked items" membership panel (lifted from the
   old dialog).
-- **Inventory** — fetches a live snapshot of on-hand quantities from
-  the kiosk via the `inventory.snapshot` NATS command, with a per-row
-  Adjust button (quantity-tracked items only) that drives the
-  corresponding `inventory.adjust` command. Serialized rows show a
-  "serialized" marker instead — their count is derived and managed on
-  the Instances tab.
+- **Inventory** — a live snapshot from the kiosk via the
+  `inventory.snapshot` NATS command, showing on-hand / out / available /
+  reorder threshold and a low-stock highlight — the same fidelity as the
+  local kiosk's Items view. On-hand and threshold come from the kiosk;
+  "out" is derived controller-side from the projected ledger
+  (`ReplayOpenRows`), and available + low-stock are computed in the SPA
+  from those via the shared `ui/src/lib/inventory.ts` helper. A per-row
+  Adjust button (quantity-tracked items only) drives the corresponding
+  `inventory.adjust` command. Serialized rows show a "serialized" marker
+  instead — their count is derived and managed on the Instances tab.
 - **Instances** — the serialized-unit roster fetched via
-  `instance.snapshot`. Create, edit (cosmetic), decommission, and
-  reactivate each map to a matching NATS command. Decommission +
-  reactivate require a reason that lands in the audit log.
+  `instance.snapshot`, with a per-unit Active flag and an out-status
+  ("currently out" / "available") column derived from the same ledger
+  replay. Create, edit (cosmetic), decommission, and reactivate each map
+  to a matching NATS command. Decommission + reactivate require a reason
+  that lands in the audit log.
 
 Use the Items view to add/edit items globally; user edits fan out to
 every managed kiosk. Item edits fan out only to the kiosks that stock

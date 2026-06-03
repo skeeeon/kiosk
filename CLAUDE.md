@@ -116,8 +116,15 @@ blank-imports `migrations/controller` for side effect.
   `POST /api/controller/kiosks/{code}/inventory/adjust`. All admin-gated
   via `controller.Handlers.requireAdmin` (mirrors the kiosk version —
   the duplicate is documented at `internal/controller/handlers.go:37`).
-  The inventory endpoints proxy core NATS request/reply commands to the
-  target kiosk and pass the reply through unchanged.
+  The inventory/instance endpoints proxy core NATS request/reply commands
+  to the target kiosk. Mutations pass the reply through unchanged; the two
+  read snapshots (`inventory`, `instances`) are enriched before returning —
+  the controller decorates them with the ledger-derived "out" count + item
+  "type" (inventory) and per-instance out-status (instances) it computes
+  from its own `ReplayOpenRows`, since the kiosk's snapshot doesn't carry
+  them. The split lives in `fetchKioskData` (returns the reply for the
+  caller to enrich) vs `dispatchKioskCommand` (sends it through). See
+  `internal/controller/snapshot_enrich.go`.
 - `/api/collections/*` — PocketBase's built-in REST API. Admin SPA views use
   this through `pocketbase` JS SDK (`ui/src/lib/pb.ts`). Collection rules
   defined in the migration restrict everything to the `admins` auth collection.
@@ -531,11 +538,16 @@ should keep working, don't put a focused input in it.
 **Kiosk detail page.** On the controller, `/admin/kiosks` is a list view
 that polls `/api/controller/kiosks/heartbeats` every 10 s for online
 badges; clicking a row navigates to `/admin/kiosks/:code` (the
-`AdminKioskDetailView` component) which has three tabs: Overview, Items
-(the existing `KioskItemsPanel`), Inventory (new `KioskInventoryPanel`
-that fetches a live snapshot via the controller's inventory endpoint and
-drives adjust commands). The old `KioskDialog` was reduced to create-only;
-edit/items/inventory work belongs on the detail page. The 503 `kiosk_offline`
+`AdminKioskDetailView` component) which has tabs: Overview, Items
+(the existing `KioskItemsPanel`), Inventory (`KioskInventoryPanel`), and
+Instances (`KioskInstancesPanel`). The Inventory and Instances panels
+fetch an enriched live snapshot via the controller's endpoints and show
+on-hand / out / available / low-stock and per-instance out-status at the
+same fidelity as the local kiosk admin UI — out/available are derived
+controller-side from the projected ledger and computed in the SPA via the
+shared `ui/src/lib/inventory.ts` helper (the same one `AdminItemsView`
+uses, so the two views can't drift). The old `KioskDialog` was reduced to
+create-only; edit/items/inventory work belongs on the detail page. The 503 `kiosk_offline`
 body is detected via `ApiError.status === 503` and rendered as a banner —
 do not treat it as a generic error.
 

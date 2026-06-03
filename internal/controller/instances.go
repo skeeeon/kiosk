@@ -37,39 +37,60 @@ func dispatchKioskCommand(
 	kioskCode, subject, commandID string,
 	payload []byte,
 ) error {
+	data, done, err := fetchKioskData(re, nc, reg, kioskCode, subject, commandID, payload)
+	if done {
+		return err
+	}
+	return re.JSON(http.StatusOK, json.RawMessage(data))
+}
+
+// fetchKioskData runs a kiosk command and returns the kiosk's `data` payload.
+// When `done` is true the response has ALREADY been written to `re` (kiosk
+// offline, a kiosk-level error, or a transport/decode failure) and the caller
+// must return `err` unchanged without touching `re` again. When `done` is
+// false the command succeeded and `data` holds the reply for the caller to
+// pass through or enrich. Split out of dispatchKioskCommand so read handlers
+// can decorate the reply before sending it (see snapshot_enrich.go).
+func fetchKioskData(
+	re *core.RequestEvent,
+	nc *nats.Conn,
+	reg *HeartbeatRegistry,
+	kioskCode, subject, commandID string,
+	payload []byte,
+) (data json.RawMessage, done bool, err error) {
 	if !reg.IsLikelyOnline(kioskCode, heartbeatFreshness) {
 		if time.Since(reg.StartedAt()) > heartbeatFreshness {
-			return re.JSON(http.StatusServiceUnavailable, kioskOfflineResponse{
+			return nil, true, re.JSON(http.StatusServiceUnavailable, kioskOfflineResponse{
 				Error:     "kiosk_offline",
 				KioskCode: kioskCode,
 				CommandID: commandID,
 			})
 		}
 	}
-	msg, err := nc.Request(subject, payload, commandTimeout)
-	if err != nil {
-		if errors.Is(err, nats.ErrTimeout) || errors.Is(err, nats.ErrNoResponders) {
-			return re.JSON(http.StatusServiceUnavailable, kioskOfflineResponse{
+	msg, rerr := nc.Request(subject, payload, commandTimeout)
+	if rerr != nil {
+		if errors.Is(rerr, nats.ErrTimeout) || errors.Is(rerr, nats.ErrNoResponders) {
+			return nil, true, re.JSON(http.StatusServiceUnavailable, kioskOfflineResponse{
 				Error:     "kiosk_offline",
 				KioskCode: kioskCode,
 				CommandID: commandID,
 			})
 		}
-		return re.InternalServerError("nats request failed", err)
+		return nil, true, re.InternalServerError("nats request failed", rerr)
 	}
 	var env kioskCommandEnvelope
-	if err := json.Unmarshal(msg.Data, &env); err != nil {
-		return re.InternalServerError("decode kiosk reply", err)
+	if jerr := json.Unmarshal(msg.Data, &env); jerr != nil {
+		return nil, true, re.InternalServerError("decode kiosk reply", jerr)
 	}
 	if !env.Success {
-		return re.JSON(http.StatusBadGateway, map[string]any{
+		return nil, true, re.JSON(http.StatusBadGateway, map[string]any{
 			"error":      "kiosk_error",
 			"detail":     env.Error,
 			"kiosk_code": kioskCode,
 			"command_id": commandID,
 		})
 	}
-	return re.JSON(http.StatusOK, json.RawMessage(env.Data))
+	return env.Data, false, nil
 }
 
 // --- Create ---
@@ -267,11 +288,22 @@ func (h *Handlers) InstanceSnapshot(nc *nats.Conn, reg *HeartbeatRegistry) func(
 			return re.BadRequestError("kiosk code is required", nil)
 		}
 		itemCode := strings.TrimSpace(re.Request.URL.Query().Get("item_code"))
-		data, err := json.Marshal(instanceSnapshotCommandPayload{ItemCode: itemCode})
+		payload, err := json.Marshal(instanceSnapshotCommandPayload{ItemCode: itemCode})
 		if err != nil {
 			return re.InternalServerError("marshal command", err)
 		}
-		return dispatchKioskCommand(re, nc, reg, kioskCode,
-			events.InstanceSnapshotCommandSubject(kioskCode), "", data)
+		raw, done, rerr := fetchKioskData(re, nc, reg, kioskCode,
+			events.InstanceSnapshotCommandSubject(kioskCode), "", payload)
+		if done {
+			return rerr
+		}
+		// Decorate each instance with its current "out" status, derived from
+		// the controller's projected ledger — the kiosk's snapshot doesn't
+		// carry it.
+		enriched, eerr := enrichInstanceSnapshot(h.App, kioskCode, raw)
+		if eerr != nil {
+			return re.InternalServerError("enrich instance snapshot", eerr)
+		}
+		return re.JSON(http.StatusOK, enriched)
 	}
 }
