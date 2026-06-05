@@ -38,11 +38,12 @@ import (
 // approval?). Surfacing the count lets the operator see something
 // was observed-but-skipped.
 type ReadTriggerResult struct {
-	Cart                  any          `json:"cart"`
-	AddedLines            []*cart.Line `json:"added_lines"`
-	ObservedEPCs          []string     `json:"observed_epcs"`
-	UnresolvedEPCs        []string     `json:"unresolved_epcs"`
-	SkippedCrossUserCount int          `json:"skipped_cross_user_count"`
+	Cart                    any          `json:"cart"`
+	AddedLines              []*cart.Line `json:"added_lines"`
+	ObservedEPCs            []string     `json:"observed_epcs"`
+	UnresolvedEPCs          []string     `json:"unresolved_epcs"`
+	SkippedCrossUserCount   int          `json:"skipped_cross_user_count"`
+	SkippedMaintenanceCount int          `json:"skipped_maintenance_count"`
 }
 
 // PerformReadTrigger is the shared core: cart already resolved
@@ -138,11 +139,12 @@ func (h *Handlers) PerformReadTrigger(ctx context.Context, c *cart.Cart) (*ReadT
 	})
 
 	return &ReadTriggerResult{
-		Cart:                  latestCart,
-		AddedLines:             addedLines,
-		ObservedEPCs:           observedStrings,
-		UnresolvedEPCs:         unresolvedStrings,
-		SkippedCrossUserCount:  skippedCrossUser,
+		Cart:                    latestCart,
+		AddedLines:              addedLines,
+		ObservedEPCs:            observedStrings,
+		UnresolvedEPCs:          unresolvedStrings,
+		SkippedCrossUserCount:   skippedCrossUser,
+		SkippedMaintenanceCount: len(result.SkippedIneligible),
 	}, nil
 }
 
@@ -162,10 +164,11 @@ func (h *Handlers) appendDiffLine(cartID string, entry rfid.DiffEntry, action st
 		log.Printf("rfid-diff: item %s not found: %v", entry.ItemID, err)
 		return nil, nil, false
 	}
-	// Skip inactive rows. expectedInstanceStates filters at the
-	// query layer too; this is defense in depth in case state
-	// changed between the snapshot and the AddLine.
-	if !instance.GetBool("active") || !item.GetBool("active") {
+	// Skip non-transactable rows. expectedInstanceStates filters at the
+	// query layer too; this is defense in depth in case state changed
+	// between the snapshot and the AddLine. Only in_service units are
+	// checkout/return-eligible (retired excluded; maintenance not eligible).
+	if instance.GetString("status") != "in_service" || !item.GetBool("active") {
 		return nil, nil, false
 	}
 
@@ -207,9 +210,9 @@ func (h *Handlers) appendDiffLine(cartID string, entry rfid.DiffEntry, action st
 // tag inventory — hundreds at most, fine for a Go-side join.
 func (h *Handlers) expectedInstanceStates() ([]rfid.InstanceState, error) {
 	instances, err := h.App.FindRecordsByFilter("item_instances",
-		"active = true", "+code", 0, 0, dbx.Params{})
+		"status != 'retired'", "+code", 0, 0, dbx.Params{})
 	if err != nil {
-		return nil, fmt.Errorf("find active instances: %w", err)
+		return nil, fmt.Errorf("find non-retired instances: %w", err)
 	}
 	// Tracking-mode check: instances exist only for serialized items
 	// in v1's schema, but we re-check defensively in case a schema
@@ -237,6 +240,9 @@ func (h *Handlers) expectedInstanceStates() ([]rfid.InstanceState, error) {
 			EPC:            rfid.EPC(epc),
 			IsCheckedOut:   isOut,
 			CheckoutUserID: userID,
+			// Maintenance units are expected-present (still in the box) but
+			// not checkout-eligible — a departing one is skip-and-counted.
+			Eligible: inst.GetString("status") == "in_service",
 		})
 	}
 	return out, nil

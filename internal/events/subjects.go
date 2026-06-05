@@ -10,9 +10,9 @@ import (
 // Every NATS subject this codebase publishes or subscribes to lives under
 // "<prefix>.<kiosk_code>.<family>.<...>" where the family is one of:
 //
-//   event.<...>     kiosk -> controller, durable, JetStream
-//   command.<...>   controller -> kiosk, core NATS request/reply
-//   heartbeat       kiosk -> world, core NATS pub/sub, last-write-wins
+//	event.<...>     kiosk -> controller, durable, JetStream
+//	command.<...>   controller -> kiosk, core NATS request/reply
+//	heartbeat       kiosk -> world, core NATS pub/sub, last-write-wins
 //
 // The family segment is what makes "is this in the stream?" answerable
 // without thinking: the stream binds to "<prefix>.*.event.>" and that's it.
@@ -90,9 +90,9 @@ func AdminCloseSubject(kioskCode string) string {
 }
 
 // InstanceLifecycleSubject builds the subject for an item_instances lifecycle
-// event: "<prefix>.<kiosk_code>.event.instance.lifecycle". Fired by the PB
-// record hooks on create, decommission (active true→false), reactivate
-// (active false→true), and delete. Cosmetic edits don't publish.
+// event: "<prefix>.<kiosk_code>.event.instance.lifecycle". Fired on create and
+// every status transition (in_service ⇄ maintenance ⇄ retired). Cosmetic edits
+// and status-unchanged updates don't publish.
 func InstanceLifecycleSubject(kioskCode string) string {
 	return fmt.Sprintf("%s.%s.event.instance.lifecycle", SubjectPrefix(), kioskCode)
 }
@@ -115,6 +115,15 @@ func ReceiptTransactionSubject(kioskCode string) string {
 // a real cross; the controller renders + sends.
 func LowStockAlertSubject(kioskCode string) string {
 	return fmt.Sprintf("%s.%s.event.alert.lowstock", SubjectPrefix(), kioskCode)
+}
+
+// MaintenanceAlertSubject builds the subject for a maintenance alert
+// notification: "<prefix>.<kiosk_code>.event.alert.maintenance". Payload is a
+// notifications.MaintenanceContext serialized as JSON, batched one per
+// transaction. The kiosk owns the maintenance-on-return detection; the
+// controller renders + sends. Mirrors LowStockAlertSubject.
+func MaintenanceAlertSubject(kioskCode string) string {
+	return fmt.Sprintf("%s.%s.event.alert.maintenance", SubjectPrefix(), kioskCode)
 }
 
 // ScanRFIDObservedSubject builds the subject for a "completed RFID read
@@ -189,6 +198,12 @@ func LowStockAlertFilter() string {
 	return SubjectPrefix() + ".*.event.alert.lowstock"
 }
 
+// MaintenanceAlertFilter is the controller-side consumer filter for the
+// maintenance alert notification subject.
+func MaintenanceAlertFilter() string {
+	return SubjectPrefix() + ".*.event.alert.maintenance"
+}
+
 // CommandSubject builds the subject for a controller→kiosk command targeting
 // a specific kiosk: "<prefix>.<kiosk_code>.command.<name>". Commands ride
 // core NATS request/reply, not JetStream — they are synchronous, single
@@ -228,13 +243,14 @@ func MetricsSnapshotCommandSubject(kioskCode string) string {
 	return CommandSubject(kioskCode, "metrics.snapshot")
 }
 
-// Instance command subjects mirror the inventory family. Mutations
-// (create, edit, decommission, reactivate) are idempotent via command_id;
-// the snapshot read is unconditionally safe to replay. The kiosk's
-// dispatcher routes on the suffix — adding a new one means adding a
-// handler in internal/commands and (optionally) a builder here for the
-// controller side to call by name rather than CommandSubject() with a
-// literal.
+// Instance command subjects mirror the inventory family. Mutations (create,
+// edit, set_status) are idempotent via command_id; the snapshot read is
+// unconditionally safe to replay. set_status carries the target status
+// (in_service | maintenance | retired) as data — one subject covers send to
+// maintenance / return to service / retire / un-retire. The kiosk's dispatcher
+// routes on the suffix — adding a new one means adding a handler in
+// internal/commands and (optionally) a builder here for the controller side to
+// call by name rather than CommandSubject() with a literal.
 func InstanceCreateCommandSubject(kioskCode string) string {
 	return CommandSubject(kioskCode, "instance.create")
 }
@@ -243,12 +259,8 @@ func InstanceEditCommandSubject(kioskCode string) string {
 	return CommandSubject(kioskCode, "instance.edit")
 }
 
-func InstanceDecommissionCommandSubject(kioskCode string) string {
-	return CommandSubject(kioskCode, "instance.decommission")
-}
-
-func InstanceReactivateCommandSubject(kioskCode string) string {
-	return CommandSubject(kioskCode, "instance.reactivate")
+func InstanceSetStatusCommandSubject(kioskCode string) string {
+	return CommandSubject(kioskCode, "instance.set_status")
 }
 
 func InstanceSnapshotCommandSubject(kioskCode string) string {

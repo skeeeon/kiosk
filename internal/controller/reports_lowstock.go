@@ -213,11 +213,19 @@ func onlineKiosks(reg *HeartbeatRegistry, freshness time.Duration) []string {
 }
 
 // fanoutInventorySnapshots fires `inventory.snapshot` at each kiosk in
-// parallel and gathers the replies. Per-kiosk timeout is the existing
-// commandTimeout; total wall-clock is bounded by it because all requests
-// run concurrently. Goroutine count == fleet size, which is fine in any
-// realistic fleet.
+// parallel and gathers the replies.
 func fanoutInventorySnapshots(nc *nats.Conn, kioskCodes []string) []snapshotInvocation {
+	return fanoutSnapshots(nc, kioskCodes, events.InventorySnapshotCommandSubject)
+}
+
+// fanoutSnapshots fires the per-kiosk snapshot command built by subjectFn at
+// each kiosk in parallel and gathers the {success,error,data} replies into
+// one snapshotInvocation per kiosk. Per-kiosk timeout is the existing
+// commandTimeout; total wall-clock is bounded by it because all requests run
+// concurrently. Goroutine count == fleet size, which is fine in any realistic
+// fleet. Shared by the low-stock (inventory.snapshot) and maintenance-digest
+// (instance.snapshot) fan-outs — only the subject differs.
+func fanoutSnapshots(nc *nats.Conn, kioskCodes []string, subjectFn func(string) string) []snapshotInvocation {
 	results := make([]snapshotInvocation, len(kioskCodes))
 	var wg sync.WaitGroup
 	for i, code := range kioskCodes {
@@ -226,8 +234,7 @@ func fanoutInventorySnapshots(nc *nats.Conn, kioskCodes []string) []snapshotInvo
 			defer wg.Done()
 			results[idx].kioskCode = kc
 
-			subject := events.InventorySnapshotCommandSubject(kc)
-			msg, err := nc.Request(subject, []byte("{}"), commandTimeout)
+			msg, err := nc.Request(subjectFn(kc), []byte("{}"), commandTimeout)
 			if err != nil {
 				if errors.Is(err, nats.ErrTimeout) || errors.Is(err, nats.ErrNoResponders) {
 					results[idx].err = errors.New("kiosk_offline")

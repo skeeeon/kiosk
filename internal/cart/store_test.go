@@ -217,7 +217,7 @@ func TestUpdateLineSetsQtyAndAction(t *testing.T) {
 	})
 	newQty := 5
 	newAction := "return"
-	_, updated, err := s.UpdateLine(line.ID, &newQty, &newAction)
+	_, updated, err := s.UpdateLine(line.ID, &newQty, &newAction, nil)
 	if err != nil {
 		t.Fatalf("update failed: %v", err)
 	}
@@ -237,7 +237,7 @@ func TestUpdateLineRejectsInvalidAction(t *testing.T) {
 		Action: "checkout", Qty: 1,
 	})
 	bad := "consume"
-	if _, _, err := s.UpdateLine(line.ID, nil, &bad); err != ErrInvalidAction {
+	if _, _, err := s.UpdateLine(line.ID, nil, &bad, nil); err != ErrInvalidAction {
 		t.Fatalf("want ErrInvalidAction, got %v", err)
 	}
 }

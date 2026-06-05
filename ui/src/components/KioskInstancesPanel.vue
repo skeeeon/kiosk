@@ -2,7 +2,7 @@
      controller. Mirrors KioskInventoryPanel's shape: snapshot on mount via
      GET /api/controller/kiosks/:code/instances, then mutations via the
      matching command-bus endpoints (POST create, PATCH edit, POST
-     {decommission|reactivate}). 503 + {error: "kiosk_offline"} renders a
+     status with a target status). 503 + {error: "kiosk_offline"} renders a
      banner; everything else falls through to the usual error box. -->
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
@@ -11,6 +11,13 @@ import DataTable, { type ColumnDef } from './DataTable.vue'
 import { api, ApiError } from '../lib/api'
 import { useToast } from '../composables/useToast'
 import type { KioskOfflineError } from '../types'
+import {
+  instanceActions,
+  statusLabel,
+  statusBadgeClass,
+  actionButtonClass,
+  type InstanceStatus,
+} from '../lib/instanceStatus'
 
 interface InstanceRow {
   instance_id: string
@@ -20,12 +27,14 @@ interface InstanceRow {
   item_name: string
   serial: string
   rfid_epc: string
-  active: boolean
+  // Lifecycle status (in_service / maintenance / retired). Carried straight
+  // from the kiosk's instance snapshot.
+  status: InstanceStatus
   notes: string
   created: string
   updated: string
   // Derived by the controller from its projected ledger: is this unit
-  // currently checked out? Mirrors the local kiosk's per-instance status.
+  // currently checked out? Orthogonal to status.
   out: boolean
 }
 
@@ -41,7 +50,9 @@ const page = ref(1)
 const perPage = ref(25)
 
 // Three mutation surfaces share the panel: create (new row), edit (cosmetic),
-// decommission / reactivate (active toggle with a reason).
+// and status transitions (send to maintenance / return to service / retire /
+// un-retire) — one reason-gated dialog drives all transitions, with the
+// target status as data.
 type DialogMode = 'create' | 'edit' | null
 const dialogMode = ref<DialogMode>(null)
 const form = ref({
@@ -54,10 +65,12 @@ const form = ref({
 })
 const submitting = ref(false)
 
-// Decommission/reactivate share a single ConfirmDialog with a reason field.
-const togglePending = ref<{ row: InstanceRow; targetActive: boolean } | null>(null)
-const toggleReason = ref('')
-const toggleSubmitting = ref(false)
+// Status transitions share a single dialog with a required reason field. The
+// target status is data, so one dialog covers every verb; the server derives
+// the audit action from the (prev → target) transition.
+const statusPending = ref<{ row: InstanceRow; target: InstanceStatus; label: string } | null>(null)
+const statusReason = ref('')
+const statusSubmitting = ref(false)
 
 const filtered = computed(() => {
   const f = itemFilter.value.trim().toLowerCase()
@@ -172,8 +185,8 @@ async function submitForm() {
     } else {
       // Edit: only the fields that actually changed; the server's PATCH
       // ignores fields that weren't touched, so we can send everything
-      // editable. Code/notes/serial/rfid only — active changes go through
-      // decommission/reactivate.
+      // editable. Code/notes/serial/rfid only — status changes go through
+      // the status-transition dialog.
       const body: Record<string, string> = {
         code: form.value.code.trim(),
         serial: form.value.serial.trim(),
@@ -222,7 +235,7 @@ function hydrateRow(r: Partial<InstanceRow>): InstanceRow {
     item_name: r.item_name ?? '',
     serial: r.serial ?? '',
     rfid_epc: r.rfid_epc ?? '',
-    active: r.active ?? true,
+    status: r.status ?? 'in_service',
     notes: r.notes ?? '',
     created: r.created ?? '',
     updated: r.updated ?? '',
@@ -232,39 +245,40 @@ function hydrateRow(r: Partial<InstanceRow>): InstanceRow {
   }
 }
 
-function openToggle(r: InstanceRow, targetActive: boolean) {
-  togglePending.value = { row: r, targetActive }
-  toggleReason.value = ''
+function openStatus(r: InstanceRow, target: InstanceStatus, label: string) {
+  statusPending.value = { row: r, target, label }
+  statusReason.value = ''
 }
 
-async function confirmToggle() {
-  if (!togglePending.value) return
-  if (!toggleReason.value.trim()) {
+async function confirmStatus() {
+  if (!statusPending.value) return
+  if (!statusReason.value.trim()) {
     toast.error('Reason is required')
     return
   }
-  const { row, targetActive } = togglePending.value
-  const verb = targetActive ? 'reactivate' : 'decommission'
-  toggleSubmitting.value = true
+  const { row, target } = statusPending.value
+  statusSubmitting.value = true
   try {
+    // Single status endpoint: the target is data, the server picks the verb
+    // and stamps the audit + lifecycle event.
     const updated = await api.post<InstanceRow>(
-      `/api/controller/kiosks/${encodeURIComponent(props.kioskCode)}/instances/${encodeURIComponent(row.instance_code)}/${verb}`,
-      { reason: toggleReason.value.trim() },
+      `/api/controller/kiosks/${encodeURIComponent(props.kioskCode)}/instances/${encodeURIComponent(row.instance_code)}/status`,
+      { status: target, reason: statusReason.value.trim() },
     )
     const idx = rows.value.findIndex((x) => x.instance_id === updated.instance_id)
-    if (idx >= 0) rows.value[idx] = { ...rows.value[idx], active: updated.active }
-    togglePending.value = null
-    toast.success(`${updated.instance_code} ${verb}d`)
+    if (idx >= 0) rows.value[idx] = { ...rows.value[idx], status: updated.status }
+    statusPending.value = null
+    toast.success(`${updated.instance_code} → ${statusLabel(updated.status)}`)
   } catch (e) {
     if (isOfflineError(e)) {
       offline.value = true
-      togglePending.value = null
+      statusPending.value = null
       toast.error('Kiosk is offline — change not applied')
     } else {
       toast.error((e as Error).message)
     }
   } finally {
-    toggleSubmitting.value = false
+    statusSubmitting.value = false
   }
 }
 
@@ -273,8 +287,8 @@ const columns: ColumnDef[] = [
   { key: 'instance_code', label: 'Code' },
   { key: 'serial', label: 'Serial' },
   { key: 'rfid_epc', label: 'RFID' },
-  { key: 'active', label: 'Active' },
   { key: 'status', label: 'Status' },
+  { key: 'out', label: 'Out?' },
   { key: '__actions', align: 'right' },
 ]
 </script>
@@ -286,7 +300,7 @@ const columns: ColumnDef[] = [
         <h3 class="text-sm font-medium text-slate-200">Item instances</h3>
         <p class="text-xs text-slate-500">
           One row per serialized unit on this kiosk. Cosmetic edits don&rsquo;t
-          audit; decommission / reactivate writes a lifecycle event.
+          audit; status transitions write a lifecycle event.
         </p>
       </div>
       <div class="flex items-center gap-2">
@@ -333,7 +347,7 @@ const columns: ColumnDef[] = [
       :row-key="(r) => r.instance_id"
       :loading="loading"
       empty-text="No instances at this kiosk yet."
-      :row-class="(r) => (r.active ? undefined : 'text-slate-500')"
+      :row-class="(r) => (r.status === 'retired' ? 'text-slate-500' : undefined)"
       :page="page"
       :per-page="perPage"
       :total="filtered.length"
@@ -352,16 +366,18 @@ const columns: ColumnDef[] = [
       <template #cell-rfid_epc="{ row }">
         <span class="font-mono">{{ row.rfid_epc || '—' }}</span>
       </template>
-      <template #cell-active="{ row }">
-        <span v-if="row.active" class="text-emerald-400">●</span>
-        <span v-else class="text-slate-600">●</span>
-      </template>
       <template #cell-status="{ row }">
-        <span v-if="row.out" class="text-amber-300">currently out</span>
-        <span v-else class="text-slate-500">available</span>
+        <span
+          class="inline-block px-2 py-0.5 rounded text-[10px]"
+          :class="statusBadgeClass(row.status)"
+        >{{ statusLabel(row.status) }}</span>
+      </template>
+      <template #cell-out="{ row }">
+        <span v-if="row.out" class="text-amber-300 text-xs">currently out</span>
+        <span v-else class="text-slate-500 text-xs">in</span>
       </template>
       <template #cell-__actions="{ row }">
-        <div class="inline-flex justify-end gap-2">
+        <div class="inline-flex flex-wrap justify-end gap-2">
           <button
             type="button"
             class="px-3 py-1.5 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm border border-slate-700 whitespace-nowrap disabled:opacity-50"
@@ -371,22 +387,15 @@ const columns: ColumnDef[] = [
             Edit
           </button>
           <button
-            v-if="row.active"
+            v-for="a in instanceActions(row.status)"
+            :key="a.target"
             type="button"
-            class="px-3 py-1.5 rounded-md bg-amber-950/60 hover:bg-amber-900/60 text-amber-200 text-sm border border-amber-800/70 whitespace-nowrap disabled:opacity-50"
+            class="px-3 py-1.5 rounded-md text-sm border whitespace-nowrap disabled:opacity-50"
+            :class="actionButtonClass(a.tone)"
             :disabled="offline"
-            @click="openToggle(row, false)"
+            @click="openStatus(row, a.target, a.label)"
           >
-            Decommission
-          </button>
-          <button
-            v-else
-            type="button"
-            class="px-3 py-1.5 rounded-md bg-emerald-950/60 hover:bg-emerald-900/60 text-emerald-200 text-sm border border-emerald-800/70 whitespace-nowrap disabled:opacity-50"
-            :disabled="offline"
-            @click="openToggle(row, true)"
-          >
-            Reactivate
+            {{ a.label }}
           </button>
         </div>
       </template>
@@ -464,21 +473,21 @@ const columns: ColumnDef[] = [
     </AppDialog>
 
     <AppDialog
-      :open="togglePending !== null"
-      :title="togglePending?.targetActive ? 'Reactivate instance' : 'Decommission instance'"
+      :open="statusPending !== null"
+      :title="statusPending?.label ?? 'Change status'"
       size="sm"
-      @update:open="(v) => { if (!v) togglePending = null }"
+      @update:open="(v) => { if (!v) statusPending = null }"
     >
-      <form class="flex flex-col gap-4" @submit.prevent="confirmToggle">
+      <form class="flex flex-col gap-4" @submit.prevent="confirmStatus">
         <p class="text-slate-300 text-sm">
-          {{ togglePending?.targetActive ? 'Reactivate' : 'Decommission' }}
-          <span class="font-mono">{{ togglePending?.row.instance_code }}</span>?
+          {{ statusPending?.label }}
+          <span class="font-mono">{{ statusPending?.row.instance_code }}</span>?
           A reason is required for the audit log.
         </p>
         <label class="flex flex-col gap-1">
           <span class="text-sm text-slate-400">Reason</span>
           <textarea
-            v-model="toggleReason"
+            v-model="statusReason"
             rows="2"
             required
             placeholder="e.g. broken handle, returned from service"
@@ -489,17 +498,16 @@ const columns: ColumnDef[] = [
           <button
             type="button"
             class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200"
-            @click="togglePending = null"
+            @click="statusPending = null"
           >
             Cancel
           </button>
           <button
             type="submit"
-            class="px-4 py-2 rounded-lg font-medium text-white disabled:opacity-50"
-            :class="togglePending?.targetActive ? 'bg-emerald-600 hover:bg-emerald-500' : 'bg-red-600 hover:bg-red-500'"
-            :disabled="toggleSubmitting"
+            class="px-4 py-2 rounded-lg font-medium text-white bg-brand-primary hover:bg-brand-primary-hover disabled:opacity-50"
+            :disabled="statusSubmitting"
           >
-            {{ togglePending?.targetActive ? 'Reactivate' : 'Decommission' }}
+            {{ statusPending?.label ?? 'Apply' }}
           </button>
         </div>
       </form>

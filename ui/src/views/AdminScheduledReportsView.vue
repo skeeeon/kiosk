@@ -80,6 +80,8 @@ function reportLabel(key: string): string {
       return 'Currently checked out'
     case 'daily_activity':
       return 'Daily activity'
+    case 'maintenance':
+      return 'Items in maintenance'
   }
   return key
 }

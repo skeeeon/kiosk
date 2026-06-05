@@ -76,7 +76,7 @@ func seedItemWithInstance(t *testing.T, app core.App) (itemID string, instance *
 	inst.Set("item", item.Id)
 	inst.Set("code", "DRILL-A-1")
 	inst.Set("serial", "SN-1")
-	inst.Set("active", true)
+	inst.Set("status", "in_service")
 	inst.Set("notes", "new from PO-1234")
 	if err := app.Save(inst); err != nil {
 		t.Fatalf("save instance: %v", err)
@@ -124,7 +124,7 @@ func TestNormalizeEPC_LowercasedOnWrite(t *testing.T) {
 	inst := core.NewRecord(instances)
 	inst.Set("item", item.Id)
 	inst.Set("code", "DRILL-X-1")
-	inst.Set("active", true)
+	inst.Set("status", "in_service")
 	inst.Set("rfid_epc", "  E2806890ABCDEF12  ") // upper-case + surrounding space
 	if err := app.Save(inst); err != nil {
 		t.Fatalf("save instance: %v", err)
@@ -160,8 +160,8 @@ func TestWriteAudit_Create_RowAndEvent(t *testing.T) {
 	h.writeAudit(app, auditInput{
 		Record:     inst,
 		Action:     "create",
-		PrevActive: false,
-		NewActive:  true,
+		PrevStatus: "",
+		NewStatus:  "in_service",
 		Reason:     "new from PO-1234",
 		AdminID:    adminID,
 	})
@@ -178,8 +178,8 @@ func TestWriteAudit_Create_RowAndEvent(t *testing.T) {
 	if got.GetString("action") != "create" {
 		t.Errorf("action: got %q, want create", got.GetString("action"))
 	}
-	if got.GetBool("new_active") != true {
-		t.Errorf("new_active: got false, want true")
+	if got.GetString("new_status") != "in_service" {
+		t.Errorf("new_status: got %q, want in_service", got.GetString("new_status"))
 	}
 	if got.GetString("admin") != adminID {
 		t.Errorf("admin: got %q, want %q", got.GetString("admin"), adminID)
@@ -203,78 +203,33 @@ func TestWriteAudit_Create_RowAndEvent(t *testing.T) {
 	}
 }
 
-func TestWriteAudit_Decommission_CapturesActiveFlip(t *testing.T) {
+func TestWriteAudit_Retire_CapturesStatusFlip(t *testing.T) {
 	app := setupApp(t)
 	_, inst := seedItemWithInstance(t, app)
-	adminID := ensureAdmin(t, app, "audit-decommission@test.local")
+	adminID := ensureAdmin(t, app, "audit-retire@test.local")
 
 	pub := &capturedPub{}
 	h := NewWith(pub)
 
 	h.writeAudit(app, auditInput{
 		Record:     inst,
-		Action:     "decommission",
-		PrevActive: true,
-		NewActive:  false,
+		Action:     "retire",
+		PrevStatus: "in_service",
+		NewStatus:  "retired",
 		Reason:     "broken handle",
 		AdminID:    adminID,
 	})
 
 	rows, err := app.FindRecordsByFilter("instance_audit",
-		"item_instance = {:i} && action = 'decommission'",
+		"item_instance = {:i} && action = 'retire'",
 		"", 0, 0, dbx.Params{"i": inst.Id})
 	if err != nil || len(rows) != 1 {
-		t.Fatalf("decommission row: len=%d err=%v", len(rows), err)
+		t.Fatalf("retire row: len=%d err=%v", len(rows), err)
 	}
 	r := rows[0]
-	if r.GetBool("prev_active") != true || r.GetBool("new_active") != false {
-		t.Errorf("active states: prev=%v new=%v (want true→false)",
-			r.GetBool("prev_active"), r.GetBool("new_active"))
-	}
-}
-
-func TestWriteAuditFromSnapshot_Delete_SurvivesGoneRecord(t *testing.T) {
-	app := setupApp(t)
-	itemID, inst := seedItemWithInstance(t, app)
-	adminID := ensureAdmin(t, app, "audit-delete@test.local")
-
-	pub := &capturedPub{}
-	h := NewWith(pub)
-
-	// Simulate what the OnRecordDelete hook captured before the cascade.
-	snap := deleteSnapshot{
-		id:         inst.Id,
-		code:       "DRILL-A-1",
-		itemID:     itemID,
-		prevActive: true,
-		reason:     "scrap",
-		adminID:    adminID,
-	}
-	h.writeAuditFromSnapshot(app, snap)
-
-	rows, err := app.FindRecordsByFilter("instance_audit",
-		"item_instance = {:i} && action = 'delete'",
-		"", 0, 0, dbx.Params{"i": inst.Id})
-	if err != nil || len(rows) != 1 {
-		t.Fatalf("delete row: len=%d err=%v", len(rows), err)
-	}
-	r := rows[0]
-	if r.GetString("item") != itemID {
-		t.Errorf("item FK: got %q, want %q", r.GetString("item"), itemID)
-	}
-	if r.GetString("reason") != "scrap" {
-		t.Errorf("reason: %q", r.GetString("reason"))
-	}
-
-	if len(pub.events) != 1 {
-		t.Fatalf("events: want 1, got %d", len(pub.events))
-	}
-	payload, _ := pub.events[0].Payload.(map[string]any)
-	if payload["action"] != "delete" {
-		t.Errorf("payload.action: %v", payload["action"])
-	}
-	if payload["item_code"] != "DRILL-A" {
-		t.Errorf("payload.item_code: %v (want DRILL-A — denormalised via lookup)", payload["item_code"])
+	if r.GetString("prev_status") != "in_service" || r.GetString("new_status") != "retired" {
+		t.Errorf("status states: prev=%q new=%q (want in_service→retired)",
+			r.GetString("prev_status"), r.GetString("new_status"))
 	}
 }
 

@@ -35,6 +35,7 @@ type Line struct {
 	ItemInstanceCode         string   `json:"item_instance_code,omitempty"`
 	OriginalCheckoutUserID   string   `json:"original_checkout_user_id,omitempty"`
 	OriginalCheckoutUserName string   `json:"original_checkout_user_name,omitempty"`
+	RequestMaintenance       bool     `json:"request_maintenance,omitempty"`
 	Warnings                 []string `json:"warnings,omitempty"`
 }
 
@@ -321,9 +322,11 @@ func (s *Store) AddLine(cartID string, in *Line) (*Cart, *Line, error) {
 	return c, in, nil
 }
 
-// UpdateLine sets qty and/or action. Searches all carts by line ID since
-// there's at most one cart per user, so the scan is trivial.
-func (s *Store) UpdateLine(lineID string, qty *int, action *string) (*Cart, *Line, error) {
+// UpdateLine sets qty, action, and/or the request-maintenance flag. Searches
+// all carts by line ID since there's at most one cart per user, so the scan is
+// trivial. requestMaintenance is only meaningful on a serialized return line;
+// the handler validates that before calling.
+func (s *Store) UpdateLine(lineID string, qty *int, action *string, requestMaintenance *bool) (*Cart, *Line, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -346,6 +349,9 @@ func (s *Store) UpdateLine(lineID string, qty *int, action *string) (*Cart, *Lin
 			return nil, nil, ErrInvalidAction
 		}
 		line.Action = *action
+	}
+	if requestMaintenance != nil {
+		line.RequestMaintenance = *requestMaintenance
 	}
 	s.touchLocked(c)
 	return c, line, nil

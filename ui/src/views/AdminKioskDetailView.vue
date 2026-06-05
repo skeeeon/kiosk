@@ -5,7 +5,7 @@
        Items     — KioskItemsPanel (catalog membership)
        Inventory — KioskInventoryPanel (live qty, remote adjust)
        Instances — KioskInstancesPanel (serialized-unit roster + remote
-                   create / edit / decommission / reactivate)
+                   create / edit / status transitions)
        Metrics   — KioskMetricsPanel (live operational + activity snapshot)
 
      Path: /admin/kiosks/:code. The :code param is the kiosk_code, not the

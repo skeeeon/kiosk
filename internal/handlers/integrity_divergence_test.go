@@ -284,7 +284,7 @@ func TestReplayOpenRows_SerializedInstanceReturn(t *testing.T) {
 	inst.Set("item", driver.Id)
 	inst.Set("code", "DR-042-A")
 	inst.Set("serial", "SN-A")
-	inst.Set("active", true)
+	inst.Set("status", "in_service")
 	if err := app.Save(inst); err != nil {
 		t.Fatalf("save instance: %v", err)
 	}

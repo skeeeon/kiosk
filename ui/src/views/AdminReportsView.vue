@@ -106,9 +106,9 @@ interface LifecycleAuditRow {
   item_name: string
   instance_id: string
   instance_code: string
-  action: 'create' | 'decommission' | 'reactivate' | 'delete'
-  prev_active: boolean
-  new_active: boolean
+  action: 'create' | 'to_maintenance' | 'return_to_service' | 'retire' | 'unretire'
+  prev_status: string
+  new_status: string
   reason: string
   admin_id: string
   source: 'local' | 'controller' | ''
@@ -167,7 +167,7 @@ const lifecycleRows = ref<LifecycleAuditRow[]>([])
 const lifecyclePage = ref(1)
 const lifecyclePerPage = ref(50)
 const lifecycleTotal = ref(0)
-const lifecycleActionFilter = ref<'' | 'create' | 'decommission' | 'reactivate' | 'delete'>('')
+const lifecycleActionFilter = ref<'' | 'create' | 'to_maintenance' | 'return_to_service' | 'retire' | 'unretire'>('')
 const lifecycleSourceFilter = ref<'' | 'local' | 'controller'>('')
 const lifecycleFrom = ref<string>(defaultFromDate())
 const lifecycleTo = ref<string>(defaultToDate())
@@ -469,8 +469,8 @@ async function loadLifecycle(page = 1) {
         item_instance: string
         item: string
         action: LifecycleAuditRow['action']
-        prev_active: boolean
-        new_active: boolean
+        prev_status: string
+        new_status: string
         reason: string
         admin: string
         source: 'local' | 'controller' | ''
@@ -493,8 +493,8 @@ async function loadLifecycle(page = 1) {
         instance_id: r.item_instance,
         instance_code: r.expand?.item_instance?.code ?? '',
         action: r.action,
-        prev_active: r.prev_active,
-        new_active: r.new_active,
+        prev_status: r.prev_status,
+        new_status: r.new_status,
         reason: r.reason,
         admin_id: r.admin,
         source: r.source,
@@ -802,7 +802,7 @@ const lifecycleColumns = computed<ColumnDef[]>(() => {
     { key: 'item', label: 'Item' },
     { key: 'instance', label: 'Instance' },
     { key: 'action', label: 'Action' },
-    { key: 'active_change', label: 'Active' },
+    { key: 'status_change', label: 'Status' },
     { key: 'source', label: 'Source' },
     { key: 'reason', label: 'Reason' },
   )
@@ -1358,9 +1358,10 @@ const lifecycleColumns = computed<ColumnDef[]>(() => {
           >
             <option value="">All actions</option>
             <option value="create">Create</option>
-            <option value="decommission">Decommission</option>
-            <option value="reactivate">Reactivate</option>
-            <option value="delete">Delete</option>
+            <option value="to_maintenance">Send to maintenance</option>
+            <option value="return_to_service">Return to service</option>
+            <option value="retire">Retire</option>
+            <option value="unretire">Un-retire</option>
           </select>
         </label>
         <label class="flex flex-col gap-1">
@@ -1425,17 +1426,17 @@ const lifecycleColumns = computed<ColumnDef[]>(() => {
           <span
             class="inline-block px-2 py-0.5 rounded text-xs"
             :class="{
-              'bg-emerald-900/60 text-emerald-200': row.action === 'create' || row.action === 'reactivate',
-              'bg-amber-900/60 text-amber-200': row.action === 'decommission',
-              'bg-red-900/60 text-red-200': row.action === 'delete',
+              'bg-emerald-900/60 text-emerald-200': row.action === 'create' || row.action === 'return_to_service' || row.action === 'unretire',
+              'bg-amber-900/60 text-amber-200': row.action === 'to_maintenance',
+              'bg-red-900/60 text-red-200': row.action === 'retire',
             }"
           >
             {{ row.action }}
           </span>
         </template>
-        <template #cell-active_change="{ row }">
-          <span class="text-xs text-slate-400 tabular-nums">
-            {{ row.prev_active ? 'Y' : 'N' }} → {{ row.new_active ? 'Y' : 'N' }}
+        <template #cell-status_change="{ row }">
+          <span class="text-xs text-slate-400">
+            {{ row.prev_status || '—' }} → {{ row.new_status || '—' }}
           </span>
         </template>
         <template #cell-source="{ row }">

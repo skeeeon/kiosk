@@ -62,7 +62,7 @@ routes on the `<name>` suffix.
 Mutate `items.quantity_on_hand` and write a `stock_adjustments` audit
 row. Same business logic as the local `POST /api/kiosk/items/{id}/adjust`
 endpoint — including rejecting **serialized** items (their quantity is
-derived from the active instance count), which replies `success=false`.
+derived from the non-retired instance count), which replies `success=false`.
 
 **Publisher.** controller
 
@@ -224,10 +224,13 @@ match it.
 **Idempotency.** Replay-safe by content; no `command_id` because there
 is no audit anchor.
 
-### `instance.decommission`
+### `instance.set_status`
 
-Flip `item_instances.active` to false. Writes an audit row + publishes
-an `instance.lifecycle` event.
+Set `item_instances.status` to a target state. Writes an audit row +
+publishes an `instance.lifecycle` event. One command covers every
+lifecycle transition — sending a unit to maintenance, returning it to
+service, retiring it, or un-retiring it — because the target status is
+data, not a separate verb.
 
 **Publisher.** controller
 
@@ -237,18 +240,24 @@ an `instance.lifecycle` event.
   "command_id": "uuid",
   "controller_admin_id": "admin record id",
   "instance_code": "WIDGET-001-A",
+  "status": "in_service" | "maintenance" | "retired",
   "reason": "free-form, required"
 }
 ```
 
-**Reply data.** Mutation outcome (new active state, audit row id).
+**Reply data.** Mutation outcome (new `status`, audit row id).
 
 **Idempotency.** `command_id` unique on `instance_audit`.
 
-### `instance.reactivate`
+The audit `action` verb is derived kiosk-side from the (prev → target)
+transition rather than supplied by the caller:
 
-Flip `item_instances.active` back to true. Same payload + reply shape
-as `instance.decommission`.
+| prev → target | action |
+|---|---|
+| in_service → maintenance | `to_maintenance` |
+| maintenance → in_service | `return_to_service` |
+| in_service / maintenance → retired | `retire` |
+| retired → in_service | `unretire` |
 
 ### `instance.snapshot`
 
@@ -274,7 +283,7 @@ Read-only — list instances optionally filtered by `item_code`.
       "item_name": "Widget",
       "serial": "SN-12345",
       "rfid_epc": "...",
-      "active": true,
+      "status": "in_service" | "maintenance" | "retired",
       "notes": "",
       "created": "RFC3339",
       "updated": "RFC3339"
@@ -328,6 +337,43 @@ controller's projection after a NATS outage.
 **Idempotency.** The controller's aggregator dedupes on
 `source_kiosk_code + source_transaction_id` (for transactions) and
 `source_line_id` (for lines), so repeated publishes are safe.
+
+### `metrics.snapshot`
+
+Read-only — returns the kiosk's point-in-time operational + activity
+snapshot. Proxied by the controller's
+`GET /api/controller/kiosks/{code}/metrics`. Same shape as the local
+`GET /api/kiosk/metrics` endpoint (single source of truth in
+`internal/metrics`).
+
+**Publisher.** controller
+
+**Payload.** None.
+
+**Reply data.**
+```json
+{
+  "kiosk_code": "...",
+  "generated_at": "RFC3339, UTC",
+  "operational": {
+    "uptime_seconds": 0,
+    "nats_connected": true,
+    "rfid_enabled": false,
+    "rfid_mode": "counter_scan",
+    "rfid_connected": false,
+    "active_carts": 0
+  },
+  "ledger": {
+    "items_out": 0,
+    "users_with_items_out": 0,
+    "low_stock_skus": 0,
+    "transactions_today": 0,
+    "transactions_week": 0
+  }
+}
+```
+
+**Idempotency.** Read-only; replay-safe by definition.
 
 ### `cart.start`
 
@@ -526,13 +572,16 @@ the dedicated subject is in addition, not instead.
 
 ### `event.instance.lifecycle`
 
-Fires on `item_instances` create / decommission (active flip
-true→false) / reactivate (false→true) / delete. Cosmetic edits do
-**not** publish.
+Fires on every `item_instances` status transition: `create` /
+`to_maintenance` (in_service→maintenance) / `return_to_service`
+(maintenance→in_service) / `retire` (in_service or maintenance→retired)
+/ `unretire` (retired→in_service). Cosmetic edits (code, serial,
+rfid_epc, notes) and status-unchanged updates do **not** publish.
 
-**Payload.** Includes `source_audit_id` (the kiosk-side
-`instance_audit.id`) which the controller uses as the idempotency
-anchor when projecting into `instance_lifecycle_audit`.
+**Payload.** Carries `prev_status` / `new_status` (the transition) plus
+`source_audit_id` (the kiosk-side `instance_audit.id`) which the
+controller uses as the idempotency anchor when projecting into
+`instance_lifecycle_audit`.
 
 ### `event.scan.rfid.observed`
 
@@ -564,6 +613,40 @@ controller's notifier to template + send. See
 
 Fires when an item crosses its `reorder_threshold` downward. Carries
 low-stock context for the controller's notifier. See
+[Notifications](notifications.md).
+
+### `event.alert.maintenance` (managed mode only)
+
+Fires when a cart commit routes one or more returned serialized units
+into maintenance (per-SKU `requires_maintenance_on_return`, a per-line
+"needs maintenance" toggle, or both). **Batched one per transaction** —
+a cart returning N flagged units produces a single event listing all N,
+not N events. Carries `MaintenanceContext` for the controller's notifier
+to template + send (recipients = all admins). Rides the same JetStream
+durable consumer as `alert.lowstock`. See [Notifications](notifications.md).
+
+**Payload.**
+```json
+{
+  "Kiosk": { /* kiosk info */ },
+  "Units": [
+    {
+      "ItemCode": "WIDGET-001",
+      "ItemName": "Widget",
+      "InstanceCode": "WIDGET-001-A",
+      "Serial": "SN-12345",
+      "Reason": "free-form"
+    }
+  ],
+  "Trigger": "return",
+  "Ref": "transaction id"
+}
+```
+
+The controller dedupes on `Ref` (the transaction id) via `SendIfFirst`,
+so JetStream redelivery of the same batch collapses to one email. A
+companion `digest.maintenance` scheduled report ("Items in maintenance")
+lists units currently parked in maintenance — see
 [Notifications](notifications.md).
 
 ## Heartbeats

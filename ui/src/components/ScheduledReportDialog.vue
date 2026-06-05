@@ -174,6 +174,7 @@ function onSubmitAndAdd() {
           >
             <option value="open_checkouts">Currently checked out</option>
             <option value="daily_activity">Daily activity</option>
+            <option value="maintenance">Items in maintenance</option>
           </select>
         </label>
         <label class="flex items-center gap-2 text-slate-300 mt-6">

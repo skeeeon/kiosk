@@ -80,9 +80,14 @@ present. The flow is event-driven and NATS-orchestrated:
    `(user_code, door_id)` of the active cart, or the `cart_id` if
    known. The kiosk runs one LLRP inventory cycle.
 4. **In-process diff.** Pure function over (observed EPCs, expected
-   set). Expected-present = active serialized instances on this kiosk
-   whose `id` is **not** currently in `open_checkouts`. The diff
-   yields:
+   set). Expected-present = non-retired serialized instances (in_service +
+   maintenance) on this kiosk whose `id` is **not** currently in
+   `open_checkouts`. A maintenance unit is expected-present (it's
+   physically in the enclosure) but **not** checkout-eligible: if it
+   leaves the enclosure it is skip-and-counted (recorded in a
+   `SkippedIneligible` bucket, surfaced to the operator), never
+   synthesized as a checkout — commit would reject a checkout of a
+   non-`in_service` unit anyway. The diff yields:
    - **observed and expected-present** → no-op (still there).
    - **observed but expected-absent** (i.e., currently in
      `open_checkouts`) → return line.

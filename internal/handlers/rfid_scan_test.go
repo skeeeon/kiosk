@@ -27,8 +27,8 @@ type fakeReader struct {
 }
 
 func (f *fakeReader) Connect(context.Context) error { return nil }
-func (f *fakeReader) Close() error                   { return nil }
-func (f *fakeReader) Connected() bool                { return true }
+func (f *fakeReader) Close() error                  { return nil }
+func (f *fakeReader) Connected() bool               { return true }
 func (f *fakeReader) ReadFor(_ context.Context, _ time.Duration) ([]rfid.EPC, error) {
 	f.calls++
 	if f.err != nil {
@@ -91,7 +91,7 @@ func seedRFIDScan(t *testing.T) (core.App, rfidScanSeed) {
 	active.Set("code", "DRILL-01")
 	active.Set("serial", "SN-01")
 	active.Set("rfid_epc", activeEPC)
-	active.Set("active", true)
+	active.Set("status", "in_service")
 	if err := app.Save(active); err != nil {
 		t.Fatalf("save active instance: %v", err)
 	}
@@ -101,7 +101,7 @@ func seedRFIDScan(t *testing.T) (core.App, rfidScanSeed) {
 	inactive.Set("code", "DRILL-02")
 	inactive.Set("serial", "SN-02")
 	inactive.Set("rfid_epc", inactiveEPC)
-	inactive.Set("active", false)
+	inactive.Set("status", "retired")
 	if err := app.Save(inactive); err != nil {
 		t.Fatalf("save inactive instance: %v", err)
 	}

@@ -19,6 +19,10 @@ const isController = computed(() => identity.value?.role === 'controller')
 
 const items = ref<ItemRecord[]>([])
 const instanceCounts = ref<Record<string, number>>({})
+// Per-item count of serialized units parked in maintenance. Subtracted from
+// available (they count toward on-hand but can't be checked out). Keyed by
+// item id; absent/zero for quantity-tracked items and consumables.
+const maintenanceCounts = ref<Record<string, number>>({})
 // Open-checkout count keyed by item id. Drives the "Out" column and the
 // low-stock row highlight; consumables stay at zero since they don't track
 // open_checkouts. These aggregates cover the whole catalog (not just the
@@ -69,17 +73,23 @@ async function loadAggregates() {
   // Controller has no open_checkouts or item_instances rows of its own.
   if (isController.value) {
     instanceCounts.value = {}
+    maintenanceCounts.value = {}
     outCounts.value = {}
     return
   }
   try {
     const [instances, opens] = await Promise.all([
-      pb.collection('item_instances').getFullList<{ item: string }>({ fields: 'item' }),
+      pb.collection('item_instances').getFullList<{ item: string; status: string }>({ fields: 'item,status' }),
       pb.collection('open_checkouts').getFullList<{ item: string }>({ fields: 'item' }),
     ])
     const inst: Record<string, number> = {}
-    for (const i of instances) inst[i.item] = (inst[i.item] ?? 0) + 1
+    const maint: Record<string, number> = {}
+    for (const i of instances) {
+      inst[i.item] = (inst[i.item] ?? 0) + 1
+      if (i.status === 'maintenance') maint[i.item] = (maint[i.item] ?? 0) + 1
+    }
     instanceCounts.value = inst
+    maintenanceCounts.value = maint
     const oc: Record<string, number> = {}
     for (const o of opens) oc[o.item] = (oc[o.item] ?? 0) + 1
     outCounts.value = oc
@@ -112,8 +122,14 @@ function outFor(item: ItemRecord): number {
   return item.type === 'tool' ? (outCounts.value[item.id] ?? 0) : 0
 }
 
+// maintenanceFor is the count of serialized units in maintenance for this item;
+// 0 for quantity-tracked items (no instances). Subtracted from available.
+function maintenanceFor(item: ItemRecord): number {
+  return item.tracking_mode === 'serialized' ? (maintenanceCounts.value[item.id] ?? 0) : 0
+}
+
 function availableFor(item: ItemRecord): number {
-  return available(item.quantity_on_hand ?? 0, outFor(item), item.type)
+  return available(item.quantity_on_hand ?? 0, outFor(item), item.type, maintenanceFor(item))
 }
 
 function isLowStock(item: ItemRecord): boolean {
@@ -375,6 +391,11 @@ async function onDelete() {
           class="ml-1 inline-block px-1.5 rounded text-[10px] bg-slate-800 text-slate-300"
           :title="`${instanceCounts[row.id] ?? 0} instance(s)`"
         >{{ instanceCounts[row.id] ?? 0 }} inst</span>
+        <span
+          v-if="row.tracking_mode === 'serialized' && maintenanceFor(row) > 0"
+          class="ml-1 inline-block px-1.5 rounded text-[10px] bg-amber-900/60 text-amber-200"
+          :title="`${maintenanceFor(row)} unit(s) in maintenance`"
+        >{{ maintenanceFor(row) }} maint</span>
       </template>
       <template #cell-on_hand="{ row }">
         <span class="tabular-nums text-slate-300">{{ row.quantity_on_hand ?? 0 }}</span>

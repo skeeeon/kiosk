@@ -6,6 +6,8 @@ import (
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
+
+	"github.com/skeeeon/kiosk/internal/instances"
 )
 
 // newApp boots a fresh PB instance in a temp dir with quiet bootstrap.
@@ -119,15 +121,16 @@ func TestMigrationsAreIdempotent(t *testing.T) {
 	}
 }
 
-// TestBackfillSerializedQty verifies the 1793000000 backfill sets a serialized
-// item's quantity_on_hand to its active instance count, leaves quantity-tracked
-// items alone, handles zero-instance serialized items, and is idempotent. We
-// call backfillSerializedQtyUp directly (re-running it after the initial
-// migration) so we can seed deliberately-drifted data first — the same
-// pre-migration drift the backfill exists to reconcile. Instances are seeded
-// without the recompute hook registered, so the stored quantity stays wrong
-// until the backfill runs.
-func TestBackfillSerializedQty(t *testing.T) {
+// TestRecomputeReconcilesSerializedQty verifies the live reconciliation
+// (instances.RecomputeItemQuantity) sets a serialized item's quantity_on_hand
+// to its non-retired instance count, leaves quantity-tracked items alone,
+// handles zero-instance serialized items, and is idempotent. This is the
+// forward-relevant successor to the frozen 1793000000 backfill: post-1794 the
+// derived quantity follows the status enum (in_service + maintenance count;
+// retired excluded), not the old `active` bool. Instances are seeded without
+// the recompute hook registered, so the stored quantity stays drifted until the
+// recompute runs.
+func TestRecomputeReconcilesSerializedQty(t *testing.T) {
 	app := newApp(t)
 	runner := core.NewMigrationsRunner(app, core.AppMigrations)
 	if _, err := runner.Up(); err != nil {
@@ -160,13 +163,19 @@ func TestBackfillSerializedQty(t *testing.T) {
 		rec := core.NewRecord(insts)
 		rec.Set("item", itemID)
 		rec.Set("code", code)
-		rec.Set("active", active)
+		// active maps to the post-1794 status enum: true → in_service (counts
+		// toward the derived qty), false → retired (excluded).
+		status := "in_service"
+		if !active {
+			status = "retired"
+		}
+		rec.Set("status", status)
 		if err := app.Save(rec); err != nil {
 			t.Fatalf("save instance %s: %v", code, err)
 		}
 	}
 
-	// Serialized with drifted qty: 2 active + 1 inactive → should become 2.
+	// Serialized with drifted qty: 2 in_service + 1 retired → should become 2.
 	serID := mkItem("SER-DRIFT", "serialized", 99)
 	mkInst(serID, "SER-DRIFT-1", true)
 	mkInst(serID, "SER-DRIFT-2", true)
@@ -178,9 +187,14 @@ func TestBackfillSerializedQty(t *testing.T) {
 	// Quantity-tracked item → must be left untouched.
 	qtyID := mkItem("QTY-KEEP", "quantity", 50)
 
-	if err := backfillSerializedQtyUp(app); err != nil {
-		t.Fatalf("backfill: %v", err)
+	reconcile := func() {
+		for _, id := range []string{serID, serEmptyID, qtyID} {
+			if err := instances.RecomputeItemQuantity(app, id); err != nil {
+				t.Fatalf("recompute %s: %v", id, err)
+			}
+		}
 	}
+	reconcile()
 
 	reload := func(id string) int {
 		rec, err := app.FindRecordById("items", id)
@@ -190,7 +204,7 @@ func TestBackfillSerializedQty(t *testing.T) {
 		return rec.GetInt("quantity_on_hand")
 	}
 	if got := reload(serID); got != 2 {
-		t.Errorf("serialized w/ 2 active: want qty 2, got %d", got)
+		t.Errorf("serialized w/ 2 non-retired: want qty 2, got %d", got)
 	}
 	if got := reload(serEmptyID); got != 0 {
 		t.Errorf("serialized w/ 0 instances: want qty 0, got %d", got)
@@ -199,10 +213,8 @@ func TestBackfillSerializedQty(t *testing.T) {
 		t.Errorf("quantity item: want qty 50 (untouched), got %d", got)
 	}
 
-	// Idempotent: a second run yields the same values.
-	if err := backfillSerializedQtyUp(app); err != nil {
-		t.Fatalf("backfill re-run: %v", err)
-	}
+	// Idempotent: a second pass yields the same values.
+	reconcile()
 	if got := reload(serID); got != 2 {
 		t.Errorf("after re-run: want qty 2, got %d", got)
 	}

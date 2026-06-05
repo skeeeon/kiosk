@@ -122,7 +122,7 @@ func seedFixtures(t *testing.T, app core.App) seed {
 	instA.Set("item", toolSerial.Id)
 	instA.Set("code", "DR-042-A")
 	instA.Set("serial", "SN-A")
-	instA.Set("active", true)
+	instA.Set("status", "in_service")
 	if err := app.Save(instA); err != nil {
 		t.Fatalf("save instance A: %v", err)
 	}
@@ -130,7 +130,7 @@ func seedFixtures(t *testing.T, app core.App) seed {
 	instB.Set("item", toolSerial.Id)
 	instB.Set("code", "DR-042-B")
 	instB.Set("serial", "SN-B")
-	instB.Set("active", true)
+	instB.Set("status", "in_service")
 	if err := app.Save(instB); err != nil {
 		t.Fatalf("save instance B: %v", err)
 	}

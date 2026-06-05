@@ -97,8 +97,8 @@ type EventPayload struct {
 	// JetStream redelivery (same pattern as AdjustmentID for inventory_audit).
 	InstanceID    string `json:"instance_id,omitempty"`
 	InstanceCode  string `json:"instance_code,omitempty"`
-	PrevActive    bool   `json:"prev_active,omitempty"`
-	NewActive     bool   `json:"new_active,omitempty"`
+	PrevStatus    string `json:"prev_status,omitempty"`
+	NewStatus     string `json:"new_status,omitempty"`
 	SourceAuditID string `json:"source_audit_id,omitempty"`
 }
 
@@ -238,6 +238,7 @@ func (a *Aggregator) ensureConsumer(ctx context.Context, stream jetstream.Stream
 			// digest envelopes are gone.
 			events.ReceiptTransactionFilter(),
 			events.LowStockAlertFilter(),
+			events.MaintenanceAlertFilter(),
 		},
 	}
 	return stream.CreateOrUpdateConsumer(ctx, cfg)
@@ -259,6 +260,9 @@ func (a *Aggregator) handle(ctx context.Context, msg jetstream.Msg) {
 		return
 	case strings.HasSuffix(subject, ".alert.lowstock"):
 		a.handleLowStockAlert(msg)
+		return
+	case strings.HasSuffix(subject, ".alert.maintenance"):
+		a.handleMaintenanceAlert(msg)
 		return
 	}
 
@@ -472,8 +476,8 @@ func (a *Aggregator) ProjectInstanceLifecycle(p EventPayload) projectOutcome {
 	rec.Set("instance_id", p.InstanceID)
 	rec.Set("instance_code", p.InstanceCode)
 	rec.Set("action", p.Action)
-	rec.Set("prev_active", p.PrevActive)
-	rec.Set("new_active", p.NewActive)
+	rec.Set("prev_status", p.PrevStatus)
+	rec.Set("new_status", p.NewStatus)
 	rec.Set("reason", p.Reason)
 	// Same collapse-into-one-column treatment as inventory_audit so the
 	// report table doesn't need to coalesce two fields on render.

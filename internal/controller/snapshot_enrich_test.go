@@ -105,7 +105,7 @@ func TestEnrichInstanceSnapshot_MarksOut(t *testing.T) {
 		ItemInstanceID: "inst-42", CompletedAt: t0,
 	})
 
-	raw := json.RawMessage(`{"instances":[{"instance_id":"inst-42","active":true},{"instance_id":"inst-99","active":true}]}`)
+	raw := json.RawMessage(`{"instances":[{"instance_id":"inst-42","status":"in_service"},{"instance_id":"inst-99","status":"in_service"}]}`)
 	out, err := enrichInstanceSnapshot(app, "KIOSK-A", raw)
 	if err != nil {
 		t.Fatalf("enrichInstanceSnapshot: %v", err)

@@ -98,6 +98,72 @@ func (c ReceiptContext) PayloadSummary() string {
 	return "tx " + c.Transaction.ID + " · " + strconv.Itoa(c.Transaction.LinesCount) + " lines"
 }
 
+// MaintenanceUnit is one serialized unit that entered maintenance, for the
+// alert.maintenance template's per-unit list.
+type MaintenanceUnit struct {
+	ItemCode     string
+	ItemName     string
+	InstanceCode string
+	Serial       string
+	Reason       string
+}
+
+// MaintenanceContext drives the alert.maintenance template. Built by the cart
+// commit handler — one context per transaction, listing every serialized unit
+// the return routed into maintenance. Does NOT implement WorkerEmailProvider —
+// alerts target ops.
+//
+// Ref is the dedup anchor (the transaction id), keyed by SendIfFirst so a
+// JetStream redelivery of the same batch collapses to one email per day.
+type MaintenanceContext struct {
+	Kiosk   KioskInfo
+	Units   []MaintenanceUnit
+	Trigger string // "return"
+	Ref     string
+}
+
+// PayloadSummary surfaces a compact "kiosk · N units → maintenance" line in
+// the send log.
+func (c MaintenanceContext) PayloadSummary() string {
+	return c.Kiosk.Code + " · " + strconv.Itoa(len(c.Units)) + " unit(s) → maintenance"
+}
+
+// MaintenanceDigestRow is one unit currently in maintenance, for the
+// digest.maintenance scheduled report. KioskCode is populated only on the
+// controller's fleet-wide fan-out (the row's origin kiosk); standalone runs
+// leave it empty since there's a single implicit kiosk.
+type MaintenanceDigestRow struct {
+	ItemCode     string
+	ItemName     string
+	InstanceCode string
+	Serial       string
+	Notes        string
+	KioskCode    string
+}
+
+// MaintenanceDigestContext drives the digest.maintenance template. Built by
+// the scheduler runner: standalone reads its own item_instances; the
+// controller fans out instance snapshots across online kiosks (offline ones
+// land in OfflineKiosks so the operator knows the digest is partial). Does
+// not implement WorkerEmailProvider — digests target admins.
+type MaintenanceDigestContext struct {
+	Kiosk       KioskInfo
+	GeneratedAt time.Time
+	Rows        []MaintenanceDigestRow
+	// RowsCount is duplicated from len(Rows) so templates can render counts
+	// without the {{len .Rows}} action — same convention as the other digests.
+	RowsCount int
+	// OfflineKiosks lists kiosks excluded from a controller fan-out (offline
+	// or errored). Always empty on a standalone run.
+	OfflineKiosks []string
+}
+
+// PayloadSummary surfaces a compact "kiosk · N in maintenance" line in the
+// send log.
+func (c MaintenanceDigestContext) PayloadSummary() string {
+	return c.Kiosk.Code + " · " + strconv.Itoa(c.RowsCount) + " in maintenance"
+}
+
 // OpenChecksDigestRow is one row in an open-checkouts digest. Field names
 // match the existing ledger.OpenCheckoutDTO shape so the conversion in the
 // scheduler is a simple field copy.

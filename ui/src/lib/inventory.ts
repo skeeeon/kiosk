@@ -11,8 +11,14 @@
 // Consumables have nothing "out" (no open_checkouts), so available is just the
 // raw on-hand — which is allowed to be negative when over-consumed, matching
 // the ledger-is-authoritative stance.
-export function availableFor(onHand: number, out: number, type: string): number {
-  return type === 'tool' ? Math.max(0, onHand - out) : onHand
+//
+// `maintenance` is the count of serialized units parked in maintenance: they
+// count toward on-hand (we still own them) but are not available to check out,
+// so they're subtracted alongside `out`. Quantity-tracked tools and
+// consumables have no instances, so callers pass 0 and the formula collapses to
+// the old on-hand − out. For serialized tools this yields in_service − out.
+export function availableFor(onHand: number, out: number, type: string, maintenance = 0): number {
+  return type === 'tool' ? Math.max(0, onHand - maintenance - out) : onHand
 }
 
 // isLowStock gates on a positive threshold (0 = "no threshold set, never low")

@@ -231,7 +231,9 @@ func BuildAdminClosePayload(in AdminCloseInput) map[string]any {
 }
 
 // InstanceLifecycleInput holds the fields needed to emit one instance.lifecycle
-// event. Action is "create" / "decommission" / "reactivate" / "delete".
+// event. Action is "create" / "to_maintenance" / "return_to_service" /
+// "retire" / "unretire". PrevStatus/NewStatus are the item_instances.status
+// enum (in_service | maintenance | retired); PrevStatus is empty for create.
 //
 // SourceAuditID is the kiosk-side instance_audit.id of the row this event
 // corresponds to. It's the idempotency anchor for the controller-side
@@ -245,9 +247,9 @@ type InstanceLifecycleInput struct {
 	ItemName          string
 	KioskCode         string
 	LocationCode      string
-	Action            string // create | decommission | reactivate | delete
-	PrevActive        bool
-	NewActive         bool
+	Action            string // create | to_maintenance | return_to_service | retire | unretire
+	PrevStatus        string
+	NewStatus         string
 	Reason            string
 	Source            string // "local" | "controller"
 	AdminID           string
@@ -269,8 +271,8 @@ func BuildInstanceLifecyclePayload(in InstanceLifecycleInput) map[string]any {
 		"kiosk_code":          in.KioskCode,
 		"location_code":       in.LocationCode,
 		"action":              in.Action,
-		"prev_active":         in.PrevActive,
-		"new_active":          in.NewActive,
+		"prev_status":         in.PrevStatus,
+		"new_status":          in.NewStatus,
 		"reason":              in.Reason,
 		"source":              in.Source,
 		"admin_id":            in.AdminID,

@@ -103,8 +103,8 @@ These started as deferred roadmap items and are now live in the binary:
   ledger. New `action="admin_close"` on `transaction_lines` plus a
   `closure_reason` enum; `lost` / `damaged` drop the item's inventory
   count — for quantity-tracked items by writing a `stock_adjustments`
-  row, for serialized items by decommissioning the instance (whose
-  active count the derived quantity follows; no `stock_adjustments` row)
+  row, for serialized items by retiring the instance (whose
+  non-retired count the derived quantity follows; no `stock_adjustments` row)
   — atomic with the close. The kiosk endpoint and the
   controller's NATS-forwarded `checkout.close` command both converge
   on `commit.AdminClose`, so a controller-driven close on a remote
@@ -112,14 +112,28 @@ These started as deferred roadmap items and are now live in the binary:
   side-effects).
 - **Instance lifecycle audit + parity.** New `instance_audit`
   collection on each kiosk, written by PB record hooks on
-  `item_instances` (create / decommission / reactivate / delete;
-  cosmetic edits skip). Lifecycle changes also publish
+  `item_instances` (create / to_maintenance / return_to_service /
+  retire / unretire; cosmetic edits skip). Lifecycle changes also publish
   `instance.lifecycle` events; the controller projects them into a
   fleet-wide `instance_lifecycle_audit` collection (idempotent via
   `source_audit_id`). The SPA's Instance lifecycle Reports tab is
   visible on both binaries against the appropriate collection so a
   managed kiosk's admin gets the same visibility a standalone
   kiosk's admin does.
+- **Serialized maintenance workflow.** `item_instances.active` (bool)
+  became a 3-state `status` enum (`in_service` / `maintenance` /
+  `retired`); units are never hard-deleted (retire instead, so the
+  ledger's FKs stay alive). A maintenance unit counts toward
+  `quantity_on_hand` but not toward `available`. Returns can route a
+  unit straight into maintenance three ways: a per-SKU
+  `items.requires_maintenance_on_return` opt-in, a per-line "needs
+  maintenance" toggle any worker can set, or a manual admin
+  "send to maintenance." A batched `alert.maintenance` notification
+  (one email per transaction) and a `digest.maintenance` scheduled
+  report ("Items in maintenance") round it out. Controller and kiosk
+  reach parity: the single `instance.set_status` command/endpoint
+  replaces the old decommission/reactivate pair, and the Instances tab
+  shows per-unit status.
 - **Worker self-service ("What you have out").** The `/api/kiosk/scan`
   response now hydrates the scanned worker's outstanding
   `open_checkouts`; the CheckoutView surfaces a collapsible panel

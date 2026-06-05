@@ -28,6 +28,12 @@ type InstanceState struct {
 	// caller uses this to decide self-return vs cross-user-return
 	// synthesis; the diff itself just carries it through.
 	CheckoutUserID string
+	// Eligible is true when the instance is checkout-eligible (status
+	// in_service). A maintenance unit is still expected-present (it's
+	// physically in the enclosure) but NOT eligible: if it leaves, the
+	// diff records it as skipped rather than synthesizing a checkout that
+	// commit would reject.
+	Eligible bool
 }
 
 // DiffEntry identifies one instance affected by the diff. The handler
@@ -65,6 +71,11 @@ type DiffResult struct {
 	// on event.scan.rfid.observed for audit, but they never affect
 	// the cart.
 	Unresolved []EPC
+	// SkippedIneligible: instances that left the enclosure but aren't
+	// checkout-eligible (a maintenance unit). Recorded instead of
+	// synthesized as a checkout (commit would reject it). The handler
+	// surfaces the count to the operator.
+	SkippedIneligible []DiffEntry
 }
 
 // Diff reconciles observed EPCs against expected-present state for a
@@ -81,9 +92,10 @@ type DiffResult struct {
 // O(n+m) overall.
 func Diff(observed []EPC, expected []InstanceState) DiffResult {
 	res := DiffResult{
-		Checkouts:  []DiffEntry{},
-		Returns:    []DiffEntry{},
-		Unresolved: []EPC{},
+		Checkouts:         []DiffEntry{},
+		Returns:           []DiffEntry{},
+		Unresolved:        []EPC{},
+		SkippedIneligible: []DiffEntry{},
 	}
 
 	// Set lookups for the two axes. observedSet for "was this EPC seen";
@@ -117,12 +129,20 @@ func Diff(observed []EPC, expected []InstanceState) DiffResult {
 		_, wasObserved := observedSet[inst.EPC]
 		switch {
 		case !inst.IsCheckedOut && !wasObserved:
-			// Expected present, not seen → it left the enclosure.
-			res.Checkouts = append(res.Checkouts, DiffEntry{
+			// Expected present, not seen → it left the enclosure. Only
+			// checkout-eligible (in_service) units become a checkout; a
+			// maintenance unit that left is recorded as skipped, since
+			// commit would reject a checkout of a non-in_service unit.
+			entry := DiffEntry{
 				InstanceID: inst.InstanceID,
 				ItemID:     inst.ItemID,
 				EPC:        inst.EPC,
-			})
+			}
+			if inst.Eligible {
+				res.Checkouts = append(res.Checkouts, entry)
+			} else {
+				res.SkippedIneligible = append(res.SkippedIneligible, entry)
+			}
 		case inst.IsCheckedOut && wasObserved:
 			// Was checked out, came back.
 			res.Returns = append(res.Returns, DiffEntry{

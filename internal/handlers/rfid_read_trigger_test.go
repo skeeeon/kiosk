@@ -24,17 +24,17 @@ import (
 //
 // Plus one unknown EPC for the unresolved path.
 type rfidDiffSeed struct {
-	WorkerID         string
-	StayingID        string
-	LeavingID        string
-	ReturningID      string
-	StayingEPC       string
-	LeavingEPC       string
-	ReturningEPC     string
-	UnknownEPC       string
-	Cart             *cart.Cart
-	H                *handlers.Handlers
-	Reader           *fakeReader
+	WorkerID     string
+	StayingID    string
+	LeavingID    string
+	ReturningID  string
+	StayingEPC   string
+	LeavingEPC   string
+	ReturningEPC string
+	UnknownEPC   string
+	Cart         *cart.Cart
+	H            *handlers.Handlers
+	Reader       *fakeReader
 }
 
 func seedRFIDDiff(t *testing.T) (core.App, rfidDiffSeed) {
@@ -77,7 +77,7 @@ func seedRFIDDiff(t *testing.T) (core.App, rfidDiffSeed) {
 	staying.Set("code", "WRENCH-A")
 	staying.Set("serial", "SN-A")
 	staying.Set("rfid_epc", stayingEPC)
-	staying.Set("active", true)
+	staying.Set("status", "in_service")
 	if err := app.Save(staying); err != nil {
 		t.Fatalf("save staying instance: %v", err)
 	}
@@ -87,7 +87,7 @@ func seedRFIDDiff(t *testing.T) (core.App, rfidDiffSeed) {
 	leaving.Set("code", "WRENCH-B")
 	leaving.Set("serial", "SN-B")
 	leaving.Set("rfid_epc", leavingEPC)
-	leaving.Set("active", true)
+	leaving.Set("status", "in_service")
 	if err := app.Save(leaving); err != nil {
 		t.Fatalf("save leaving instance: %v", err)
 	}
@@ -97,7 +97,7 @@ func seedRFIDDiff(t *testing.T) (core.App, rfidDiffSeed) {
 	returning.Set("code", "WRENCH-C")
 	returning.Set("serial", "SN-C")
 	returning.Set("rfid_epc", returningEPC)
-	returning.Set("active", true)
+	returning.Set("status", "in_service")
 	if err := app.Save(returning); err != nil {
 		t.Fatalf("save returning instance: %v", err)
 	}

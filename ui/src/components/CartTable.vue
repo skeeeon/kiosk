@@ -6,7 +6,7 @@ import { useKioskIdentity } from '../composables/useKioskIdentity'
 defineProps<{ lines: CartLine[] }>()
 
 const emit = defineEmits<{
-  update: [id: string, patch: { qty?: number; action?: CartAction }]
+  update: [id: string, patch: { qty?: number; action?: CartAction; request_maintenance?: boolean }]
   remove: [id: string]
 }>()
 
@@ -137,6 +137,22 @@ function warningClasses(w: string): string {
       >
         Foreman return: {{ line.original_checkout_user_name || 'another worker' }}
       </div>
+
+      <!-- Needs-maintenance toggle: serialized return lines only. Any worker
+           can flag the unit so commit routes it into maintenance after the
+           return. -->
+      <label
+        v-if="line.tracking_mode === 'serialized' && line.action === 'return'"
+        class="flex items-center gap-2 rounded-lg bg-slate-950/60 border border-slate-800 text-slate-300 text-sm px-3 py-2 cursor-pointer"
+      >
+        <input
+          type="checkbox"
+          class="w-4 h-4"
+          :checked="line.request_maintenance ?? false"
+          @change="emit('update', line.id, { request_maintenance: ($event.target as HTMLInputElement).checked })"
+        />
+        Needs maintenance — hold this unit out of service after return
+      </label>
 
       <!-- Other warnings stay full-width below. -->
       <div

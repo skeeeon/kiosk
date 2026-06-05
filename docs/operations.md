@@ -146,9 +146,10 @@ capturing who/what/why. Past adjustments for an item are viewable via
 the **View adjustment history** link below the threshold field.
 
 Serialized items have **no** Adjust button: their `quantity_on_hand` is
-derived from the count of active instances and isn't directly editable.
-The item dialog shows it read-only as "Units in service"; change it by
-adding, decommissioning, reactivating, or deleting instances (see
+derived from the count of non-retired instances (in service + maintenance)
+and isn't directly editable. The item dialog shows it read-only as "Units
+in service"; change it by adding instances or moving them through their
+lifecycle — send to maintenance, return to service, retire, un-retire (see
 [Managing instances of serialized tools](#managing-instances-of-serialized-tools)
 below). The `/adjust` endpoint and the controller's `inventory.adjust`
 command both reject serialized items.
@@ -199,20 +200,27 @@ unit:
   workers actually scan. Wins over the SKU code on collision.
 - **Serial** — the printed serial label (informational).
 - **RFID EPC** — optional tag; resolves through the same scan dispatcher.
-- **Active** — uncheck to retire a unit without breaking ledger history.
+- **Status** — the lifecycle state: `in_service` (checkout-eligible),
+  `maintenance` (parked at the bench — still owned/on-hand but not
+  available), or `retired` (out of service, reversibly). Each row offers
+  only the transitions valid for its current status: **Send to
+  maintenance** / **Return to service** / **Retire** / **Un-retire**.
 
-Deleting an instance is blocked while it has an open checkout (return
-it first) and gracefully declines when the ledger holds an FK ("uncheck
-Active to retire instead"). The Items list shows an `N inst` badge next
-to the tracking mode for serialized rows so an admin can see at a
-glance how many physical units exist per SKU.
+Units are **never hard-deleted** — retire them instead, which preserves
+ledger history. A `requires_maintenance_on_return` flag on the SKU (and a
+per-return "needs maintenance" toggle any worker can set) routes returned
+units straight into maintenance. The Items list shows an `N inst` badge
+(plus an amber `N maint` badge when any units are in maintenance) next to
+the tracking mode for serialized rows so an admin can see at a glance how
+many physical units exist per SKU.
 
-Each of these lifecycle changes — create, decommission, reactivate,
-delete — recomputes the parent SKU's `quantity_on_hand` to the current
-count of **active** instances. That's the only way a serialized SKU's
+Each of these lifecycle changes — create, to_maintenance,
+return_to_service, retire, unretire — recomputes the parent SKU's
+`quantity_on_hand` to the current count of **non-retired** instances
+(in service + maintenance). That's the only way a serialized SKU's
 quantity moves; it can't be hand-adjusted. A `lost`/`damaged` admin
-close of a serialized unit decommissions its instance the same way, so
-the derived quantity drops by one without writing a `stock_adjustments`
+close of a serialized unit retires its instance the same way, so the
+derived quantity drops by one without writing a `stock_adjustments`
 row.
 
 ## Resetting the bootstrap admin password

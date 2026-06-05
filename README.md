@@ -41,9 +41,19 @@ it via config. See [docs/controller.md](docs/controller.md).
   barcode, printed serial, RFID tag). Returns close the exact instance
   scanned, so three impact drivers under one SKU don't blur together.
   A serialized SKU's `quantity_on_hand` is **derived** — it tracks the
-  count of active instances automatically as units are added,
-  decommissioned, reactivated, or deleted — so it isn't directly
+  count of non-retired instances (in service + maintenance) automatically
+  as units move through their lifecycle (added, sent to maintenance,
+  returned to service, retired, un-retired) — so it isn't directly
   adjustable (the `/adjust` endpoint rejects serialized items).
+- **Maintenance mode for serialized units.** Each unit carries a
+  lifecycle `status` (`in_service` / `maintenance` / `retired`).
+  Returned tools can be parked in maintenance — automatically per-SKU
+  (`requires_maintenance_on_return`) or via a per-return "needs
+  maintenance" toggle any worker can flip — where they still count as
+  on-hand but aren't available to check out until an admin returns them
+  to service. Units are never deleted; they retire (reversibly). Entry
+  fires a batched one-per-transaction email alert, and a scheduled
+  "items in maintenance" digest is available.
 - **Optional RFID flows.** A networked LLRP reader (Impinj R700 or
   similar) drives either of two modes: **`counter_scan`** turns the
   reader into a bulk barcode-gun equivalent — operator hits "RFID

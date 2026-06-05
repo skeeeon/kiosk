@@ -91,7 +91,11 @@ export interface ItemInstance {
   code: string
   serial?: string
   rfid_epc?: string
-  active: boolean
+  // Lifecycle state. Replaces the old `active` boolean: in_service is
+  // checkout-eligible, maintenance is owned-but-parked (counts toward on-hand,
+  // not available), retired absorbs the old active=false + the removed hard
+  // delete. "Out" is NOT here — it's derived from open_checkouts.
+  status: 'in_service' | 'maintenance' | 'retired'
   notes?: string
 }
 
@@ -122,6 +126,11 @@ export interface CartLine {
   item_instance_code?: string
   original_checkout_user_id?: string
   original_checkout_user_name?: string
+  // Per-line "this serialized unit needs maintenance on return" flag. Any
+  // worker can set it on a serialized return line; commit routes the unit into
+  // maintenance after closing the open checkout. Server-side field is
+  // request_maintenance (omitempty).
+  request_maintenance?: boolean
   warnings?: string[]
 }
 
@@ -194,6 +203,10 @@ export interface ItemRecord {
   notes: string
   quantity_on_hand: number
   reorder_threshold: number
+  // Serialized-only: when true, a return routes the unit into maintenance
+  // automatically (in addition to the per-line "needs maintenance" toggle any
+  // worker can set). Ignored for quantity-tracked items and consumables.
+  requires_maintenance_on_return?: boolean
   created?: string
   updated?: string
 }
@@ -223,7 +236,7 @@ export interface RecipientsSpec {
 
 export interface ScheduledReportRecord {
   id: string
-  report_key: 'open_checkouts' | 'daily_activity'
+  report_key: 'open_checkouts' | 'daily_activity' | 'maintenance'
   cadence: 'daily' | 'weekly' | 'monthly'
   hour: number
   weekday: number
@@ -302,6 +315,10 @@ export interface InventorySnapshotItem {
   // `type` distinguishes tools (which have "out") from consumables.
   out: number
   type: 'tool' | 'consumable'
+  // Serialized-only: count of units parked in maintenance. Carried straight
+  // from the kiosk's snapshot (the controller passes unknown fields through).
+  // Subtracted from available alongside `out`; 0 for quantity/consumable items.
+  maintenance?: number
 }
 
 export interface InventorySnapshotResponse {

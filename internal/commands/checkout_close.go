@@ -98,4 +98,3 @@ func (d *Dispatcher) handleCheckoutClose(_ context.Context, payload []byte) Repl
 		ClosureReason:  result.ClosureReason,
 	}}
 }
-

@@ -29,14 +29,14 @@ func TestDiff_StateSpace(t *testing.T) {
 		{
 			name: "expected present + observed → no-op",
 			expected: []InstanceState{
-				{InstanceID: instID, ItemID: itemID, EPC: epc, IsCheckedOut: false},
+				{InstanceID: instID, ItemID: itemID, EPC: epc, IsCheckedOut: false, Eligible: true},
 			},
 			observed: []EPC{epc},
 		},
 		{
 			name: "expected present + NOT observed → checkout",
 			expected: []InstanceState{
-				{InstanceID: instID, ItemID: itemID, EPC: epc, IsCheckedOut: false},
+				{InstanceID: instID, ItemID: itemID, EPC: epc, IsCheckedOut: false, Eligible: true},
 			},
 			observed:      nil,
 			wantCheckouts: 1,
@@ -110,9 +110,9 @@ func TestDiff_StateSpace(t *testing.T) {
 func TestDiff_MixedBatch(t *testing.T) {
 	expected := []InstanceState{
 		// Stays in enclosure
-		{InstanceID: "i-stay", ItemID: "drill", EPC: "stay-epc", IsCheckedOut: false},
+		{InstanceID: "i-stay", ItemID: "drill", EPC: "stay-epc", IsCheckedOut: false, Eligible: true},
 		// Leaves the enclosure during this visit
-		{InstanceID: "i-leave", ItemID: "drill", EPC: "leave-epc", IsCheckedOut: false},
+		{InstanceID: "i-leave", ItemID: "drill", EPC: "leave-epc", IsCheckedOut: false, Eligible: true},
 		// Was out, returned this visit
 		{InstanceID: "i-return", ItemID: "saw", EPC: "return-epc", IsCheckedOut: true, CheckoutUserID: "alice"},
 		// Was out, stays out (not in the enclosure during this visit)
@@ -134,6 +134,26 @@ func TestDiff_MixedBatch(t *testing.T) {
 	}
 	if len(got.Unresolved) != 1 || got.Unresolved[0] != "unknown-epc" {
 		t.Errorf("Unresolved: want [unknown-epc], got %v", got.Unresolved)
+	}
+}
+
+// TestDiff_MaintenanceUnitDeparting_Skipped: a unit that is expected-present
+// but NOT checkout-eligible (status=maintenance) and leaves the enclosure is
+// recorded in SkippedIneligible, never synthesized as a checkout — commit
+// would reject a checkout of a non-in_service unit. An eligible unit in the
+// same read still checks out, proving the routing is per-instance.
+func TestDiff_MaintenanceUnitDeparting_Skipped(t *testing.T) {
+	expected := []InstanceState{
+		{InstanceID: "i-maint", ItemID: "drill", EPC: "maint-epc", IsCheckedOut: false, Eligible: false},
+		{InstanceID: "i-ok", ItemID: "drill", EPC: "ok-epc", IsCheckedOut: false, Eligible: true},
+	}
+	got := Diff(nil, expected) // neither observed → both left the enclosure
+
+	if len(got.Checkouts) != 1 || got.Checkouts[0].InstanceID != "i-ok" {
+		t.Errorf("Checkouts: want [i-ok], got %v", got.Checkouts)
+	}
+	if len(got.SkippedIneligible) != 1 || got.SkippedIneligible[0].InstanceID != "i-maint" {
+		t.Errorf("SkippedIneligible: want [i-maint], got %v", got.SkippedIneligible)
 	}
 }
 
@@ -161,9 +181,9 @@ func TestDiff_NoActiveInventory(t *testing.T) {
 // initialization is right.
 func TestDiff_NothingObserved_AllExpected(t *testing.T) {
 	expected := []InstanceState{
-		{InstanceID: "a", EPC: "a-epc"},
-		{InstanceID: "b", EPC: "b-epc"},
-		{InstanceID: "c", EPC: "c-epc"},
+		{InstanceID: "a", EPC: "a-epc", Eligible: true},
+		{InstanceID: "b", EPC: "b-epc", Eligible: true},
+		{InstanceID: "c", EPC: "c-epc", Eligible: true},
 	}
 	got := Diff(nil, expected)
 	if len(got.Checkouts) != 3 {
@@ -179,7 +199,7 @@ func TestDiff_NothingObserved_AllExpected(t *testing.T) {
 // the diff's contract says the slices are always there.
 func TestDiff_ResultSlicesAlwaysNonNil(t *testing.T) {
 	got := Diff(nil, nil)
-	if got.Checkouts == nil || got.Returns == nil || got.Unresolved == nil {
+	if got.Checkouts == nil || got.Returns == nil || got.Unresolved == nil || got.SkippedIneligible == nil {
 		t.Errorf("all result slices should be non-nil even when empty; got %+v", got)
 	}
 }

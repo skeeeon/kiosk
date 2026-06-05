@@ -43,13 +43,13 @@ func newFake() *fakeLookups {
 		},
 		instancesByCode: map[string]*InstanceMatch{
 			"DR-042-B": {
-				Instance: &ItemInstance{ID: "inst-B", ItemID: "i1", Code: "DR-042-B", Serial: "SN-B", Active: true},
+				Instance: &ItemInstance{ID: "inst-B", ItemID: "i1", Code: "DR-042-B", Serial: "SN-B", Status: "in_service"},
 				Item:     item1,
 			},
 		},
 		instancesByRFID: map[string]*InstanceMatch{
 			"E280-INST-XYZ": {
-				Instance: &ItemInstance{ID: "inst-B", ItemID: "i1", Code: "DR-042-B", RFIDEPC: "E280-INST-XYZ", Active: true},
+				Instance: &ItemInstance{ID: "inst-B", ItemID: "i1", Code: "DR-042-B", RFIDEPC: "E280-INST-XYZ", Status: "in_service"},
 				Item:     item1,
 			},
 		},
@@ -161,7 +161,7 @@ func TestResolve(t *testing.T) {
 			value:    "DR-042-B",
 			wantType: ResultItemInstance,
 			wantRecord: &InstanceMatch{
-				Instance: &ItemInstance{ID: "inst-B", ItemID: "i1", Code: "DR-042-B", Serial: "SN-B", Active: true},
+				Instance: &ItemInstance{ID: "inst-B", ItemID: "i1", Code: "DR-042-B", Serial: "SN-B", Status: "in_service"},
 				Item:     &Item{ID: "i1", Code: "DR-042", Name: "Impact Driver", Type: "tool", TrackingMode: "serialized"},
 			},
 			wantCalls: []string{"ItemInstanceByCode:DR-042-B"},
@@ -171,7 +171,7 @@ func TestResolve(t *testing.T) {
 			value:    "E280-INST-XYZ",
 			wantType: ResultItemInstance,
 			wantRecord: &InstanceMatch{
-				Instance: &ItemInstance{ID: "inst-B", ItemID: "i1", Code: "DR-042-B", RFIDEPC: "E280-INST-XYZ", Active: true},
+				Instance: &ItemInstance{ID: "inst-B", ItemID: "i1", Code: "DR-042-B", RFIDEPC: "E280-INST-XYZ", Status: "in_service"},
 				Item:     &Item{ID: "i1", Code: "DR-042", Name: "Impact Driver", Type: "tool", TrackingMode: "serialized"},
 			},
 			wantCalls: []string{

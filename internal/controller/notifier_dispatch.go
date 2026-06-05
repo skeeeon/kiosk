@@ -86,3 +86,33 @@ func (a *Aggregator) handleLowStockAlert(msg jetstream.Msg) {
 	a.notifier.SendIfFirst(notifications.EventTypeLowStock, ctx.Item.ID, ctx)
 	_ = msg.Ack()
 }
+
+// handleMaintenanceAlert renders + sends a maintenance alert. The kiosk
+// batches one context per transaction (every serialized unit a return routed
+// into maintenance) and only publishes when at least one unit entered
+// maintenance, so the controller's job is purely render + send + log. Dedup
+// keys on Ref (the transaction id) so a redelivery collapses to one email.
+func (a *Aggregator) handleMaintenanceAlert(msg jetstream.Msg) {
+	var ctx notifications.MaintenanceContext
+	if err := unmarshalMsg(msg, &ctx); err != nil {
+		slog.Warn("controller.notifier.maintenance_bad_payload",
+			"subject", msg.Subject(), "error", err)
+		_ = msg.Term()
+		return
+	}
+	if ctx.Ref == "" || ctx.Kiosk.Code == "" || len(ctx.Units) == 0 {
+		slog.Warn("controller.notifier.maintenance_missing_fields",
+			"subject", msg.Subject(),
+			"ref", ctx.Ref,
+			"kiosk_code", ctx.Kiosk.Code,
+			"units", len(ctx.Units))
+		_ = msg.Term()
+		return
+	}
+	if a.notifier == nil {
+		_ = msg.Ack()
+		return
+	}
+	a.notifier.SendIfFirst(notifications.EventTypeMaintenanceEntered, ctx.Ref, ctx)
+	_ = msg.Ack()
+}

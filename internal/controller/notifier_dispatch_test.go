@@ -92,4 +92,3 @@ func TestControllerNotifier_ReceiptDedupes(t *testing.T) {
 	}
 	t.Fatalf("dedupe row never appeared for tx-smoke-1 — controller notifier wiring is broken")
 }
-

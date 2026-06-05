@@ -111,7 +111,10 @@ func (h *Handlers) addCodeToCart(cartID, code string) (*cart.Cart, *cart.Line, e
 	if item.GetString("tracking_mode") == "serialized" && instance == nil {
 		return nil, nil, errSerializedNeedsInstance
 	}
-	if instance != nil && !instance.GetBool("active") {
+	if instance != nil && instance.GetString("status") != "in_service" {
+		// Retired or in maintenance — not transactable at the kiosk until an
+		// admin returns it to service. (A maintenance unit is physically back
+		// already; it shouldn't be re-checked-out or re-returned.)
 		return nil, nil, errInstanceInactive
 	}
 
@@ -166,7 +169,7 @@ var (
 	errCartNotFound            = errors.New("cart not found or expired")
 	errCodeNotFound            = errors.New("code not found")
 	errItemInactive            = errors.New("item is inactive")
-	errInstanceInactive        = errors.New("instance is inactive")
+	errInstanceInactive        = errors.New("instance is not in service")
 	errSerializedNeedsInstance = errors.New("serialized item needs a specific instance")
 )
 
@@ -184,7 +187,7 @@ func cartAddErrorToResponse(re *core.RequestEvent, err error) error {
 	case errors.Is(err, errItemInactive):
 		return re.BadRequestError("item is inactive", nil)
 	case errors.Is(err, errInstanceInactive):
-		return re.BadRequestError("instance is inactive", nil)
+		return re.BadRequestError("this unit isn't available — it may be in maintenance or retired", nil)
 	case errors.Is(err, errSerializedNeedsInstance):
 		return re.BadRequestError("select a specific unit (instance) for this serialized item", nil)
 	case errors.Is(err, cart.ErrQtyOutOfRange):
@@ -442,12 +445,17 @@ func (h *Handlers) CartUpdateLine(re *core.RequestEvent) error {
 	var body struct {
 		Qty    *int    `json:"qty,omitempty"`
 		Action *string `json:"action,omitempty"`
+		// RequestMaintenance flags a serialized return line so commit routes
+		// the returned unit into maintenance instead of back to in_service.
+		// Inert on non-serialized / non-return lines — commit only honors it
+		// for serialized returns, so no extra validation is needed here.
+		RequestMaintenance *bool `json:"request_maintenance,omitempty"`
 	}
 	if err := re.BindBody(&body); err != nil {
 		return re.BadRequestError("invalid request body", err)
 	}
-	if body.Qty == nil && body.Action == nil {
-		return re.BadRequestError("at least one of qty, action is required", nil)
+	if body.Qty == nil && body.Action == nil && body.RequestMaintenance == nil {
+		return re.BadRequestError("at least one of qty, action, request_maintenance is required", nil)
 	}
 	if body.Qty != nil && (*body.Qty < 1 || *body.Qty > cart.MaxQty) {
 		return re.BadRequestError(fmt.Sprintf("qty must be between 1 and %d", cart.MaxQty), nil)
@@ -460,7 +468,7 @@ func (h *Handlers) CartUpdateLine(re *core.RequestEvent) error {
 		}
 	}
 
-	c, line, err := h.Carts.UpdateLine(lineID, body.Qty, body.Action)
+	c, line, err := h.Carts.UpdateLine(lineID, body.Qty, body.Action, body.RequestMaintenance)
 	if err != nil {
 		switch {
 		case errors.Is(err, cart.ErrQtyOutOfRange):
@@ -552,10 +560,47 @@ func (h *Handlers) CartCommit(re *core.RequestEvent) error {
 		}
 	}
 	h.fireLowStockAlerts(c, id)
+	h.fireMaintenanceAlert(id, result)
 
 	_ = h.Carts.Delete(body.CartID)
 	h.CartEvents.Close(body.CartID)
 	return re.JSON(http.StatusOK, result)
+}
+
+// fireMaintenanceAlert sends ONE batched alert per transaction listing the
+// serialized units a return routed into maintenance (per-SKU opt-in or a
+// per-line flag). Managed mode publishes the context to the controller;
+// standalone uses the local notifier. Dedup keys on the transaction id so a
+// JetStream redelivery collapses to one email.
+//
+// Worker-return-triggered only. A manual admin "send to maintenance" is
+// initiated by ops (who already know), so it isn't emailed — it still writes
+// the instance_audit row and emits the instance.lifecycle event.
+func (h *Handlers) fireMaintenanceAlert(id kioskctx.Identity, result *commit.Result) {
+	if result == nil || len(result.MaintenanceEntered) == 0 {
+		return
+	}
+	units := make([]notifications.MaintenanceUnit, 0, len(result.MaintenanceEntered))
+	for _, m := range result.MaintenanceEntered {
+		units = append(units, notifications.MaintenanceUnit{
+			ItemCode:     m.ItemCode,
+			ItemName:     m.ItemName,
+			InstanceCode: m.InstanceCode,
+			Serial:       m.Serial,
+			Reason:       m.Reason,
+		})
+	}
+	ctx := notifications.MaintenanceContext{
+		Kiosk:   notifications.KioskInfo{Code: id.KioskCode, LocationCode: id.LocationCode},
+		Units:   units,
+		Trigger: "return",
+		Ref:     result.TransactionID,
+	}
+	if h.Cfg.Controller.Enabled {
+		events.Publish(events.MaintenanceAlertSubject(id.KioskCode), ctx)
+	} else if h.Notifier != nil {
+		h.Notifier.SendIfFirst(notifications.EventTypeMaintenanceEntered, ctx.Ref, ctx)
+	}
 }
 
 // fireLowStockAlerts inspects the just-committed cart for consume lines

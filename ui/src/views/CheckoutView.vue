@@ -421,7 +421,7 @@ async function onScan(raw: string) {
   }
 }
 
-async function onUpdate(id: string, patch: { qty?: number; action?: CartAction }) {
+async function onUpdate(id: string, patch: { qty?: number; action?: CartAction; request_maintenance?: boolean }) {
   try {
     await c.updateLine(id, patch)
   } catch (e) {

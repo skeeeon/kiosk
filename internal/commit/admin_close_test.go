@@ -581,18 +581,18 @@ func TestAdminClose_Lost_Serialized_DecommissionsInstance(t *testing.T) {
 		t.Fatalf("AdminClose: %v", err)
 	}
 
-	// Instance is flipped to active=false.
+	// Instance is flipped to status=retired.
 	inst, err := app.FindRecordById("item_instances", instanceID)
 	if err != nil {
 		t.Fatalf("find instance: %v", err)
 	}
-	if inst.GetBool("active") {
-		t.Errorf("instance.active: want false, got true (lost must decommission)")
+	if got := inst.GetString("status"); got != "retired" {
+		t.Errorf("instance.status: want retired, got %q (lost must retire)", got)
 	}
 
-	// instance_audit row with action=decommission exists.
+	// instance_audit row with action=retire exists.
 	auditRows, err := app.FindRecordsByFilter("instance_audit",
-		"item_instance = {:i} && action = 'decommission'",
+		"item_instance = {:i} && action = 'retire'",
 		"", 0, 0, dbx.Params{"i": instanceID})
 	if err != nil || len(auditRows) != 1 {
 		t.Fatalf("instance_audit rows: len=%d err=%v", len(auditRows), err)
@@ -600,14 +600,14 @@ func TestAdminClose_Lost_Serialized_DecommissionsInstance(t *testing.T) {
 	if got := auditRows[0].GetString("reason"); got != "admin_close: lost" {
 		t.Errorf("instance_audit.reason: want %q, got %q", "admin_close: lost", got)
 	}
-	if got := auditRows[0].GetBool("prev_active"); got != true {
-		t.Errorf("instance_audit.prev_active: want true, got %v", got)
+	if got := auditRows[0].GetString("prev_status"); got != "in_service" {
+		t.Errorf("instance_audit.prev_status: want in_service, got %q", got)
 	}
 
-	// Serialized items derive quantity from the active instance count, so a
-	// lost/damaged close decommissions the instance but writes NO
-	// stock_adjustments row (the quantity drop is materialized by the
-	// instances recompute hook off the decommission, not by an adjustment).
+	// Serialized items derive quantity from the non-retired instance count, so a
+	// lost/damaged close retires the instance but writes NO stock_adjustments
+	// row (the quantity drop is materialized by the instances recompute hook
+	// off the retire, not by an adjustment).
 	if adjs := findStockAdjustmentsForItem(t, app, s.ToolSerialID); len(adjs) != 0 {
 		t.Errorf("stock_adjustments rows for serialized close: want 0, got %d", len(adjs))
 	}

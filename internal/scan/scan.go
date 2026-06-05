@@ -71,8 +71,10 @@ type ItemInstance struct {
 	Code    string `json:"code"`
 	Serial  string `json:"serial,omitempty"`
 	RFIDEPC string `json:"rfid_epc,omitempty"`
-	Active  bool   `json:"active"`
-	Notes   string `json:"notes,omitempty"`
+	// Status is the lifecycle state (in_service / maintenance / retired);
+	// replaces the old `active` boolean. Checkout eligibility is in_service.
+	Status string `json:"status"`
+	Notes  string `json:"notes,omitempty"`
 }
 
 // InstanceMatch bundles an instance with its already-loaded parent item so

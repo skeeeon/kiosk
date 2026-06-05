@@ -50,6 +50,19 @@ type reportRunner func(app core.App, row *core.Record) (eventType string, data a
 var reportRunners = map[string]reportRunner{
 	"open_checkouts": runOpenCheckoutsDigest,
 	"daily_activity": runDailyActivityDigest,
+	"maintenance":    runMaintenanceDigest,
+}
+
+// RegisterRunner installs or overrides the runner for a report key. The
+// controller binary uses it to swap the standalone maintenance digest's
+// local item_instances query (runMaintenanceDigest) for a live fleet-wide
+// snapshot fan-out it can't express here (the runner signature carries no
+// NATS conn / heartbeat registry). Call during boot before any cron fires;
+// runOnce reads the map at fire time, so the override need not precede
+// RegisterEnabled — only the first fire. The map is written once at startup
+// and read-only thereafter, matching the package-init population above.
+func RegisterRunner(key string, runner func(app core.App, row *core.Record) (eventType string, data any, err error)) {
+	reportRunners[key] = runner
 }
 
 // RunReport is the exported entry point that resolves a report key to its

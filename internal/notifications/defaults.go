@@ -16,8 +16,10 @@ package notifications
 const (
 	EventTypeReceiptTransaction = "receipt.transaction"
 	EventTypeLowStock           = "alert.lowstock"
+	EventTypeMaintenanceEntered = "alert.maintenance"
 	EventTypeOpenChecksDigest   = "digest.open_checkouts"
 	EventTypeDailyActivity      = "digest.daily_activity"
+	EventTypeMaintenanceDigest  = "digest.maintenance"
 )
 
 // DefaultReceiptSubject and DefaultReceiptBody are the v1 receipt template.
@@ -86,6 +88,36 @@ This alert fires once per item per day. Adjust the reorder threshold or
 deactivate the template if the dedupe window is too tight.
 `
 
+// DefaultMaintenanceSubject and DefaultMaintenanceBody render against
+// MaintenanceContext (see internal/notifications/context.go). One alert per
+// transaction lists every unit a return routed into maintenance.
+const DefaultMaintenanceSubject = `Maintenance at {{.Kiosk.Code}}: {{len .Units}} {{pluralize (len .Units) "unit"}}`
+
+const DefaultMaintenanceBody = `{{len .Units}} {{pluralize (len .Units) "unit"}} entered maintenance at kiosk {{.Kiosk.Code}} ({{.Kiosk.LocationCode}}) — trigger: {{.Trigger}}.
+
+{{range .Units}}- {{.ItemName}} ({{.ItemCode}}) — unit {{.InstanceCode}}{{if .Serial}} [serial: {{.Serial}}]{{end}} — {{.Reason}}
+{{end}}
+These units are out of service until an admin returns them to service in the kiosk admin SPA.
+`
+
+// DefaultMaintenanceDigestSubject and DefaultMaintenanceDigestBody render
+// against MaintenanceDigestContext (see internal/notifications/context.go).
+// The scheduled report lists every unit currently in maintenance — standalone
+// reads its own item_instances, the controller fans out instance snapshots to
+// every online kiosk and tags each row with its kiosk. Empty snapshots render
+// the "nothing in maintenance" branch — same pattern as the open-checkouts
+// digest.
+const DefaultMaintenanceDigestSubject = `Maintenance digest from {{.Kiosk.Code}} — {{.RowsCount}} {{pluralize .RowsCount "unit"}}`
+
+const DefaultMaintenanceDigestBody = `Units in maintenance as of {{formatTime .GeneratedAt}}{{if .Kiosk.Code}} at kiosk {{.Kiosk.Code}}{{end}}:
+
+{{if eq .RowsCount 0}}No units are currently in maintenance.
+{{else}}{{range .Rows}}- {{.ItemName}} ({{.ItemCode}}) — unit {{.InstanceCode}}{{if .Serial}} [serial: {{.Serial}}]{{end}}{{if .KioskCode}} @ {{.KioskCode}}{{end}}{{if .Notes}} — {{.Notes}}{{end}}
+{{end}}{{end}}{{if .OfflineKiosks}}
+Offline kiosks excluded from this digest: {{range .OfflineKiosks}}{{.}} {{end}}
+{{end}}This is an automated digest. Adjust its schedule or recipients in the kiosk admin SPA.
+`
+
 // Defaults returns the compiled-in default subject and body for the given
 // event type. ok is false when the event type is unknown — callers (the
 // migration seeder and the GET-defaults handler) treat that as "nothing
@@ -96,10 +128,14 @@ func Defaults(eventType string) (subject, body string, ok bool) {
 		return DefaultReceiptSubject, DefaultReceiptBody, true
 	case EventTypeLowStock:
 		return DefaultLowStockSubject, DefaultLowStockBody, true
+	case EventTypeMaintenanceEntered:
+		return DefaultMaintenanceSubject, DefaultMaintenanceBody, true
 	case EventTypeOpenChecksDigest:
 		return DefaultOpenChecksSubject, DefaultOpenChecksBody, true
 	case EventTypeDailyActivity:
 		return DefaultDailyActivitySubject, DefaultDailyActivityBody, true
+	case EventTypeMaintenanceDigest:
+		return DefaultMaintenanceDigestSubject, DefaultMaintenanceDigestBody, true
 	}
 	return "", "", false
 }
@@ -111,10 +147,14 @@ func DefaultName(eventType string) string {
 		return "Transaction receipt"
 	case EventTypeLowStock:
 		return "Low stock alert"
+	case EventTypeMaintenanceEntered:
+		return "Maintenance alert"
 	case EventTypeOpenChecksDigest:
 		return "Open checkouts digest"
 	case EventTypeDailyActivity:
 		return "Daily activity digest"
+	case EventTypeMaintenanceDigest:
+		return "Maintenance digest"
 	}
 	return eventType
 }
@@ -126,8 +166,10 @@ func SeededEventTypes() []string {
 	return []string{
 		EventTypeReceiptTransaction,
 		EventTypeLowStock,
+		EventTypeMaintenanceEntered,
 		EventTypeOpenChecksDigest,
 		EventTypeDailyActivity,
+		EventTypeMaintenanceDigest,
 	}
 }
 
@@ -162,11 +204,17 @@ func DefaultRecipients(eventType string) Recipients {
 		// across the threshold. all_admins captures every active admin;
 		// operators can add a shared mailbox via the extras textarea.
 		return Recipients{AllAdmins: true, Extras: []string{}}
+	case EventTypeMaintenanceEntered:
+		// Maintenance alerts go to ops (the bench / tool crib admins), not the
+		// worker who returned the unit. Same shape as low-stock.
+		return Recipients{AllAdmins: true, Extras: []string{}}
 	case EventTypeOpenChecksDigest:
 		// Digests address admins by default. Each scheduled_reports row
 		// overrides this with its own recipients spec at send time.
 		return Recipients{AllAdmins: true, Extras: []string{}}
 	case EventTypeDailyActivity:
+		return Recipients{AllAdmins: true, Extras: []string{}}
+	case EventTypeMaintenanceDigest:
 		return Recipients{AllAdmins: true, Extras: []string{}}
 	}
 	// Conservative default for unrecognized event types: address nobody.

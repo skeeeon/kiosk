@@ -114,12 +114,18 @@ type inventorySnapshotRequest struct {
 // minimum the SPA needs to render the table and pre-populate the adjust
 // dialog (current qty for the "absolute" mode).
 type inventorySnapshotItem struct {
-	ItemCode          string `json:"item_code"`
-	ItemName          string `json:"item_name"`
-	QuantityOnHand    int    `json:"quantity_on_hand"`
-	ReorderThreshold  int    `json:"reorder_threshold"`
-	TrackingMode      string `json:"tracking_mode"`
-	Active            bool   `json:"active"`
+	ItemCode         string `json:"item_code"`
+	ItemName         string `json:"item_name"`
+	QuantityOnHand   int    `json:"quantity_on_hand"`
+	ReorderThreshold int    `json:"reorder_threshold"`
+	TrackingMode     string `json:"tracking_mode"`
+	Active           bool   `json:"active"`
+	// Maintenance is the count of this SKU's serialized units parked in
+	// maintenance (serialized only; 0 otherwise). Carried so the controller's
+	// inventory panel can subtract it from available the same way the local
+	// Items view does. quantity_on_hand already includes these (non-retired),
+	// so available = on_hand − maintenance − out.
+	Maintenance int `json:"maintenance"`
 }
 
 type inventorySnapshotReply struct {
@@ -164,6 +170,17 @@ func (d *Dispatcher) handleInventorySnapshot(_ context.Context, payload []byte) 
 		return Reply{Success: false, Error: "items lookup failed: " + err.Error()}
 	}
 
+	// Maintenance counts for serialized items, gathered in one query and
+	// grouped by item id. Quantity-tracked items have no instances, so they
+	// stay 0. Cheap even with no maintenance rows (empty result set).
+	maintByItem := map[string]int{}
+	if maintRows, merr := d.app.FindRecordsByFilter("item_instances",
+		"status = {:s}", "", 0, 0, dbx.Params{"s": "maintenance"}); merr == nil {
+		for _, mr := range maintRows {
+			maintByItem[mr.GetString("item")]++
+		}
+	}
+
 	items := make([]inventorySnapshotItem, 0, len(rows))
 	for _, r := range rows {
 		items = append(items, inventorySnapshotItem{
@@ -173,6 +190,7 @@ func (d *Dispatcher) handleInventorySnapshot(_ context.Context, payload []byte) 
 			ReorderThreshold: r.GetInt("reorder_threshold"),
 			TrackingMode:     r.GetString("tracking_mode"),
 			Active:           r.GetBool("active"),
+			Maintenance:      maintByItem[r.Id],
 		})
 	}
 	return Reply{Success: true, Data: inventorySnapshotReply{Items: items}}

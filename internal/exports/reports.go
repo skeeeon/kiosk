@@ -443,8 +443,8 @@ type LifecycleAuditRow struct {
 	InstanceID   string
 	InstanceCode string
 	Action       string
-	PrevActive   bool
-	NewActive    bool
+	PrevStatus   string
+	NewStatus    string
 	Source       string
 	Reason       string
 	AdminID      string
@@ -460,7 +460,7 @@ func WriteLifecycleAuditCSV(w io.Writer, rows []LifecycleAuditRow) error {
 		"created", "kiosk_code",
 		"item_code", "item_name",
 		"instance_id", "instance_code",
-		"action", "prev_active", "new_active",
+		"action", "prev_status", "new_status",
 		"source", "reason", "admin_id",
 	}); err != nil {
 		return err
@@ -472,7 +472,7 @@ func WriteLifecycleAuditCSV(w io.Writer, rows []LifecycleAuditRow) error {
 			r.ItemCode, r.ItemName,
 			r.InstanceID, r.InstanceCode,
 			r.Action,
-			boolString(r.PrevActive), boolString(r.NewActive),
+			r.PrevStatus, r.NewStatus,
 			r.Source, r.Reason, r.AdminID,
 		}); err != nil {
 			return err

@@ -71,8 +71,8 @@ func TestInstanceCreate_HappyPath(t *testing.T) {
 	if out.InstanceCode != "DRILL-001" {
 		t.Errorf("InstanceCode = %q, want DRILL-001", out.InstanceCode)
 	}
-	if !out.Active {
-		t.Errorf("Active default should be true")
+	if out.Status != "in_service" {
+		t.Errorf("Status default should be in_service, got %q", out.Status)
 	}
 	if n := countAuditByCommandID(t, app, "cmd-create-1"); n != 1 {
 		t.Errorf("instance_audit rows for command_id: want 1, got %d", n)
@@ -200,7 +200,7 @@ func TestInstanceEdit_CosmeticNoAudit(t *testing.T) {
 	}
 }
 
-func TestInstanceDecommission_HappyPath(t *testing.T) {
+func TestInstanceSetStatus_Retire_HappyPath(t *testing.T) {
 	app := setupApp(t)
 	seedSerializedItem(t, app, "DRILL")
 
@@ -215,15 +215,16 @@ func TestInstanceDecommission_HappyPath(t *testing.T) {
 		t.Fatalf("setup: %q", r.Error)
 	}
 
-	decomPayload, _ := json.Marshal(map[string]any{
+	retirePayload, _ := json.Marshal(map[string]any{
 		"command_id":          "cmd-decom-1",
 		"controller_admin_id": "ctrl",
 		"instance_code":       "DRILL-DEC",
+		"status":              "retired",
 		"reason":              "broken handle",
 	})
-	reply := d.handleInstanceDecommission(context.Background(), decomPayload)
+	reply := d.handleInstanceSetStatus(context.Background(), retirePayload)
 	if !reply.Success {
-		t.Fatalf("decommission failed: %q", reply.Error)
+		t.Fatalf("retire failed: %q", reply.Error)
 	}
 
 	inst, err := app.FindFirstRecordByFilter("item_instances",
@@ -231,23 +232,23 @@ func TestInstanceDecommission_HappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("find: %v", err)
 	}
-	if inst.GetBool("active") {
-		t.Errorf("instance should be inactive after decommission")
+	if inst.GetString("status") != "retired" {
+		t.Errorf("instance should be retired, got %q", inst.GetString("status"))
 	}
 
-	// One audit row for the decommission action.
+	// One audit row for the retire action (verb derived from in_service→retired).
 	rows, err := app.FindRecordsByFilter("instance_audit",
-		"command_id = {:c} && action = 'decommission'", "", 10, 0,
+		"command_id = {:c} && action = 'retire'", "", 10, 0,
 		dbx.Params{"c": "cmd-decom-1"})
 	if err != nil {
 		t.Fatalf("list audit: %v", err)
 	}
 	if len(rows) != 1 {
-		t.Errorf("decommission audit: want 1, got %d", len(rows))
+		t.Errorf("retire audit: want 1, got %d", len(rows))
 	}
 }
 
-func TestInstanceReactivate_AfterDecommission(t *testing.T) {
+func TestInstanceSetStatus_ReturnToServiceAfterMaintenance(t *testing.T) {
 	app := setupApp(t)
 	seedSerializedItem(t, app, "DRILL")
 
@@ -260,31 +261,40 @@ func TestInstanceReactivate_AfterDecommission(t *testing.T) {
 			t.Fatalf("setup: %q", r.Error)
 		}
 	}
-	decomPayload, _ := json.Marshal(map[string]any{
-		"command_id":          "decom",
+	maintPayload, _ := json.Marshal(map[string]any{
+		"command_id":          "maint",
 		"controller_admin_id": "ctrl",
 		"instance_code":       "DRILL-RE",
+		"status":              "maintenance",
 		"reason":              "evaluating",
 	})
-	if r := d.handleInstanceDecommission(context.Background(), decomPayload); !r.Success {
-		t.Fatalf("decom: %q", r.Error)
+	if r := d.handleInstanceSetStatus(context.Background(), maintPayload); !r.Success {
+		t.Fatalf("to maintenance: %q", r.Error)
 	}
 
-	reactPayload, _ := json.Marshal(map[string]any{
-		"command_id":          "react",
+	returnPayload, _ := json.Marshal(map[string]any{
+		"command_id":          "return",
 		"controller_admin_id": "ctrl",
 		"instance_code":       "DRILL-RE",
+		"status":              "in_service",
 		"reason":              "fixed",
 	})
-	reply := d.handleInstanceReactivate(context.Background(), reactPayload)
+	reply := d.handleInstanceSetStatus(context.Background(), returnPayload)
 	if !reply.Success {
-		t.Fatalf("reactivate failed: %q", reply.Error)
+		t.Fatalf("return to service failed: %q", reply.Error)
 	}
 
 	inst, _ := app.FindFirstRecordByFilter("item_instances",
 		"code = {:c}", dbx.Params{"c": "DRILL-RE"})
-	if !inst.GetBool("active") {
-		t.Errorf("instance should be active after reactivate")
+	if inst.GetString("status") != "in_service" {
+		t.Errorf("instance should be in_service after return, got %q", inst.GetString("status"))
+	}
+	// The maintenance→in_service transition records return_to_service.
+	rows, _ := app.FindRecordsByFilter("instance_audit",
+		"command_id = {:c} && action = 'return_to_service'", "", 10, 0,
+		dbx.Params{"c": "return"})
+	if len(rows) != 1 {
+		t.Errorf("return_to_service audit: want 1, got %d", len(rows))
 	}
 }
 

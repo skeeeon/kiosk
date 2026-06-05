@@ -1,8 +1,10 @@
 # Notifications
 
-The admin SPA's **Notifications** tab manages four event types out of
-the box: transaction receipts, low-stock alerts, scheduled
-open-checkouts digests, and scheduled daily-activity digests. Each
+The admin SPA's **Notifications** tab manages six event types out of
+the box: transaction receipts, low-stock alerts, maintenance alerts
+(a serialized unit routed into maintenance on return), scheduled
+open-checkouts digests, scheduled daily-activity digests, and a
+scheduled "items in maintenance" digest. Each
 event has an editable subject + body (Go `text/template` syntax) and
 an editable recipients spec (`worker_email`, `all_admins`, `extras:
 []`). Sends are logged one row per recipient with `status` = `sent` /
@@ -32,14 +34,27 @@ the local notifier. The aggregator subscribes to:
 - `{prefix}.{kiosk_code}.event.alert.lowstock` — `LowStockContext`.
   Day-scoped dedup is the intended semantics: "tell me once per item
   per day," not just a redelivery guard.
+- `{prefix}.{kiosk_code}.event.alert.maintenance` — `MaintenanceContext`,
+  batched one-per-transaction: a cart returning N serialized units flagged
+  for maintenance produces a single email listing all N. Controller
+  dedupes on the transaction id (`Ref`) so JetStream redelivery collapses
+  to one send. Recipients = all admins.
 
-Scheduled digests (`open_checkouts`, `daily_activity`) no longer ride
-NATS. The controller owns the `scheduled_reports` rows, the cron, the
-digest computation (against its projected `open_checkouts` + ledger),
-and the SMTP send. The kiosk's scheduler is skipped entirely when
-`controller.enabled=true`; the SPA on the kiosk side shows a banner
-directing operators to the controller. Standalone kiosks keep the
-local scheduler + local SMTP path unchanged.
+Scheduled digests (`open_checkouts`, `daily_activity`, `maintenance`)
+no longer ride NATS. The controller owns the `scheduled_reports` rows,
+the cron, the digest computation, and the SMTP send. The kiosk's
+scheduler is skipped entirely when `controller.enabled=true`; the SPA on
+the kiosk side shows a banner directing operators to the controller.
+Standalone kiosks keep the local scheduler + local SMTP path unchanged.
+
+The `maintenance` digest (`digest.maintenance`, "Items in maintenance",
+`MaintenanceDigestContext`) lists serialized units currently parked in
+maintenance. A standalone run queries the local `item_instances` table
+(`status=maintenance`); the controller runs a live `instance.snapshot`
+fan-out across online kiosks filtered to `status=maintenance`, listing
+offline kiosks as excluded so the operator knows the digest is partial.
+The `open_checkouts` and `daily_activity` digests compute against the
+controller's projected `open_checkouts` + ledger as before.
 
 Schedule rows carry an optional `kiosk_code` column. Empty = fleet-wide
 (one digest covering every kiosk's data); set = scoped to one kiosk.

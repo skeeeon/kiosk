@@ -18,6 +18,7 @@ import (
 
 	"github.com/skeeeon/kiosk/internal/cart"
 	"github.com/skeeeon/kiosk/internal/events"
+	inststatus "github.com/skeeeon/kiosk/internal/instances/status"
 	"github.com/skeeeon/kiosk/internal/kioskctx"
 )
 
@@ -31,6 +32,22 @@ type Result struct {
 	Returned      int      `json:"returned"`
 	Consumed      int      `json:"consumed"`
 	Warnings      []string `json:"warnings,omitempty"`
+	// MaintenanceEntered lists the serialized units this transaction routed
+	// into maintenance status on return (per-SKU opt-in or a per-line flag).
+	// The post-commit handler fires one batched maintenance notification from
+	// it; the SPA can also surface "N units sent to maintenance".
+	MaintenanceEntered []MaintenanceEntry `json:"maintenance_entered,omitempty"`
+}
+
+// MaintenanceEntry is one serialized unit that entered maintenance as part of
+// a return, carrying the fields the maintenance notification + SPA toast need.
+type MaintenanceEntry struct {
+	InstanceID   string `json:"instance_id"`
+	InstanceCode string `json:"instance_code"`
+	ItemCode     string `json:"item_code"`
+	ItemName     string `json:"item_name"`
+	Serial       string `json:"serial,omitempty"`
+	Reason       string `json:"reason"`
 }
 
 // Policy is the kiosk's return-acceptance configuration. Defaults are
@@ -79,7 +96,8 @@ func Commit(app core.App, c *cart.Cart, id kioskctx.Identity, policy Policy, pub
 	var (
 		result      Result
 		lineEvents  []lineEvent
-		txCompleted lineEvent // payload for the transaction.complete event
+		maintEvents []lineEvent // instance.lifecycle events for maintenance-on-return
+		txCompleted lineEvent   // payload for the transaction.complete event
 	)
 
 	err := app.RunInTransaction(func(tx core.App) error {
@@ -231,6 +249,63 @@ func Commit(app core.App, c *cart.Cart, id kioskctx.Identity, policy Policy, pub
 				}
 				result.Returned++
 
+				// Maintenance-on-return: a returned serialized unit lands in
+				// maintenance (not back to in_service) when its SKU opts in
+				// (requires_maintenance_on_return) or the worker flagged the
+				// line. The open_checkouts row was already deleted above — the
+				// tool IS back; maintenance is a status on the instance, set
+				// through the shared SetStatusInTx writer so the audit +
+				// quantity recompute + lifecycle event match every other status
+				// change. SetStatusInTx is a no-op (auditID empty) if the unit
+				// is somehow already in maintenance, so a doubled flag can't
+				// double-fire.
+				if itemRec.GetString("tracking_mode") == "serialized" && l.ItemInstanceID != "" &&
+					(itemRec.GetBool("requires_maintenance_on_return") || l.RequestMaintenance) {
+					reason := "flagged on return"
+					if itemRec.GetBool("requires_maintenance_on_return") {
+						reason = "auto: SKU requires maintenance on return"
+					}
+					prevStatus, auditID, merr := inststatus.SetStatusInTx(tx, inststatus.SetStatusInput{
+						InstanceID: l.ItemInstanceID,
+						ItemID:     l.ItemID,
+						Target:     inststatus.StatusMaintenance,
+						Reason:     reason,
+						Source:     events.SourceLocal,
+					})
+					if merr != nil {
+						return merr
+					}
+					if auditID != "" {
+						maintEvents = append(maintEvents, lineEvent{
+							Subject: events.InstanceLifecycleSubject(id.KioskCode),
+							Payload: events.BuildInstanceLifecyclePayload(events.InstanceLifecycleInput{
+								InstanceID:    l.ItemInstanceID,
+								InstanceCode:  l.ItemInstanceCode,
+								ItemID:        itemRec.Id,
+								ItemCode:      itemRec.GetString("code"),
+								ItemName:      itemRec.GetString("name"),
+								KioskCode:     id.KioskCode,
+								LocationCode:  id.LocationCode,
+								Action:        inststatus.ActionToMaintenance,
+								PrevStatus:    prevStatus,
+								NewStatus:     inststatus.StatusMaintenance,
+								Reason:        reason,
+								Source:        events.SourceLocal,
+								SourceAuditID: auditID,
+								CompletedAt:   completedAt,
+							}),
+						})
+						result.MaintenanceEntered = append(result.MaintenanceEntered, MaintenanceEntry{
+							InstanceID:   l.ItemInstanceID,
+							InstanceCode: l.ItemInstanceCode,
+							ItemCode:     itemRec.GetString("code"),
+							ItemName:     itemRec.GetString("name"),
+							Serial:       l.Serial,
+							Reason:       reason,
+						})
+					}
+				}
+
 			case "consume":
 				// Decrement stock. Allowed to go negative — the ledger is the
 				// source of truth; if a worker takes more than was recorded,
@@ -320,6 +395,9 @@ func Commit(app core.App, c *cart.Cart, id kioskctx.Identity, policy Policy, pub
 
 	publish(txCompleted.Subject, txCompleted.Payload)
 	for _, ev := range lineEvents {
+		publish(ev.Subject, ev.Payload)
+	}
+	for _, ev := range maintEvents {
 		publish(ev.Subject, ev.Payload)
 	}
 	return &result, nil

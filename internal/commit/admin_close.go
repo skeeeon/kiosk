@@ -10,6 +10,7 @@ import (
 
 	"github.com/skeeeon/kiosk/internal/dberr"
 	"github.com/skeeeon/kiosk/internal/events"
+	inststatus "github.com/skeeeon/kiosk/internal/instances/status"
 	"github.com/skeeeon/kiosk/internal/kioskctx"
 )
 
@@ -251,10 +252,10 @@ func AdminClose(app core.App, in AdminCloseInput, publish PublishFunc) (*AdminCl
 		//
 		//   - quantity-tracked: decrement quantity_on_hand by 1 + write a
 		//     stock_adjustments row + emit inventory.adjust (handled below).
-		//   - serialized: quantity_on_hand is DERIVED from the active instance
-		//     count, so we only decommission the instance (active→false). The
-		//     instances after-update hook recomputes the item's quantity off
-		//     the back of that write — no stock_adjustments row, no
+		//   - serialized: quantity_on_hand is DERIVED from the non-retired
+		//     instance count, so we only retire the instance (status→retired).
+		//     The instances after-update hook recomputes the item's quantity
+		//     off the back of that write — no stock_adjustments row, no
 		//     inventory.adjust event. The instance.lifecycle event is the
 		//     record of the count change.
 		//
@@ -310,21 +311,40 @@ func AdminClose(app core.App, in AdminCloseInput, publish PublishFunc) (*AdminCl
 
 		if reasonAffectsInventory(in.Reason) {
 			if itemRec.GetString("tracking_mode") == "serialized" {
-				// Serialized: decommission the instance only. The quantity
-				// drop is derived from the active count via the instances
+				// Serialized: retire the instance only. The quantity drop is
+				// derived from the non-retired count via the instances
 				// recompute hook; no stock_adjustments row / inventory.adjust
-				// event is emitted for serialized items.
+				// event is emitted for serialized items. Routed through the
+				// shared SetStatusInTx writer so a controller-forwarded close
+				// and a local close produce an identical audit + lifecycle
+				// trail.
 				if instanceID != "" {
-					prevActive, auditID, derr := decommissionInstanceForAdminClose(tx, in,
-						instanceID, itemID)
+					setIn := inststatus.SetStatusInput{
+						InstanceID: instanceID,
+						ItemID:     itemID,
+						Target:     inststatus.StatusRetired,
+						Reason:     "admin_close: " + in.Reason,
+						Source:     in.Source,
+					}
+					switch in.Source {
+					case events.SourceLocal:
+						setIn.AdminID = in.ActorID
+					case events.SourceController:
+						setIn.ControllerAdminID = in.ActorID
+					}
+					prevStatus, auditID, derr := inststatus.SetStatusInTx(tx, setIn)
 					if derr != nil {
 						return derr
 					}
-					pending = append(pending, pendingEvent{
-						Subject: events.InstanceLifecycleSubject(in.Identity.KioskCode),
-						Payload: buildAdminCloseInstanceLifecyclePayload(in, itemRec,
-							instanceID, auditID, prevActive, completedAt),
-					})
+					// auditID is empty when the instance was already retired —
+					// a no-op that writes nothing and emits no event.
+					if auditID != "" {
+						pending = append(pending, pendingEvent{
+							Subject: events.InstanceLifecycleSubject(in.Identity.KioskCode),
+							Payload: buildAdminCloseInstanceLifecyclePayload(in, itemRec,
+								instanceID, auditID, prevStatus, completedAt),
+						})
+					}
 				}
 			} else {
 				adjID, prevQty, newQty, perr := applyLostOrDamagedQtyAdjust(tx, in, itemRec, completedAt)
@@ -415,55 +435,6 @@ func applyLostOrDamagedQtyAdjust(tx core.App, in AdminCloseInput, itemRec *core.
 	return adj.Id, prevQty, newQty, nil
 }
 
-// decommissionInstanceForAdminClose flips item_instances.active to false
-// and writes the matching instance_audit row inside the supplied
-// transaction. Returns the previous active state so the caller can build
-// the instance.lifecycle event with the prev/new flag pair. Returns the
-// audit row id so the caller can stamp it on the lifecycle event as the
-// controller-side projection's idempotency anchor; empty when no audit row
-// was written (already decommissioned).
-func decommissionInstanceForAdminClose(tx core.App, in AdminCloseInput, instanceID, itemID string) (prevActive bool, auditID string, err error) {
-	instRec, err := tx.FindRecordById("item_instances", instanceID)
-	if err != nil {
-		return false, "", fmt.Errorf("find item_instance %s: %w", instanceID, err)
-	}
-	prevActive = instRec.GetBool("active")
-	if !prevActive {
-		// Already decommissioned (rare — would mean someone retired the
-		// instance manually but didn't close its open checkout). Don't
-		// write a no-op audit row, but still report prevActive=false so
-		// the event reflects reality.
-		return false, "", nil
-	}
-	instRec.Set("active", false)
-	if err := tx.Save(instRec); err != nil {
-		return false, "", fmt.Errorf("set instance inactive: %w", err)
-	}
-
-	col, err := tx.FindCollectionByNameOrId("instance_audit")
-	if err != nil {
-		return false, "", fmt.Errorf("find instance_audit collection: %w", err)
-	}
-	audit := core.NewRecord(col)
-	audit.Set("item_instance", instanceID)
-	audit.Set("item", itemID)
-	audit.Set("action", "decommission")
-	audit.Set("prev_active", true)
-	audit.Set("new_active", false)
-	audit.Set("reason", "admin_close: "+in.Reason)
-	audit.Set("source", in.Source)
-	switch in.Source {
-	case events.SourceLocal:
-		audit.Set("admin", in.ActorID)
-	case events.SourceController:
-		audit.Set("controller_admin_id", in.ActorID)
-	}
-	if err := tx.Save(audit); err != nil {
-		return false, "", fmt.Errorf("save instance_audit: %w", err)
-	}
-	return true, audit.Id, nil
-}
-
 // buildAdminCloseInventoryAdjustPayload renders the inventory.adjust event
 // payload using the same builder PerformStockAdjustment + PublishInventoryAdjustEvent
 // use, so the controller's existing aggregator picks these up without a
@@ -495,11 +466,11 @@ func buildAdminCloseInventoryAdjustPayload(in AdminCloseInput, itemRec *core.Rec
 }
 
 // buildAdminCloseInstanceLifecyclePayload renders the instance.lifecycle
-// event payload for the decommission caused by an admin close. Reuses the
-// existing builder so the wire shape matches hook-driven events. auditID is
-// the kiosk-side instance_audit row id that backs this event; threaded
-// through as SourceAuditID so the controller projection is idempotent.
-func buildAdminCloseInstanceLifecyclePayload(in AdminCloseInput, itemRec *core.Record, instanceID, auditID string, prevActive bool, completedAt time.Time) map[string]any {
+// event payload for the retire caused by an admin close. Reuses the existing
+// builder so the wire shape matches hook-driven events. auditID is the
+// kiosk-side instance_audit row id that backs this event; threaded through as
+// SourceAuditID so the controller projection is idempotent.
+func buildAdminCloseInstanceLifecyclePayload(in AdminCloseInput, itemRec *core.Record, instanceID, auditID, prevStatus string, completedAt time.Time) map[string]any {
 	input := events.InstanceLifecycleInput{
 		InstanceID:    instanceID,
 		ItemID:        itemRec.Id,
@@ -507,9 +478,9 @@ func buildAdminCloseInstanceLifecyclePayload(in AdminCloseInput, itemRec *core.R
 		ItemName:      itemRec.GetString("name"),
 		KioskCode:     in.Identity.KioskCode,
 		LocationCode:  in.Identity.LocationCode,
-		Action:        "decommission",
-		PrevActive:    prevActive,
-		NewActive:     false,
+		Action:        inststatus.ActionRetire,
+		PrevStatus:    prevStatus,
+		NewStatus:     inststatus.StatusRetired,
 		Reason:        "admin_close: " + in.Reason,
 		Source:        in.Source,
 		SourceAuditID: auditID,

@@ -20,17 +20,23 @@ func itemQty(t *testing.T, app core.App, itemID string) int {
 }
 
 // addInstance creates an item_instances row via the DAO (the REST/superuser
-// path shape) so the model after-success hook fires.
+// path shape) so the model after-success hook fires. `active` maps to the
+// status enum: true → in_service (counts toward qty), false → retired
+// (excluded from the non-retired count).
 func addInstance(t *testing.T, app core.App, itemID, code string, active bool) *core.Record {
 	t.Helper()
 	col, err := app.FindCollectionByNameOrId("item_instances")
 	if err != nil {
 		t.Fatalf("find item_instances: %v", err)
 	}
+	status := StatusInService
+	if !active {
+		status = StatusRetired
+	}
 	inst := core.NewRecord(col)
 	inst.Set("item", itemID)
 	inst.Set("code", code)
-	inst.Set("active", active)
+	inst.Set("status", status)
 	if err := app.Save(inst); err != nil {
 		t.Fatalf("save instance %s: %v", code, err)
 	}
@@ -58,10 +64,10 @@ func TestRecompute_CreateTracksActiveCount(t *testing.T) {
 	}
 }
 
-// TestRecompute_DecommissionReactivate exercises the command-bus mutation path
-// (PerformDecommission / PerformReactivate) and asserts the derived quantity
-// follows the active count.
-func TestRecompute_DecommissionReactivate(t *testing.T) {
+// TestRecompute_RetireUnretire exercises the command-bus mutation path
+// (PerformSetStatus to retired, then back to in_service) and asserts the
+// derived quantity follows the non-retired count.
+func TestRecompute_RetireUnretire(t *testing.T) {
 	app := setupApp(t)
 	New().Register(app)
 	itemID, inst := seedItemWithInstance(t, app)
@@ -70,26 +76,48 @@ func TestRecompute_DecommissionReactivate(t *testing.T) {
 		t.Fatalf("setup: want qty 2, got %d", got)
 	}
 
-	if _, err := PerformDecommission(app, ToggleInput{
+	if _, err := PerformSetStatus(app, ToggleInput{
 		InstanceCode: inst.GetString("code"),
 		Reason:       "broken",
 		Source:       events.SourceLocal,
-	}); err != nil {
-		t.Fatalf("decommission: %v", err)
+	}, StatusRetired); err != nil {
+		t.Fatalf("retire: %v", err)
 	}
 	if got := itemQty(t, app, itemID); got != 1 {
-		t.Fatalf("after decommission: want qty 1, got %d", got)
+		t.Fatalf("after retire: want qty 1, got %d", got)
 	}
 
-	if _, err := PerformReactivate(app, ToggleInput{
+	if _, err := PerformSetStatus(app, ToggleInput{
 		InstanceCode: inst.GetString("code"),
 		Reason:       "fixed",
 		Source:       events.SourceLocal,
-	}); err != nil {
-		t.Fatalf("reactivate: %v", err)
+	}, StatusInService); err != nil {
+		t.Fatalf("unretire: %v", err)
 	}
 	if got := itemQty(t, app, itemID); got != 2 {
-		t.Fatalf("after reactivate: want qty 2, got %d", got)
+		t.Fatalf("after unretire: want qty 2, got %d", got)
+	}
+}
+
+// TestRecompute_MaintenanceCountsTowardQty verifies a unit in maintenance still
+// counts toward quantity_on_hand (it's owned, just parked) — only retired
+// drops the count.
+func TestRecompute_MaintenanceCountsTowardQty(t *testing.T) {
+	app := setupApp(t)
+	New().Register(app)
+	itemID, inst := seedItemWithInstance(t, app)
+	if got := itemQty(t, app, itemID); got != 1 {
+		t.Fatalf("setup: want qty 1, got %d", got)
+	}
+	if _, err := PerformSetStatus(app, ToggleInput{
+		InstanceCode: inst.GetString("code"),
+		Reason:       "needs service",
+		Source:       events.SourceLocal,
+	}, StatusMaintenance); err != nil {
+		t.Fatalf("to maintenance: %v", err)
+	}
+	if got := itemQty(t, app, itemID); got != 1 {
+		t.Errorf("after maintenance: want qty 1 (still counts), got %d", got)
 	}
 }
 
@@ -182,13 +210,13 @@ func TestRecompute_IdempotentReplayNoDoubleCount(t *testing.T) {
 		ControllerAdminID: "ctrl-admin",
 		CommandID:         "cmd-decom-1",
 	}
-	if _, err := PerformDecommission(app, in); err != nil {
-		t.Fatalf("first decommission: %v", err)
+	if _, err := PerformSetStatus(app, in, StatusRetired); err != nil {
+		t.Fatalf("first retire: %v", err)
 	}
-	if _, err := PerformDecommission(app, in); err != nil {
-		t.Fatalf("replay decommission: %v", err)
+	if _, err := PerformSetStatus(app, in, StatusRetired); err != nil {
+		t.Fatalf("replay retire: %v", err)
 	}
 	if got := itemQty(t, app, itemID); got != 1 {
-		t.Errorf("after replayed decommission: want qty 1 (applied once), got %d", got)
+		t.Errorf("after replayed retire: want qty 1 (applied once), got %d", got)
 	}
 }

@@ -183,6 +183,14 @@ func main() {
 			return fmt.Errorf("subscribe heartbeats: %w", err)
 		}
 
+		// Override the standalone maintenance digest with the controller's
+		// fleet-wide snapshot fan-out. The standalone runner reads the local
+		// item_instances table, which is empty on the controller (instances
+		// live on the kiosks); this closure captures the NATS conn + heartbeat
+		// registry the scheduler's runner signature can't carry. Safe to do
+		// after RegisterEnabled — runOnce resolves the runner at fire time.
+		scheduler.RegisterRunner("maintenance", h.MaintenanceDigestRunner(nc, hbRegistry))
+
 		app.OnTerminate().BindFunc(func(te *core.TerminateEvent) error {
 			agg.Stop()
 			if hbSub != nil {
@@ -248,8 +256,7 @@ func main() {
 		e.Router.GET("/api/controller/kiosks/{code}/instances", h.InstanceSnapshot(nc, hbRegistry))
 		e.Router.POST("/api/controller/kiosks/{code}/instances", h.InstanceCreate(nc, hbRegistry))
 		e.Router.PATCH("/api/controller/kiosks/{code}/instances/{instance_code}", h.InstanceEdit(nc, hbRegistry))
-		e.Router.POST("/api/controller/kiosks/{code}/instances/{instance_code}/decommission", h.InstanceDecommission(nc, hbRegistry))
-		e.Router.POST("/api/controller/kiosks/{code}/instances/{instance_code}/reactivate", h.InstanceReactivate(nc, hbRegistry))
+		e.Router.POST("/api/controller/kiosks/{code}/instances/{instance_code}/status", h.InstanceSetStatus(nc, hbRegistry))
 
 		// Maintenance commands. Both run on the target kiosk against its
 		// own ledger; the controller never reaches into the kiosk's DB.

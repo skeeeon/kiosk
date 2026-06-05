@@ -165,7 +165,7 @@ Three invariants:
    the same shape via `handlers.PublishInventoryAdjustEvent`, and
    `commit.AdminClose` emits the same subject for the qty side-effect of
    lost/damaged closes of **quantity-tracked** items only — serialized
-   closes decommission the instance instead and never emit
+   closes retire the instance instead and never emit
    `inventory.adjust`); `<prefix>.<kiosk_code>.event.integrity.rebuild`
    from the open_checkouts rebuild handler;
    `<prefix>.<kiosk_code>.event.checkout.admin_close` from
@@ -173,13 +173,23 @@ Three invariants:
    rides `event.transaction.complete` and the line rides
    `event.item.admin_close`-equivalent via the regular `transaction_lines`
    projection); `<prefix>.<kiosk_code>.event.instance.lifecycle` from the
-   `item_instances` PB record hooks (create / decommission / reactivate /
-   delete; cosmetic edits skip) AND from `commit.AdminClose` when a
-   serialized `lost`/`damaged` close decommissions the instance. The
-   `event.instance.lifecycle` payload carries `source_audit_id` (the
-   kiosk-side `instance_audit.id`) so the controller's projection is
-   idempotent under redelivery — same anchor strategy as
+   `item_instances` PB record hooks and the shared `SetStatusInTx` writer on
+   every `status` transition (`create` / `to_maintenance` /
+   `return_to_service` / `retire` / `unretire`; the verb is derived from the
+   prev→target pair; cosmetic edits skip) AND from `commit.AdminClose` when a
+   serialized `lost`/`damaged` close retires the instance. The
+   `event.instance.lifecycle` payload carries `prev_status`/`new_status` and
+   `source_audit_id` (the kiosk-side `instance_audit.id`) so the controller's
+   projection is idempotent under redelivery — same anchor strategy as
    `event.inventory.adjust`'s `adjustment_id`.
+   Two further managed-mode notification subjects ride the commit path:
+   `<prefix>.<kiosk_code>.event.alert.maintenance` — an instant, **batched
+   one-per-transaction** alert listing every serialized unit a return routed
+   into maintenance (dedup keyed on the transaction id) — and the scheduled
+   `digest.maintenance` report (kiosk: local `item_instances` query;
+   controller: live `instance.snapshot` fan-out filtered to
+   `status=maintenance`). Both are rendered + sent via the controller's SMTP,
+   same family as `alert.lowstock`.
    `<prefix>.<kiosk_code>.event.scan.rfid.observed` fires after every
    LLRP inventory cycle in either RFID mode and carries the full
    deduplicated EPC array (the read-window observability stream —
@@ -201,7 +211,9 @@ Three invariants:
      replies on `msg.Reply` with a `{success, error, data}` envelope.
      Built-ins today: `inventory.adjust`, `inventory.snapshot`,
      `checkout.close`, the `instance.*` family
-     (`create`/`edit`/`decommission`/`reactivate`/`snapshot`),
+     (`create`/`edit`/`set_status`/`snapshot` — `set_status` carries the
+     target status as data and covers send-to-maintenance / return-to-service
+     / retire / un-retire in one command), `metrics.snapshot`,
      `integrity.rebuild`, `ledger.republish`, and the RFID
      enclosure_diff pair `cart.start` + `read.trigger`. The
      enclosure_diff handlers reach the cart store / SSE broker /
@@ -253,12 +265,16 @@ pseudo-version because EdgeX's v4 tags are unreachable to Go's
 module system). `counter_scan` is button-driven; `enclosure_diff`
 is NATS-driven via the `cart.start` and `read.trigger` commands
 above. `internal/rfid/diff.go` is a pure function reconciling
-observed EPCs against expected-present state (active serialized
+observed EPCs against expected-present state (non-retired serialized
 instances + open_checkouts) — no I/O, no kiosk state, exhaustively
-table-tested. The cross-user-return policy in enclosure_diff is
-"skip and count" rather than synthesize (the commit-time foreman
-gate would reject the line anyway); the count surfaces in the SPA
-toast. See [RFID](docs/rfid.md) for the full design.
+table-tested. Each expected instance carries an `Eligible` flag
+(`status == in_service`): a **maintenance** unit is expected-present
+(physically in the enclosure) but if it leaves it is skip-and-counted
+(`SkippedIneligible`), never synthesized as a checkout — commit would
+reject a checkout of a non-in_service unit. The cross-user-return policy
+is likewise "skip and count" rather than synthesize (the commit-time
+foreman gate would reject the line anyway); both counts surface in the
+SPA toast. See [RFID](docs/rfid.md) for the full design.
 
 **Action defaulting is in the handler, not commit.** When a worker scans an
 item, `handlers.defaultActionFor` (in `internal/handlers/cart.go`) picks the
@@ -360,7 +376,20 @@ transaction_lines, so the ledger replay can pair a serialized
 checkout with its return — see the Controller seam section), and
 `2000800000_drop_applied_oc_closes.go` (drops the now-unused guard table:
 the controller no longer materializes open_checkouts, it replays the
-ledger on demand).
+ledger on demand), and `2000900000_instance_lifecycle_audit_status.go`
+(widens `instance_lifecycle_audit.action` to the status verb set and
+replaces `prev_active`/`new_active` with `prev_status`/`new_status`, mirroring
+the kiosk-side change).
+
+Recent kiosk-side migrations for the instance-status / maintenance work:
+`1794000000_instance_status.go` (adds `item_instances.status`, backfills from
+`active`, drops `active`), `1795000000_items_requires_maintenance.go`
+(`items.requires_maintenance_on_return` bool), `1796000000_instance_audit_status.go`
+(widens `instance_audit.action`, swaps `prev_active`/`new_active` →
+`prev_status`/`new_status`), `1797000000_maintenance_alerts.go` (seeds the
+`alert.maintenance` template), and `1798000000_maintenance_digest.go` (extends
+`scheduled_reports.report_key` with `maintenance` + seeds the `digest.maintenance`
+template).
 
 `touchKiosk` in `internal/controller/consumer.go` writes `last_seen`
 (legacy, kept for one release) on every touch and advances
@@ -386,9 +415,30 @@ remote inventory.adjust command — see the comment block in
 `internal/handlers/stock_adjust.go::PerformStockAdjustment` for the
 upfront-lookup + unique-violation-catch dance.
 
+**Instance lifecycle is a `status` enum, not a bool.** `item_instances.status`
+is `in_service | maintenance | retired` (migration 1794 replaced the old
+`active` bool + the removed hard delete). `in_service` is checkout-eligible;
+`maintenance` is owned-but-parked (counts toward on-hand, excluded from
+`available`); `retired` is terminal-but-reversible (un-retire allowed) and is
+the destination for what used to be a delete — **units are never hard-deleted**
+(the ledger keeps their FKs alive). "Out / checked out" is **not** in the enum;
+it stays derived from `open_checkouts`. The single in-transaction status writer
+is `instances/status.SetStatusInTx` (a leaf sub-package so `internal/commit` can
+drive a transition without importing the whole `instances` package and closing
+an import cycle; `internal/instances` re-exports its names via aliases). It
+writes the `instance_audit` row (`prev_status`/`new_status` + a verb derived
+from the transition) and the post-commit `instance.lifecycle` event. The
+HTTP/command path uses `instances.PerformSetStatus` (target as data; idempotent
+on `command_id`). Maintenance is entered by (a) per-SKU
+`items.requires_maintenance_on_return`, (b) a per-line "needs maintenance"
+toggle any worker can set on a serialized return (both applied inside
+`commit.Commit` after the open_checkouts row is deleted), or (c) a manual
+admin send-to-maintenance via `set_status`.
+
 **Serialized `quantity_on_hand` is derived, not stored-by-hand.** For
 `tracking_mode="serialized"` items, `quantity_on_hand` is a materialized
-view of the active `item_instances` count (same spirit as
+view of the **non-retired** `item_instances` count — `in_service` +
+`maintenance`; `retired` excluded (`instances.CountNonRetired`, same spirit as
 `open_checkouts`). `PerformStockAdjustment` rejects serialized items
 outright (`ErrSerializedNotAdjustable` → HTTP 400 / NATS reply error), so
 their count moves only through the instance lifecycle. The recompute
@@ -399,9 +449,11 @@ non-serialized / missing items). Because PB defers in-transaction
 after-success hooks to post-commit on the parent app (see `core/db.go`),
 this single binding covers every write path — admin SPA / superuser REST,
 the controller command-bus `Perform*` mutations, and `commit.AdminClose`'s
-decommission — so neither `mutations.go` nor `admin_close.go` recomputes
+retire — so neither `mutations.go` nor `admin_close.go` recomputes
 explicitly (admin_close just skips the qty stock-adjustment for serialized
-and lets the decommission drive the count). CSV import ignores a
+and lets the retire drive the count). The `item_instances` create hook also
+defaults `status` to `in_service` when empty, so seeds / CSV / superuser
+quick-add satisfy the Required field. CSV import ignores a
 `quantity_on_hand` column for serialized rows. The one-shot backfill
 `migrations/1793000000_backfill_serialized_qty.go` reconciles pre-existing
 rows.
@@ -539,14 +591,24 @@ should keep working, don't put a focused input in it.
 that polls `/api/controller/kiosks/heartbeats` every 10 s for online
 badges; clicking a row navigates to `/admin/kiosks/:code` (the
 `AdminKioskDetailView` component) which has tabs: Overview, Items
-(the existing `KioskItemsPanel`), Inventory (`KioskInventoryPanel`), and
-Instances (`KioskInstancesPanel`). The Inventory and Instances panels
+(the existing `KioskItemsPanel`), Inventory (`KioskInventoryPanel`),
+Instances (`KioskInstancesPanel`), and Metrics (`KioskMetricsPanel`, a
+live operational + activity snapshot proxied via the `metrics.snapshot`
+command). The Inventory and Instances panels
 fetch an enriched live snapshot via the controller's endpoints and show
-on-hand / out / available / low-stock and per-instance out-status at the
+on-hand / out / available / low-stock and per-instance status at the
 same fidelity as the local kiosk admin UI — out/available are derived
 controller-side from the projected ledger and computed in the SPA via the
 shared `ui/src/lib/inventory.ts` helper (the same one `AdminItemsView`
-uses, so the two views can't drift). The old `KioskDialog` was reduced to
+uses, so the two views can't drift). `availableFor` subtracts a `maintenance`
+count (carried per-item in the inventory snapshot) alongside `out`. The
+Instances panel renders the lifecycle status badge and offers the
+transitions valid for the row's status (send to maintenance / return to
+service / retire / un-retire), each posting to
+`POST /api/controller/kiosks/{code}/instances/{instance_code}/status` with a
+required reason — the verb-visibility logic lives in the shared
+`ui/src/lib/instanceStatus.ts` helper, reused by the local `ItemInstancesPanel`.
+The old `KioskDialog` was reduced to
 create-only; edit/items/inventory work belongs on the detail page. The 503 `kiosk_offline`
 body is detected via `ApiError.status === 503` and rendered as a banner —
 do not treat it as a generic error.

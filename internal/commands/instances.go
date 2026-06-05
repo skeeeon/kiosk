@@ -32,7 +32,6 @@ type instanceCreateRequest struct {
 	Serial            string `json:"serial,omitempty"`
 	RFIDEPC           string `json:"rfid_epc,omitempty"`
 	Notes             string `json:"notes,omitempty"`
-	Active            *bool  `json:"active,omitempty"`
 }
 
 func (d *Dispatcher) handleInstanceCreate(_ context.Context, payload []byte) Reply {
@@ -52,10 +51,6 @@ func (d *Dispatcher) handleInstanceCreate(_ context.Context, payload []byte) Rep
 	if req.Code == "" {
 		return Reply{Success: false, Error: "code is required"}
 	}
-	active := true
-	if req.Active != nil {
-		active = *req.Active
-	}
 
 	out, err := instances.PerformCreate(d.app, instances.CreateInput{
 		ItemCode:          req.ItemCode,
@@ -63,7 +58,6 @@ func (d *Dispatcher) handleInstanceCreate(_ context.Context, payload []byte) Rep
 		Serial:            req.Serial,
 		RFIDEPC:           req.RFIDEPC,
 		Notes:             req.Notes,
-		Active:            active,
 		Source:            events.SourceController,
 		ControllerAdminID: req.ControllerAdminID,
 		CommandID:         req.CommandID,
@@ -112,27 +106,22 @@ func (d *Dispatcher) handleInstanceEdit(_ context.Context, payload []byte) Reply
 	return Reply{Success: true, Data: result}
 }
 
-// instanceToggleRequest is shared between decommission and reactivate —
-// they take the same input shape, only the action differs. Reason is
-// required at the operational level even though the schema field is
-// optional; the audit log is more useful with a non-empty reason.
-type instanceToggleRequest struct {
+// instanceSetStatusRequest drives every lifecycle transition (send to
+// maintenance, return to service, retire, un-retire). The target status is
+// data, so one handler + one command subject covers all of them; the audit
+// action verb is derived kiosk-side from the (prev → target) transition.
+// Reason is required at the operational level even though the schema field is
+// optional — the audit log is more useful with a non-empty reason.
+type instanceSetStatusRequest struct {
 	CommandID         string `json:"command_id"`
 	ControllerAdminID string `json:"controller_admin_id"`
 	InstanceCode      string `json:"instance_code"`
+	Status            string `json:"status"`
 	Reason            string `json:"reason"`
 }
 
-func (d *Dispatcher) handleInstanceDecommission(_ context.Context, payload []byte) Reply {
-	return d.handleInstanceToggle(payload, false /* targetActive */)
-}
-
-func (d *Dispatcher) handleInstanceReactivate(_ context.Context, payload []byte) Reply {
-	return d.handleInstanceToggle(payload, true /* targetActive */)
-}
-
-func (d *Dispatcher) handleInstanceToggle(payload []byte, targetActive bool) Reply {
-	var req instanceToggleRequest
+func (d *Dispatcher) handleInstanceSetStatus(_ context.Context, payload []byte) Reply {
+	var req instanceSetStatusRequest
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return Reply{Success: false, Error: "invalid request body: " + err.Error()}
 	}
@@ -148,24 +137,15 @@ func (d *Dispatcher) handleInstanceToggle(payload []byte, targetActive bool) Rep
 	if req.Reason == "" {
 		return Reply{Success: false, Error: "reason is required"}
 	}
-	input := instances.ToggleInput{
+	out, err := instances.PerformSetStatus(d.app, instances.ToggleInput{
 		InstanceCode:      req.InstanceCode,
 		Reason:            req.Reason,
 		Source:            events.SourceController,
 		ControllerAdminID: req.ControllerAdminID,
 		CommandID:         req.CommandID,
-	}
-	var (
-		out *instances.MutationOutcome
-		err error
-	)
-	if targetActive {
-		out, err = instances.PerformReactivate(d.app, input)
-	} else {
-		out, err = instances.PerformDecommission(d.app, input)
-	}
+	}, req.Status)
 	if err != nil {
-		return Reply{Success: false, Error: "toggle failed: " + err.Error()}
+		return Reply{Success: false, Error: "set status failed: " + err.Error()}
 	}
 	instances.PublishLifecycle(d.app, out)
 	return Reply{Success: true, Data: out.Result}

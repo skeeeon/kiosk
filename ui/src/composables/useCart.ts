@@ -51,7 +51,10 @@ export function useCart() {
     return line
   }
 
-  async function updateLine(lineId: string, patch: { qty?: number; action?: CartAction }) {
+  async function updateLine(
+    lineId: string,
+    patch: { qty?: number; action?: CartAction; request_maintenance?: boolean },
+  ) {
     const { cart } = await api.patch<{ cart: Cart; line: CartLine }>(
       `/api/kiosk/cart/lines/${lineId}`,
       patch,

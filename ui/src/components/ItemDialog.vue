@@ -71,6 +71,7 @@ const form = reactive<Partial<ItemRecord>>({
   notes: '',
   quantity_on_hand: 0,
   reorder_threshold: 0,
+  requires_maintenance_on_return: false,
 })
 
 const kind = ref<Kind>('tool-qty')
@@ -94,6 +95,7 @@ watch(
       notes: '',
       quantity_on_hand: 0,
       reorder_threshold: 0,
+      requires_maintenance_on_return: false,
       ...(props.item ?? {}),
     })
     kind.value = kindFromItem(props.item)
@@ -243,9 +245,9 @@ function onAdjusted(result: StockAdjustmentResult) {
           <span class="text-sm text-slate-400">
             {{ isSerialized ? 'Units in service' : (form.type === 'tool' ? 'Fleet quantity' : 'Quantity on hand') }}
           </span>
-          <!-- Serialized: quantity_on_hand is DERIVED from the count of active
-               instances, so it's read-only here. Add or decommission units in
-               the instances panel below to change it. -->
+          <!-- Serialized: quantity_on_hand is DERIVED from the count of
+               non-retired instances, so it's read-only here. Add or retire
+               units in the instances panel below to change it. -->
           <div v-if="isSerialized" class="rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-slate-100 font-medium tabular-nums">
             {{ isEdit ? (form.quantity_on_hand ?? 0) : 0 }}
           </div>
@@ -275,7 +277,7 @@ function onAdjusted(result: StockAdjustmentResult) {
           />
           <span class="text-xs text-slate-500">
             <template v-if="isSerialized">
-              Derived from active instances — add or decommission units below to change it.
+              Derived from non-retired instances — add or retire units below to change it.
             </template>
             <template v-else>
               {{ form.type === 'tool'
@@ -315,6 +317,26 @@ function onAdjusted(result: StockAdjustmentResult) {
           :disabled="managed"
           class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 disabled:opacity-60 disabled:cursor-not-allowed"
         />
+      </label>
+
+      <label
+        v-if="isSerialized"
+        class="flex items-start gap-2 text-slate-300 rounded-lg bg-slate-950/40 border border-slate-800 px-3 py-2"
+      >
+        <input
+          v-model="form.requires_maintenance_on_return"
+          type="checkbox"
+          :disabled="managed"
+          class="mt-0.5 w-4 h-4 disabled:opacity-60"
+        />
+        <span class="flex flex-col">
+          <span class="text-sm">Send to maintenance on return</span>
+          <span class="text-xs text-slate-500">
+            Every returned unit of this SKU is parked in maintenance until an
+            admin returns it to service. Workers can also flag individual
+            returns.
+          </span>
+        </span>
       </label>
 
       <ItemInstancesPanel

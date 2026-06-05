@@ -284,7 +284,7 @@ because the storage layer enforces uniqueness on a stable key:
 | `checkout.admin_close` projection | unique(`source_kiosk_code`, `source_transaction_id`) + `source_line_id` | Projected as a `transactions` + `admin_close` `transaction_lines` pair (same anchors as the rows above), so a redelivery no-ops. The controller no longer materializes `open_checkouts`, so there are no guarded deletes — the replay drops the holder's row from the projected line. |
 | Remote `inventory.adjust` command | unique-when-non-empty `command_id` on `stock_adjustments` | Kiosk-side: a retried command finds the prior row and replies with the prior result instead of double-applying. |
 | Remote `checkout.close` command | unique-when-non-empty `command_id` on `transactions` | Same pattern, transaction-scoped. |
-| Remote `instance.{create,decommission,reactivate}` | unique-when-non-empty `command_id` on `instance_audit` | Same. |
+| Remote `instance.{create,set_status}` | unique-when-non-empty `command_id` on `instance_audit` | Same. |
 
 JetStream's at-least-once delivery means the consumer can see the same
 event twice. The unique indexes turn that into a no-op rather than a

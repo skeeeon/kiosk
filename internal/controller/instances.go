@@ -14,18 +14,17 @@ import (
 	"github.com/skeeeon/kiosk/internal/events"
 )
 
-// Instance management endpoints. All five mirror the inventory.adjust
-// pattern from inventory.go: heartbeat fast-fail → marshal payload →
-// nc.Request(subject, ..., 5s) → decode kioskCommandEnvelope → pass
-// `data` through to the SPA as raw JSON. Idempotency uses a
-// server-generated command_id for mutations; the snapshot read needs
-// none. Editing is cosmetic-only and writes no audit row, but still
-// goes through a command for consistency.
+// Instance management endpoints. They mirror the inventory.adjust pattern from
+// inventory.go: heartbeat fast-fail → marshal payload → nc.Request(subject,
+// ..., 5s) → decode kioskCommandEnvelope → pass `data` through to the SPA as
+// raw JSON. Idempotency uses a server-generated command_id for mutations; the
+// snapshot read needs none. Editing is cosmetic-only and writes no audit row,
+// but still goes through a command for consistency.
 
 // dispatchKioskCommand is the shared shape for "send a command to a
 // kiosk, decode the envelope, route the outcome." Extracted because the
-// inventory + instance + (upcoming) maintenance handlers all repeat the
-// same closure of "online check + Request + envelope decode."
+// inventory + instance + maintenance handlers all repeat the same closure of
+// "online check + Request + envelope decode."
 //
 // commandID may be empty (read-only commands); the offline response
 // echoes it back for log correlation when set. Returns nil after writing
@@ -101,7 +100,6 @@ type instanceCreateRequest struct {
 	Serial   string `json:"serial,omitempty"`
 	RFIDEPC  string `json:"rfid_epc,omitempty"`
 	Notes    string `json:"notes,omitempty"`
-	Active   *bool  `json:"active,omitempty"`
 }
 
 type instanceCreateCommandPayload struct {
@@ -112,12 +110,11 @@ type instanceCreateCommandPayload struct {
 	Serial            string `json:"serial,omitempty"`
 	RFIDEPC           string `json:"rfid_epc,omitempty"`
 	Notes             string `json:"notes,omitempty"`
-	Active            *bool  `json:"active,omitempty"`
 }
 
 // InstanceCreate returns the POST /api/controller/kiosks/{code}/instances
 // handler. The controller server-generates the command_id; the SPA never
-// supplies one.
+// supplies one. New instances are created in_service.
 func (h *Handlers) InstanceCreate(nc *nats.Conn, reg *HeartbeatRegistry) func(*core.RequestEvent) error {
 	return func(re *core.RequestEvent) error {
 		if err := h.requireAdmin(re); err != nil {
@@ -149,7 +146,6 @@ func (h *Handlers) InstanceCreate(nc *nats.Conn, reg *HeartbeatRegistry) func(*c
 			Serial:            body.Serial,
 			RFIDEPC:           body.RFIDEPC,
 			Notes:             body.Notes,
-			Active:            body.Active,
 		})
 		if err != nil {
 			return re.InternalServerError("marshal command", err)
@@ -212,32 +208,27 @@ func (h *Handlers) InstanceEdit(nc *nats.Conn, reg *HeartbeatRegistry) func(*cor
 	}
 }
 
-// --- Decommission / Reactivate ---
+// --- Set status (maintenance / return to service / retire / un-retire) ---
 
-type instanceToggleRequest struct {
+type instanceSetStatusRequest struct {
+	Status string `json:"status"`
 	Reason string `json:"reason"`
 }
 
-type instanceToggleCommandPayload struct {
+type instanceSetStatusCommandPayload struct {
 	CommandID         string `json:"command_id"`
 	ControllerAdminID string `json:"controller_admin_id"`
 	InstanceCode      string `json:"instance_code"`
+	Status            string `json:"status"`
 	Reason            string `json:"reason"`
 }
 
-// InstanceDecommission returns the POST .../instances/{instance_code}/decommission
-// handler.
-func (h *Handlers) InstanceDecommission(nc *nats.Conn, reg *HeartbeatRegistry) func(*core.RequestEvent) error {
-	return h.instanceToggleHandler(nc, reg, events.InstanceDecommissionCommandSubject)
-}
-
-// InstanceReactivate returns the POST .../instances/{instance_code}/reactivate
-// handler.
-func (h *Handlers) InstanceReactivate(nc *nats.Conn, reg *HeartbeatRegistry) func(*core.RequestEvent) error {
-	return h.instanceToggleHandler(nc, reg, events.InstanceReactivateCommandSubject)
-}
-
-func (h *Handlers) instanceToggleHandler(nc *nats.Conn, reg *HeartbeatRegistry, subjectFn func(string) string) func(*core.RequestEvent) error {
+// InstanceSetStatus returns the POST .../instances/{instance_code}/status
+// handler. The body carries the target status (in_service | maintenance |
+// retired) plus a reason; one endpoint covers send-to-maintenance,
+// return-to-service, retire, and un-retire. The kiosk derives the audit action
+// verb from the (prev → target) transition.
+func (h *Handlers) InstanceSetStatus(nc *nats.Conn, reg *HeartbeatRegistry) func(*core.RequestEvent) error {
 	return func(re *core.RequestEvent) error {
 		if err := h.requireAdmin(re); err != nil {
 			return err
@@ -247,26 +238,33 @@ func (h *Handlers) instanceToggleHandler(nc *nats.Conn, reg *HeartbeatRegistry, 
 		if kioskCode == "" || instanceCode == "" {
 			return re.BadRequestError("kiosk_code and instance_code are required", nil)
 		}
-		var body instanceToggleRequest
+		var body instanceSetStatusRequest
 		if err := re.BindBody(&body); err != nil {
 			return re.BadRequestError("invalid request body", err)
 		}
+		body.Status = strings.TrimSpace(body.Status)
 		body.Reason = strings.TrimSpace(body.Reason)
+		switch body.Status {
+		case "in_service", "maintenance", "retired":
+		default:
+			return re.BadRequestError("status must be in_service, maintenance, or retired", nil)
+		}
 		if body.Reason == "" {
 			return re.BadRequestError("reason is required", nil)
 		}
 		commandID := uuid.NewString()
-		data, err := json.Marshal(instanceToggleCommandPayload{
+		data, err := json.Marshal(instanceSetStatusCommandPayload{
 			CommandID:         commandID,
 			ControllerAdminID: re.Auth.Id,
 			InstanceCode:      instanceCode,
+			Status:            body.Status,
 			Reason:            body.Reason,
 		})
 		if err != nil {
 			return re.InternalServerError("marshal command", err)
 		}
 		return dispatchKioskCommand(re, nc, reg, kioskCode,
-			subjectFn(kioskCode), commandID, data)
+			events.InstanceSetStatusCommandSubject(kioskCode), commandID, data)
 	}
 }
 

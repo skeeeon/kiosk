@@ -57,7 +57,7 @@ of truth for catalog plus a unified transaction ledger.
   request/reply on `{prefix}.{kiosk_code}.command.<name>`. The kiosk
   runs the same `PerformStockAdjustment` business logic the local
   HTTP path does — including rejecting serialized items, whose
-  quantity is derived from their active instance count (manage those
+  quantity is derived from their non-retired instance count (manage those
   via the Instances tab) — then publishes the same `inventory.adjust`
   event the aggregator already knows about. Idempotency is server-side: the
   controller generates a UUID `command_id`; the kiosk's
@@ -68,15 +68,18 @@ of truth for catalog plus a unified transaction ledger.
   the SPA doesn't wait 5 s for a NATS timeout to render "offline."
 - **Instance management commands** mirror the inventory family for
   serialized units: `instance.snapshot` (read), `instance.create`,
-  `instance.edit` (cosmetic — no audit, no lifecycle event),
-  `instance.decommission`, `instance.reactivate`. Mutations write to
-  the kiosk's `item_instances` + `instance_audit` and emit the same
-  `instance.lifecycle` event the SPA-driven PB-hook path emits; the
+  `instance.edit` (cosmetic — no audit, no lifecycle event), and
+  `instance.set_status` (one command for every lifecycle transition —
+  send to maintenance, return to service, retire, un-retire — with the
+  target `status` ∈ {in_service, maintenance, retired} carried as data
+  and the audit verb derived kiosk-side from the transition). Mutations
+  write to the kiosk's `item_instances` + `instance_audit` and emit the
+  same `instance.lifecycle` event the SPA-driven PB-hook path emits; the
   controller's existing projection (`instance_lifecycle_audit`) can't
   tell where the mutation originated except via the `source` field
   (`local` vs `controller`). Idempotency anchor is the unique-when-non-
   empty `command_id` index on `instance_audit`. The Instances tab on
-  the controller's per-kiosk detail page drives all five.
+  the controller's per-kiosk detail page drives all four.
 - **Maintenance commands.** Two operator tools for fixing or refilling
   state on a remote kiosk:
   - `integrity.rebuild`
@@ -94,16 +97,21 @@ of truth for catalog plus a unified transaction ledger.
   endpoints use, so behavior is identical to a kiosk admin running
   them at the touchscreen. Buttons live in the Overview tab of the
   per-kiosk detail page.
-- **Notifications, centralized.** Managed kiosks publish two
+- **Notifications, centralized.** Managed kiosks publish three
   notification subjects on the same JetStream stream —
-  `receipt.transaction` (one per commit) and `alert.lowstock` (one per
-  threshold cross). The aggregator dispatches each to the controller's
+  `receipt.transaction` (one per commit), `alert.lowstock` (one per
+  threshold cross), and `alert.maintenance` (one per transaction that
+  routes returned serialized units into maintenance, batched). The
+  aggregator dispatches each to the controller's
   `notifications.Notifier`, which renders against the controller's
   fleet-global `notification_templates` rows, sends via the
   controller's PocketBase SMTP, and writes to the controller's
   `notification_send_log`. Scheduled digests don't ride NATS at all in
   managed mode — the controller owns the `scheduled_reports` rows and
-  the scheduler; the kiosk's scheduler stays off entirely. The CRUD
+  the scheduler; the kiosk's scheduler stays off entirely. A new
+  "Items in maintenance" digest (`digest.maintenance`) fans out
+  `instance.snapshot` to every online kiosk, filtered to
+  `status=maintenance`, listing offline kiosks as excluded. The CRUD
   endpoints (`/api/controller/notifications`) mirror the kiosk's; the
   SPA detects role at boot and points the Templates tab at the right
   base URL. See [Notifications](notifications.md) for the full picture.
@@ -120,7 +128,7 @@ of truth for catalog plus a unified transaction ledger.
   aggregator receives is projected into the controller's
   `instance_lifecycle_audit` collection — denormalized
   (`kiosk_code`, `item_code`, `instance_id`, `instance_code`, `action`,
-  `prev_active`, `new_active`, `reason`, `source`, `admin_id`).
+  `prev_status`, `new_status`, `reason`, `source`, `admin_id`).
   Idempotent via a unique-when-non-empty `source_audit_id` index that
   carries the kiosk-side `instance_audit.id` of the row that generated
   the event. Drives the Reports → Instance lifecycle tab; the
@@ -133,8 +141,9 @@ of truth for catalog plus a unified transaction ledger.
   (`checkout.close` command). The kiosk-side handler converges on
   `commit.AdminClose`, so the close behaves identically to a locally
   initiated close: same ledger writes, same qty side-effect for
-  `lost` / `damaged`, same `instance.lifecycle` event when retiring a
-  serialized unit. The controller server-generates the `command_id` so
+  `lost` / `damaged`, same `instance.lifecycle` event (action=`retire`)
+  when a `lost` / `damaged` close retires a serialized unit. The
+  controller server-generates the `command_id` so
   retries are idempotent end-to-end (the kiosk's `transactions.command_id`
   unique-when-non-empty index catches duplicates). An admin close publishes
   only the `checkout.admin_close` event — never `transaction.complete` or
@@ -170,8 +179,8 @@ What it **doesn't** do in v1 (deliberately out of scope):
   the DAO, so rules don't matter; UI gating handles the admin
   experience).
 - Other remote admin commands — only inventory adjust + snapshot,
-  checkout close, and instance management (create / edit / decommission /
-  reactivate / snapshot) ship today. The dispatcher's `HandleFunc`
+  checkout close, and instance management (create / edit / set_status /
+  snapshot) ship today. The dispatcher's `HandleFunc`
   registry makes adding a new command a one-handler change.
 
 ## Reports surface
@@ -190,7 +199,7 @@ events). The remaining three project from dedicated event subjects:
 | Group activity | `transactions` + `transaction_lines` + `groups` via pb-sdk, rolled up client-side | Date range filter |
 | Recent transactions | `transactions` via pb-sdk, paginated | Click to drill into a transaction |
 | Adjustment audit | `inventory_audit` via pb-sdk, paginated | Filters: from / to / source (local vs controller); kiosk filter from the page header |
-| Instance lifecycle | `instance_lifecycle_audit` via pb-sdk, paginated | Filters: from / to / action (create/decommission/reactivate/delete) / source; kiosk filter from the page header. Same tab works on standalone kiosks against their local `instance_audit` |
+| Instance lifecycle | `instance_lifecycle_audit` via pb-sdk, paginated | Filters: from / to / action (create/to_maintenance/return_to_service/retire/unretire) / source; kiosk filter from the page header. Same tab works on standalone kiosks against their local `instance_audit` |
 | Notifications | `notification_send_log` via pb-sdk, rolled up client-side | Per-event success-rate table, recent-failures panel; same tab works on standalone kiosks against their own send log |
 
 Every tab has an **Export CSV** button that respects the same filters the
@@ -301,11 +310,16 @@ online badges; clicking a row opens the per-kiosk detail view at
   `inventory.adjust` command. Serialized rows show a "serialized" marker
   instead — their count is derived and managed on the Instances tab.
 - **Instances** — the serialized-unit roster fetched via
-  `instance.snapshot`, with a per-unit Active flag and an out-status
-  ("currently out" / "available") column derived from the same ledger
-  replay. Create, edit (cosmetic), decommission, and reactivate each map
-  to a matching NATS command. Decommission + reactivate require a reason
-  that lands in the audit log.
+  `instance.snapshot`, with a per-unit status (in_service / maintenance /
+  retired) and an out-status ("currently out" / "available") column
+  derived from the same ledger replay. Create and edit (cosmetic) map to
+  matching NATS commands; every lifecycle transition (send to maintenance,
+  return to service, retire, un-retire) goes through the single
+  `instance.set_status` command, which requires a reason that lands in
+  the audit log. The endpoint is
+  `POST /api/controller/kiosks/{code}/instances/{instance_code}/status`
+  with body `{status, reason}` (status validated ∈ {in_service,
+  maintenance, retired}).
 
 Use the Items view to add/edit items globally; user edits fan out to
 every managed kiosk. Item edits fan out only to the kiosks that stock

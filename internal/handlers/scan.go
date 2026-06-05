@@ -269,7 +269,7 @@ func (h *Handlers) instanceMatchFromRecord(rec *core.Record) (*scan.InstanceMatc
 			Code:    rec.GetString("code"),
 			Serial:  rec.GetString("serial"),
 			RFIDEPC: rec.GetString("rfid_epc"),
-			Active:  rec.GetBool("active"),
+			Status:  rec.GetString("status"),
 			Notes:   rec.GetString("notes"),
 		},
 		Item: itemFromRecord(itemRec),

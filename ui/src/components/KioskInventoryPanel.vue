@@ -154,9 +154,11 @@ const columns: ColumnDef[] = [
 
 // available + low-stock use the shared helper so this panel matches the local
 // kiosk Items view exactly. `out` is supplied by the controller (derived from
-// its projected ledger); `type` distinguishes tools from consumables.
+// its projected ledger); `type` distinguishes tools from consumables;
+// `maintenance` (serialized units parked at the bench) is carried from the
+// kiosk's snapshot and subtracted alongside out.
 function availableOf(it: InventorySnapshotItem): number {
-  return availableFor(it.quantity_on_hand, it.out ?? 0, it.type)
+  return availableFor(it.quantity_on_hand, it.out ?? 0, it.type, it.maintenance ?? 0)
 }
 
 function isLow(it: InventorySnapshotItem): boolean {
@@ -244,7 +246,7 @@ const pagedItems = computed(() => {
         <span
           v-if="row.tracking_mode === 'serialized'"
           class="text-xs text-slate-500"
-          title="Serialized — change the count on the Instances tab by adding or decommissioning units"
+          title="Serialized — change the count on the Instances tab by adding or retiring units"
         >
           serialized
         </span>

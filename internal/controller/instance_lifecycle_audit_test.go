@@ -24,9 +24,9 @@ func TestProjectInstanceLifecycle_ProjectsRow(t *testing.T) {
 		ItemName:      "Drill A",
 		InstanceID:    "inst-1",
 		InstanceCode:  "DRILL-A-001",
-		Action:        "decommission",
-		PrevActive:    true,
-		NewActive:     false,
+		Action:        "retire",
+		PrevStatus:    "in_service",
+		NewStatus:     "retired",
 		Reason:        "damaged",
 		Source:        events.SourceLocal,
 		AdminID:       "admin-local-1",
@@ -49,11 +49,14 @@ func TestProjectInstanceLifecycle_ProjectsRow(t *testing.T) {
 	if got := rec.GetString("instance_id"); got != "inst-1" {
 		t.Errorf("instance_id: got %q, want inst-1", got)
 	}
-	if got := rec.GetString("action"); got != "decommission" {
-		t.Errorf("action: got %q, want decommission", got)
+	if got := rec.GetString("action"); got != "retire" {
+		t.Errorf("action: got %q, want retire", got)
 	}
-	if got := rec.GetBool("prev_active"); got != true {
-		t.Errorf("prev_active: got %v, want true", got)
+	if got := rec.GetString("prev_status"); got != "in_service" {
+		t.Errorf("prev_status: got %q, want in_service", got)
+	}
+	if got := rec.GetString("new_status"); got != "retired" {
+		t.Errorf("new_status: got %q, want retired", got)
 	}
 	if got := rec.GetString("admin_id"); got != "admin-local-1" {
 		t.Errorf("admin_id: got %q, want admin-local-1", got)
@@ -86,9 +89,9 @@ func TestProjectInstanceLifecycle_ControllerSource(t *testing.T) {
 		ItemCode:          "DRILL-A",
 		InstanceID:        "inst-2",
 		InstanceCode:      "DRILL-A-002",
-		Action:            "decommission",
-		PrevActive:        true,
-		NewActive:         false,
+		Action:            "retire",
+		PrevStatus:        "in_service",
+		NewStatus:         "retired",
 		Reason:            "admin_close: damaged",
 		Source:            events.SourceController,
 		ControllerAdminID: "ctrl-admin-42",
@@ -129,7 +132,7 @@ func TestProjectInstanceLifecycle_MissingSourceAuditID(t *testing.T) {
 		InstanceID:   "inst-3",
 		InstanceCode: "DRILL-A-003",
 		Action:       "create",
-		NewActive:    true,
+		NewStatus:    "in_service",
 		Source:       events.SourceLocal,
 		AdminID:      "admin-local-1",
 		CompletedAt:  time.Now().UTC(),
