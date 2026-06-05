@@ -10,7 +10,64 @@ import (
 
 	"github.com/skeeeon/kiosk/internal/exports"
 	"github.com/skeeeon/kiosk/internal/ledger"
+	"github.com/skeeeon/kiosk/internal/scheduler"
 )
+
+// replayFleetOpenRows computes the cross-fleet open set without loading the
+// whole transaction_lines table in a single query: it iterates the kiosks
+// registry and concatenates each kiosk's bounded replay (ledger.ReplayOpenRows
+// scopes the query per kiosk), so peak memory stays at one kiosk's history
+// rather than the entire fleet's. Cross-kiosk order is irrelevant — FIFO
+// correlation is per-(item,instance,user) within a single kiosk's ledger — and
+// ledger.Hydrate surfaces kiosk_code per row, so the concatenated view renders
+// correctly. The registry is the same fleet list the heartbeat/touch paths
+// maintain; a kiosk that has transacted but isn't registered (shouldn't happen
+// — TouchKiosk registers on first transaction) would be omitted here.
+func replayFleetOpenRows(app core.App) ([]ledger.OpenRow, error) {
+	kiosks, err := app.FindRecordsByFilter("kiosks", "", "kiosk_code", 0, 0)
+	if err != nil {
+		return nil, fmt.Errorf("load kiosks: %w", err)
+	}
+	var out []ledger.OpenRow
+	for _, k := range kiosks {
+		code := k.GetString("kiosk_code")
+		if code == "" {
+			continue
+		}
+		rows, err := ledger.ReplayOpenRows(app, code)
+		if err != nil {
+			return nil, fmt.Errorf("replay kiosk %s: %w", code, err)
+		}
+		out = append(out, rows...)
+	}
+	return out, nil
+}
+
+// replayOpenRows picks the bounded single-kiosk replay when a kiosk_code is
+// given, or the per-kiosk fan-out across the fleet when it's empty. Either way
+// it never loads the entire transaction_lines table in one query.
+func replayOpenRows(app core.App, kioskCode string) ([]ledger.OpenRow, error) {
+	if kioskCode != "" {
+		return ledger.ReplayOpenRows(app, kioskCode)
+	}
+	return replayFleetOpenRows(app)
+}
+
+// OpenCheckoutsDigestRunner is the controller's override for the scheduler's
+// "open_checkouts" report. For a fleet-wide row (empty kiosk_code) it fans out
+// per kiosk via replayFleetOpenRows instead of replaying the entire projected
+// ledger in one query — otherwise the unattended digest cron would OOM at
+// fleet scale; a kiosk-scoped row uses the bounded single-kiosk replay. Wired
+// in cmd/controller/main.go via scheduler.RegisterRunner("open_checkouts", …),
+// mirroring the maintenance-digest override.
+func OpenCheckoutsDigestRunner(app core.App, row *core.Record) (string, any, error) {
+	kioskCode := row.GetString("kiosk_code")
+	rows, err := replayOpenRows(app, kioskCode)
+	if err != nil {
+		return "", nil, fmt.Errorf("replay open rows: %w", err)
+	}
+	return scheduler.BuildOpenChecksDigest(app, kioskCode, rows)
+}
 
 // ReportOpenCheckouts mirrors the kiosk's reports endpoint for cross-fleet
 // use, computed by replaying the projected transaction_lines ledger — the
@@ -25,7 +82,7 @@ func (h *Handlers) ReportOpenCheckouts(re *core.RequestEvent) error {
 	}
 	kioskCode := re.Request.URL.Query().Get("kiosk_code")
 
-	rows, err := ledger.ReplayOpenRows(h.App, kioskCode)
+	rows, err := replayOpenRows(h.App, kioskCode)
 	if err != nil {
 		return re.InternalServerError("replay open rows", err)
 	}
@@ -44,7 +101,7 @@ func (h *Handlers) ReportOpenCheckoutsCSV(re *core.RequestEvent) error {
 	}
 	kioskCode := re.Request.URL.Query().Get("kiosk_code")
 
-	rows, err := ledger.ReplayOpenRows(h.App, kioskCode)
+	rows, err := replayOpenRows(h.App, kioskCode)
 	if err != nil {
 		return re.InternalServerError("replay open rows", err)
 	}

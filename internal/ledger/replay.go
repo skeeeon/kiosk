@@ -11,12 +11,21 @@ package ledger
 
 import (
 	"fmt"
+	"log/slog"
 	"strconv"
 	"time"
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 )
+
+// replayWarnRows is the line-count threshold above which ReplayOpenRows logs a
+// warning. It's the data-driven signal that one kiosk's ledger has grown large
+// enough to consider the deferred per-kiosk checkpoint accelerator (replaying
+// from a saved open-set baseline + only recent lines) rather than walking the
+// full history on every read. Until that fires, the bounded full replay below
+// stays comfortably small.
+const replayWarnRows = 250_000
 
 // OpenRow is one unit currently checked out, reconstructed from the ledger.
 // The TransactionLine FK lets a caller resolve back to the originating
@@ -55,9 +64,28 @@ func ReplayOpenRows(app core.App, kioskCodeFilter string) ([]OpenRow, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load transactions: %w", err)
 	}
-	lines, err := app.FindRecordsByFilter("transaction_lines", "", "id", 0, 0)
+	// Bound the lines load to the same kiosk as the transactions above.
+	// Loading the entire transaction_lines table (the previous behaviour)
+	// OOMs the controller at fleet scale — even a single-kiosk view pulled
+	// every kiosk's lines. Filtering indirectly through the parent
+	// transaction relation scopes the load to one kiosk's history; it's the
+	// same trick used in internal/exports/reports.go and
+	// internal/scheduler/daily_activity.go. An empty filter (the kiosk
+	// integrity-rebuild / kiosk-local path, where the DB only holds one
+	// kiosk's data anyway) keeps the unbounded load.
+	lineFilter := ""
+	lineParams := dbx.Params{}
+	if kioskCodeFilter != "" {
+		lineFilter = "transaction.status = 'completed' && transaction.kiosk_code = {:kc}"
+		lineParams["kc"] = kioskCodeFilter
+	}
+	lines, err := app.FindRecordsByFilter("transaction_lines", lineFilter, "id", 0, 0, lineParams)
 	if err != nil {
 		return nil, fmt.Errorf("load lines: %w", err)
+	}
+	if len(lines) > replayWarnRows {
+		slog.Warn("ledger replay loaded a large line set; consider per-kiosk checkpoints",
+			"kiosk_code", kioskCodeFilter, "lines", len(lines))
 	}
 	linesByTx := make(map[string][]*core.Record, len(txs))
 	for _, l := range lines {

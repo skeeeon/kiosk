@@ -94,28 +94,38 @@ func runOpenCheckoutsDigest(app core.App, row *core.Record) (string, any, error)
 	if err != nil {
 		return "", nil, fmt.Errorf("replay open rows: %w", err)
 	}
+	return BuildOpenChecksDigest(app, rowKioskCode, rows)
+}
+
+// BuildOpenChecksDigest hydrates a pre-computed open set and assembles the
+// digest context. Split out from runOpenCheckoutsDigest so the controller can
+// supply rows from its own per-kiosk fan-out for the fleet-wide (empty
+// kiosk_code) case — which must not load the whole projected ledger in one
+// query — while the standalone kiosk keeps the simple full replay above. See
+// controller.OpenCheckoutsDigestRunner.
+func BuildOpenChecksDigest(app core.App, kioskCode string, rows []ledger.OpenRow) (string, any, error) {
 	dtos, err := ledger.Hydrate(app, rows)
 	if err != nil {
 		return "", nil, fmt.Errorf("hydrate open rows: %w", err)
 	}
 	out := make([]notifications.OpenChecksDigestRow, 0, len(dtos))
 	for _, d := range dtos {
-		row := notifications.OpenChecksDigestRow{
+		r := notifications.OpenChecksDigestRow{
 			Serial:       d.Serial,
 			CheckedOutAt: d.CheckedOutAt,
 		}
 		if d.Expand.Item != nil {
-			row.ItemCode = d.Expand.Item.Code
-			row.ItemName = d.Expand.Item.Name
+			r.ItemCode = d.Expand.Item.Code
+			r.ItemName = d.Expand.Item.Name
 		}
 		if d.Expand.User != nil {
-			row.UserCode = d.Expand.User.Code
-			row.UserName = d.Expand.User.Name
+			r.UserCode = d.Expand.User.Code
+			r.UserName = d.Expand.User.Name
 		}
-		out = append(out, row)
+		out = append(out, r)
 	}
 	ctx := notifications.OpenChecksDigestContext{
-		Kiosk:       digestKioskInfo(rowKioskCode),
+		Kiosk:       digestKioskInfo(kioskCode),
 		GeneratedAt: time.Now().UTC(),
 		Rows:        out,
 		RowsCount:   len(out),

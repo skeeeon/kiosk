@@ -191,6 +191,12 @@ func main() {
 		// after RegisterEnabled — runOnce resolves the runner at fire time.
 		scheduler.RegisterRunner("maintenance", h.MaintenanceDigestRunner(nc, hbRegistry))
 
+		// Override the standalone open-checkouts digest so a fleet-wide
+		// (empty kiosk_code) row fans out per kiosk instead of replaying the
+		// entire projected transaction_lines ledger in one query — the latter
+		// would OOM the controller on this unattended cron at fleet scale.
+		scheduler.RegisterRunner("open_checkouts", controller.OpenCheckoutsDigestRunner)
+
 		app.OnTerminate().BindFunc(func(te *core.TerminateEvent) error {
 			agg.Stop()
 			if hbSub != nil {

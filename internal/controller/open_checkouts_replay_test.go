@@ -191,6 +191,50 @@ func TestControllerReplay_KioskScoped(t *testing.T) {
 	}
 }
 
+func TestControllerReplay_FleetFanout(t *testing.T) {
+	app := setupApp(t)
+	seedUser(t, app, "WORKER-1", "Alice")
+	seedItem(t, app, "DRILL", "Drill")
+	// The fan-out walks the kiosks registry, so the kiosks must be registered
+	// for their open rows to surface — mirrors production, where TouchKiosk
+	// registers a kiosk on its first transaction. (seedKiosk lives in
+	// membership_test.go.)
+	seedKiosk(t, app, "KIOSK-A", "WEST")
+	seedKiosk(t, app, "KIOSK-B", "EAST")
+
+	agg := NewAggregator(app, nil, "")
+	t0 := time.Now().UTC()
+
+	// 2 drills out at A, 1 at B.
+	mustProjectTx(t, agg, "src-tx-A", "WORKER-1", "KIOSK-A", t0)
+	mustProjectLine(t, agg, EventPayload{
+		LineID: "src-line-A", KioskCode: "KIOSK-A", TransactionID: "src-tx-A",
+		ItemCode: "DRILL", UserCode: "WORKER-1", Action: "checkout", Qty: 2, CompletedAt: t0,
+	})
+	mustProjectTx(t, agg, "src-tx-B", "WORKER-1", "KIOSK-B", t0)
+	mustProjectLine(t, agg, EventPayload{
+		LineID: "src-line-B", KioskCode: "KIOSK-B", TransactionID: "src-tx-B",
+		ItemCode: "DRILL", UserCode: "WORKER-1", Action: "checkout", Qty: 1, CompletedAt: t0,
+	})
+
+	if a, b := len(replayRows(t, app, "KIOSK-A")), len(replayRows(t, app, "KIOSK-B")); a != 2 || b != 1 {
+		t.Fatalf("per-kiosk replay: want A=2 B=1, got A=%d B=%d", a, b)
+	}
+
+	fan, err := replayFleetOpenRows(app)
+	if err != nil {
+		t.Fatalf("replayFleetOpenRows: %v", err)
+	}
+	if len(fan) != 3 {
+		t.Fatalf("fan-out: want 3 rows (2 A + 1 B), got %d", len(fan))
+	}
+	// The fan-out must reproduce exactly the empty-filter full replay it
+	// replaces — same fleet view, just without loading the whole ledger at once.
+	if full := len(replayRows(t, app, "")); full != len(fan) {
+		t.Errorf("fan-out (%d) must equal empty-filter full replay (%d)", len(fan), full)
+	}
+}
+
 func TestControllerReplay_AdminCloseRemovesRowAndIsIdempotent(t *testing.T) {
 	app := setupApp(t)
 	seedUser(t, app, "WORKER-1", "Alice")
