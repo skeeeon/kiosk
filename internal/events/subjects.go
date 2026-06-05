@@ -267,6 +267,16 @@ func InstanceSnapshotCommandSubject(kioskCode string) string {
 	return CommandSubject(kioskCode, "instance.snapshot")
 }
 
+// CheckoutSnapshotCommandSubject is the controller→kiosk read-only command
+// that returns the kiosk's currently-open checkouts (hydrated, same shape as
+// ledger.OpenCheckoutDTO), read straight from open_checkouts. Lets the
+// controller's currently-out report/digest source live state from the kiosk
+// instead of replaying its projected ledger; mutates nothing, so no
+// idempotency key.
+func CheckoutSnapshotCommandSubject(kioskCode string) string {
+	return CommandSubject(kioskCode, "checkout.snapshot")
+}
+
 // RFID enclosure_diff command subjects. cart.start is the external
 // trigger (access-control system fires it when a worker badges into
 // the enclosure door); read.trigger is the external read trigger

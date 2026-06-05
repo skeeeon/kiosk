@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
@@ -221,17 +222,75 @@ func TestControllerReplay_FleetFanout(t *testing.T) {
 		t.Fatalf("per-kiosk replay: want A=2 B=1, got A=%d B=%d", a, b)
 	}
 
-	fan, err := replayFleetOpenRows(app)
+	// Both kiosks are offline (empty heartbeat registry), so the NATS-first
+	// gather falls back to replaying the controller's projected ledger for
+	// each — nc is never touched. This is the offline-fallback path behind the
+	// currently-out report/digest when a kiosk can't be reached live.
+	h := &Handlers{App: app}
+	rows, prov, err := h.gatherOpenCheckouts(nil, NewHeartbeatRegistry(nil), "")
 	if err != nil {
-		t.Fatalf("replayFleetOpenRows: %v", err)
+		t.Fatalf("gatherOpenCheckouts: %v", err)
 	}
-	if len(fan) != 3 {
-		t.Fatalf("fan-out: want 3 rows (2 A + 1 B), got %d", len(fan))
+	if len(rows) != 3 {
+		t.Fatalf("offline fallback: want 3 DTOs (2 A + 1 B), got %d", len(rows))
 	}
-	// The fan-out must reproduce exactly the empty-filter full replay it
-	// replaces — same fleet view, just without loading the whole ledger at once.
-	if full := len(replayRows(t, app, "")); full != len(fan) {
-		t.Errorf("fan-out (%d) must equal empty-filter full replay (%d)", len(fan), full)
+	if len(prov.LiveKiosks) != 0 || len(prov.UnavailableKiosks) != 0 {
+		t.Errorf("want nothing live/unavailable, got live=%v unavailable=%v",
+			prov.LiveKiosks, prov.UnavailableKiosks)
+	}
+	if want := []string{"KIOSK-A", "KIOSK-B"}; !reflect.DeepEqual(prov.LastKnownKiosks, want) {
+		t.Errorf("LastKnownKiosks = %v, want %v", prov.LastKnownKiosks, want)
+	}
+}
+
+// TestReplayInstanceStatuses covers the maintenance digest's offline fallback:
+// current status is the latest transition per instance in
+// instance_lifecycle_audit, and only units whose latest status is maintenance
+// are returned.
+func TestReplayInstanceStatuses(t *testing.T) {
+	app := setupApp(t)
+	col, err := app.FindCollectionByNameOrId("instance_lifecycle_audit")
+	if err != nil {
+		t.Fatalf("find instance_lifecycle_audit: %v", err)
+	}
+	seedAudit := func(instanceID, instanceCode, action, newStatus string, occurred time.Time) {
+		rec := core.NewRecord(col)
+		rec.Set("kiosk_code", "KIOSK-A")
+		rec.Set("instance_id", instanceID)
+		rec.Set("instance_code", instanceCode)
+		rec.Set("item_code", "DRILL")
+		rec.Set("item_name", "Drill")
+		rec.Set("action", action)
+		rec.Set("new_status", newStatus)
+		rec.Set("occurred_at", occurred)
+		if serr := app.Save(rec); serr != nil {
+			t.Fatalf("seed audit: %v", serr)
+		}
+	}
+	t0 := time.Now().UTC()
+	// inst-1: sent to maintenance, then returned to service → current in_service.
+	seedAudit("inst-1", "A-1", "to_maintenance", "maintenance", t0)
+	seedAudit("inst-1", "A-1", "return_to_service", "in_service", t0.Add(time.Hour))
+	// inst-2: currently in maintenance.
+	seedAudit("inst-2", "A-2", "to_maintenance", "maintenance", t0.Add(time.Minute))
+	// A different kiosk's maintenance unit must not leak into KIOSK-A's set.
+	recB := core.NewRecord(col)
+	recB.Set("kiosk_code", "KIOSK-B")
+	recB.Set("instance_id", "inst-9")
+	recB.Set("instance_code", "B-9")
+	recB.Set("action", "to_maintenance")
+	recB.Set("new_status", "maintenance")
+	recB.Set("occurred_at", t0)
+	if serr := app.Save(recB); serr != nil {
+		t.Fatalf("seed audit B: %v", serr)
+	}
+
+	rows, err := replayInstanceStatuses(app, "KIOSK-A")
+	if err != nil {
+		t.Fatalf("replayInstanceStatuses: %v", err)
+	}
+	if len(rows) != 1 || rows[0].InstanceCode != "A-2" {
+		t.Fatalf("want only A-2 in maintenance, got %+v", rows)
 	}
 }
 

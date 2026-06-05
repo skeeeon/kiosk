@@ -140,16 +140,7 @@ func (h *Handlers) ReportLowStockCSV(nc *nats.Conn, reg *HeartbeatRegistry) func
 // err) because they mean we couldn't bridge the snapshot codes back to
 // item_ids — any individual kiosk error is just a row in errs.
 func (h *Handlers) gatherLowStock(nc *nats.Conn, reg *HeartbeatRegistry, kioskCodeFilter string) ([]lowStockEntry, []lowStockKioskError, error) {
-	targets := onlineKiosks(reg, heartbeatFreshness)
-	if kioskCodeFilter != "" {
-		targets = filterToCode(targets, kioskCodeFilter)
-	}
-	if len(targets) == 0 {
-		return nil, nil, nil
-	}
-
-	results := fanoutInventorySnapshots(nc, targets)
-	idToCode, err := loadItemIDToCodeMap(h.App)
+	online, offline, err := h.targetKiosks(reg, kioskCodeFilter)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -158,24 +149,32 @@ func (h *Handlers) gatherLowStock(nc *nats.Conn, reg *HeartbeatRegistry, kioskCo
 		rows []lowStockEntry
 		errs []lowStockKioskError
 	)
-	for _, inv := range results {
-		if inv.err != nil {
-			errs = append(errs, lowStockKioskError{
-				KioskCode: inv.kioskCode,
-				Error:     inv.err.Error(),
-			})
-			continue
-		}
-		kioskRows, perr := lowStockRowsForKiosk(h.App, inv.kioskCode, inv.rawData, idToCode)
-		if perr != nil {
-			errs = append(errs, lowStockKioskError{
-				KioskCode: inv.kioskCode,
-				Error:     perr.Error(),
-			})
-			continue
-		}
-		rows = append(rows, kioskRows...)
+	// Offline kiosks have no controller-side fallback — the controller never
+	// projects per-kiosk on-hand — so they're surfaced as unavailable rather
+	// than silently dropped from the report.
+	for _, code := range offline {
+		errs = append(errs, lowStockKioskError{KioskCode: code, Error: "kiosk_offline"})
 	}
+
+	if len(online) > 0 {
+		idToCode, ierr := loadItemIDToCodeMap(h.App)
+		if ierr != nil {
+			return nil, nil, ierr
+		}
+		for _, inv := range fanoutInventorySnapshots(nc, online) {
+			if inv.err != nil {
+				errs = append(errs, lowStockKioskError{KioskCode: inv.kioskCode, Error: inv.err.Error()})
+				continue
+			}
+			kioskRows, perr := lowStockRowsForKiosk(h.App, inv.kioskCode, inv.rawData, idToCode)
+			if perr != nil {
+				errs = append(errs, lowStockKioskError{KioskCode: inv.kioskCode, Error: perr.Error()})
+				continue
+			}
+			rows = append(rows, kioskRows...)
+		}
+	}
+
 	sort.SliceStable(rows, func(i, j int) bool {
 		if rows[i].ItemCode != rows[j].ItemCode {
 			return rows[i].ItemCode < rows[j].ItemCode
@@ -186,31 +185,6 @@ func (h *Handlers) gatherLowStock(nc *nats.Conn, reg *HeartbeatRegistry, kioskCo
 	return rows, errs, nil
 }
 
-// filterToCode reduces the kiosks list to a single code if present. Used
-// to honor the SPA's page-level kiosk filter without a separate code path.
-func filterToCode(kioskCodes []string, want string) []string {
-	for _, c := range kioskCodes {
-		if c == want {
-			return []string{c}
-		}
-	}
-	return nil
-}
-
-// onlineKiosks returns kiosks whose last heartbeat is within the freshness
-// window. Pure filter over the registry snapshot — no NATS calls.
-func onlineKiosks(reg *HeartbeatRegistry, freshness time.Duration) []string {
-	cutoff := time.Now().Add(-freshness)
-	beats := reg.Snapshot()
-	out := make([]string, 0, len(beats))
-	for code, beat := range beats {
-		if beat.After(cutoff) {
-			out = append(out, code)
-		}
-	}
-	sort.Strings(out)
-	return out
-}
 
 // fanoutInventorySnapshots fires `inventory.snapshot` at each kiosk in
 // parallel and gathers the replies.
@@ -263,11 +237,14 @@ func fanoutSnapshots(nc *nats.Conn, kioskCodes []string, subjectFn func(string) 
 	return results
 }
 
-// lowStockRowsForKiosk decodes the snapshot reply, computes per-item
-// out-counts from the controller's projected ledger, and returns the rows
-// whose `available` is at or below the per-item threshold. The threshold
-// itself comes from the snapshot — the kiosk is the source of truth for
-// its own `reorder_threshold`, since admins can adjust it locally.
+// lowStockRowsForKiosk decodes the snapshot reply and returns the rows whose
+// `available` is at or below the per-item threshold. Both the threshold and the
+// out-count come from the snapshot — the kiosk is the source of truth for its
+// own reorder_threshold and (now) its own out-count, read from its
+// open_checkouts. Transitional fallback: a kiosk that predates the `out` field
+// is detected by its absence in the raw reply, and the count is derived by
+// replaying the controller's projected ledger so a mid-rollout fleet still
+// reports correctly.
 func lowStockRowsForKiosk(app core.App, kioskCode string, rawData json.RawMessage, idToCode map[string]string) ([]lowStockEntry, error) {
 	var reply struct {
 		Items []struct {
@@ -277,41 +254,38 @@ func lowStockRowsForKiosk(app core.App, kioskCode string, rawData json.RawMessag
 			ReorderThreshold int    `json:"reorder_threshold"`
 			TrackingMode     string `json:"tracking_mode"`
 			Active           bool   `json:"active"`
+			Out              int    `json:"out"`
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(rawData, &reply); err != nil {
 		return nil, err
 	}
 
-	// Out-count per item_code. ReplayOpenRows reconstructs the open rows from
-	// the projected transaction_lines ledger (the controller no longer
-	// materializes open_checkouts); the map through the catalog joins
-	// item_id → item_code so the count pairs with the snapshot's item_code.
-	openRows, err := ledger.ReplayOpenRows(app, kioskCode)
-	if err != nil {
-		return nil, err
-	}
-	outByCode := make(map[string]int, len(openRows))
-	for _, r := range openRows {
-		code, ok := idToCode[r.Item]
-		if !ok {
-			// Item was deleted on the controller after a transaction
-			// referenced it. Counts toward "out" only if we can match
-			// — skip it rather than fabricate a code.
-			continue
+	var fallbackOut map[string]int
+	if !snapshotItemsHaveOut(rawData) {
+		openRows, err := ledger.ReplayOpenRows(app, kioskCode)
+		if err != nil {
+			return nil, err
 		}
-		outByCode[code]++
+		fallbackOut = make(map[string]int, len(openRows))
+		for _, r := range openRows {
+			// Skip rows for items deleted on the controller after a
+			// transaction referenced them — can't map id→code to fabricate one.
+			if code, ok := idToCode[r.Item]; ok {
+				fallbackOut[code]++
+			}
+		}
 	}
 
 	out := make([]lowStockEntry, 0)
 	for _, item := range reply.Items {
-		if !item.Active {
+		if !item.Active || item.ReorderThreshold <= 0 {
 			continue
 		}
-		if item.ReorderThreshold <= 0 {
-			continue
+		openCount := item.Out
+		if fallbackOut != nil {
+			openCount = fallbackOut[item.ItemCode]
 		}
-		openCount := outByCode[item.ItemCode]
 		available := item.QuantityOnHand - openCount
 		if available < 0 {
 			available = 0
@@ -331,6 +305,21 @@ func lowStockRowsForKiosk(app core.App, kioskCode string, rawData json.RawMessag
 		})
 	}
 	return out, nil
+}
+
+// snapshotItemsHaveOut reports whether an inventory.snapshot reply carries the
+// per-item `out` field (new-protocol kiosk) vs omits it (pre-rollout kiosk).
+// A typed decode can't distinguish absent from a genuine 0, so we probe the
+// raw key presence on the first item.
+func snapshotItemsHaveOut(rawData json.RawMessage) bool {
+	var probe struct {
+		Items []map[string]json.RawMessage `json:"items"`
+	}
+	if err := json.Unmarshal(rawData, &probe); err != nil || len(probe.Items) == 0 {
+		return false
+	}
+	_, ok := probe.Items[0]["out"]
+	return ok
 }
 
 // loadItemIDToCodeMap builds the id→code translation used to bridge the

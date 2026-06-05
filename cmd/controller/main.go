@@ -191,11 +191,12 @@ func main() {
 		// after RegisterEnabled — runOnce resolves the runner at fire time.
 		scheduler.RegisterRunner("maintenance", h.MaintenanceDigestRunner(nc, hbRegistry))
 
-		// Override the standalone open-checkouts digest so a fleet-wide
-		// (empty kiosk_code) row fans out per kiosk instead of replaying the
-		// entire projected transaction_lines ledger in one query — the latter
-		// would OOM the controller on this unattended cron at fleet scale.
-		scheduler.RegisterRunner("open_checkouts", controller.OpenCheckoutsDigestRunner)
+		// Override the standalone open-checkouts digest with the controller's
+		// NATS-first gather (online kiosks answer live; offline kiosks fall back
+		// to the projected ledger) and stamp provenance so an offline kiosk is
+		// flagged, never silently dropped. The closure captures nc + the
+		// heartbeat registry, same as the maintenance override.
+		scheduler.RegisterRunner("open_checkouts", h.OpenCheckoutsDigestRunner(nc, hbRegistry))
 
 		app.OnTerminate().BindFunc(func(te *core.TerminateEvent) error {
 			agg.Stop()
@@ -222,8 +223,8 @@ func main() {
 		e.Router.GET("/api/kiosk/transactions.csv", h.TransactionsExportCSV)
 		e.Router.GET("/api/kiosk/catalog/integrity", h.CatalogIntegrity(cp))
 		e.Router.POST("/api/kiosk/catalog/reconcile", h.CatalogReconcile(cp))
-		e.Router.GET("/api/kiosk/reports/open-checkouts", h.ReportOpenCheckouts)
-		e.Router.GET("/api/kiosk/reports/open-checkouts.csv", h.ReportOpenCheckoutsCSV)
+		e.Router.GET("/api/kiosk/reports/open-checkouts", h.ReportOpenCheckouts(nc, hbRegistry))
+		e.Router.GET("/api/kiosk/reports/open-checkouts.csv", h.ReportOpenCheckoutsCSV(nc, hbRegistry))
 		e.Router.GET("/api/kiosk/reports/group-activity.csv", h.ReportGroupActivityCSV)
 		e.Router.GET("/api/kiosk/reports/instance-lifecycle.csv", h.ReportLifecycleAuditCSV)
 		e.Router.GET("/api/kiosk/reports/notifications.csv", h.ReportNotificationsCSV)

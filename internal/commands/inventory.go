@@ -126,6 +126,11 @@ type inventorySnapshotItem struct {
 	// Items view does. quantity_on_hand already includes these (non-retired),
 	// so available = on_hand − maintenance − out.
 	Maintenance int `json:"maintenance"`
+	// Out is the count of this SKU's units currently checked out, read from
+	// the kiosk's own open_checkouts table. Shipping it here lets the
+	// controller compute available without replaying its projected ledger —
+	// the kiosk is the authoritative source for what's out.
+	Out int `json:"out"`
 }
 
 type inventorySnapshotReply struct {
@@ -181,6 +186,16 @@ func (d *Dispatcher) handleInventorySnapshot(_ context.Context, payload []byte) 
 		}
 	}
 
+	// Out counts per item from the materialized open_checkouts table — the
+	// same source the local admin Items view uses. Cheap (sized by what's
+	// currently out, not by transaction history) and authoritative.
+	outByItem := map[string]int{}
+	if ocRows, oerr := d.app.FindRecordsByFilter("open_checkouts", "", "", 0, 0); oerr == nil {
+		for _, oc := range ocRows {
+			outByItem[oc.GetString("item")]++
+		}
+	}
+
 	items := make([]inventorySnapshotItem, 0, len(rows))
 	for _, r := range rows {
 		items = append(items, inventorySnapshotItem{
@@ -191,6 +206,7 @@ func (d *Dispatcher) handleInventorySnapshot(_ context.Context, payload []byte) 
 			TrackingMode:     r.GetString("tracking_mode"),
 			Active:           r.GetBool("active"),
 			Maintenance:      maintByItem[r.Id],
+			Out:              outByItem[r.Id],
 		})
 	}
 	return Reply{Success: true, Data: inventorySnapshotReply{Items: items}}

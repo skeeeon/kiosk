@@ -5,118 +5,92 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/nats-io/nats.go"
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 
 	"github.com/skeeeon/kiosk/internal/exports"
-	"github.com/skeeeon/kiosk/internal/ledger"
-	"github.com/skeeeon/kiosk/internal/scheduler"
+	"github.com/skeeeon/kiosk/internal/notifications"
 )
 
-// replayFleetOpenRows computes the cross-fleet open set without loading the
-// whole transaction_lines table in a single query: it iterates the kiosks
-// registry and concatenates each kiosk's bounded replay (ledger.ReplayOpenRows
-// scopes the query per kiosk), so peak memory stays at one kiosk's history
-// rather than the entire fleet's. Cross-kiosk order is irrelevant — FIFO
-// correlation is per-(item,instance,user) within a single kiosk's ledger — and
-// ledger.Hydrate surfaces kiosk_code per row, so the concatenated view renders
-// correctly. The registry is the same fleet list the heartbeat/touch paths
-// maintain; a kiosk that has transacted but isn't registered (shouldn't happen
-// — TouchKiosk registers on first transaction) would be omitted here.
-func replayFleetOpenRows(app core.App) ([]ledger.OpenRow, error) {
-	kiosks, err := app.FindRecordsByFilter("kiosks", "", "kiosk_code", 0, 0)
-	if err != nil {
-		return nil, fmt.Errorf("load kiosks: %w", err)
-	}
-	var out []ledger.OpenRow
-	for _, k := range kiosks {
-		code := k.GetString("kiosk_code")
-		if code == "" {
-			continue
+// ReportOpenCheckouts returns the fleet (or single-kiosk) currently-out view
+// for the SPA. NATS-first: online kiosks answer from their own open_checkouts
+// (history-independent); offline kiosks fall back to the controller's projected
+// ledger (last-known) — see gatherOpenCheckouts. The response is the flat
+// hydrated DTO array the SPA expects; per-kiosk provenance is surfaced on the
+// scheduled digest rather than this interactive view (the operator sees live
+// heartbeat status on the kiosks page). The ?kiosk_code= filter scopes to one
+// kiosk. Takes nc + reg so it can fan out, mirroring the other live endpoints.
+func (h *Handlers) ReportOpenCheckouts(nc *nats.Conn, reg *HeartbeatRegistry) func(*core.RequestEvent) error {
+	return func(re *core.RequestEvent) error {
+		if err := h.requireAdmin(re); err != nil {
+			return err
 		}
-		rows, err := ledger.ReplayOpenRows(app, code)
+		rows, _, err := h.gatherOpenCheckouts(nc, reg, re.Request.URL.Query().Get("kiosk_code"))
 		if err != nil {
-			return nil, fmt.Errorf("replay kiosk %s: %w", code, err)
+			return re.InternalServerError("gather open checkouts", err)
 		}
-		out = append(out, rows...)
+		return re.JSON(http.StatusOK, rows)
 	}
-	return out, nil
-}
-
-// replayOpenRows picks the bounded single-kiosk replay when a kiosk_code is
-// given, or the per-kiosk fan-out across the fleet when it's empty. Either way
-// it never loads the entire transaction_lines table in one query.
-func replayOpenRows(app core.App, kioskCode string) ([]ledger.OpenRow, error) {
-	if kioskCode != "" {
-		return ledger.ReplayOpenRows(app, kioskCode)
-	}
-	return replayFleetOpenRows(app)
-}
-
-// OpenCheckoutsDigestRunner is the controller's override for the scheduler's
-// "open_checkouts" report. For a fleet-wide row (empty kiosk_code) it fans out
-// per kiosk via replayFleetOpenRows instead of replaying the entire projected
-// ledger in one query — otherwise the unattended digest cron would OOM at
-// fleet scale; a kiosk-scoped row uses the bounded single-kiosk replay. Wired
-// in cmd/controller/main.go via scheduler.RegisterRunner("open_checkouts", …),
-// mirroring the maintenance-digest override.
-func OpenCheckoutsDigestRunner(app core.App, row *core.Record) (string, any, error) {
-	kioskCode := row.GetString("kiosk_code")
-	rows, err := replayOpenRows(app, kioskCode)
-	if err != nil {
-		return "", nil, fmt.Errorf("replay open rows: %w", err)
-	}
-	return scheduler.BuildOpenChecksDigest(app, kioskCode, rows)
-}
-
-// ReportOpenCheckouts mirrors the kiosk's reports endpoint for cross-fleet
-// use, computed by replaying the projected transaction_lines ledger — the
-// same single code path the kiosk uses (handlers.ReportOpenCheckouts). The
-// controller no longer materializes an open_checkouts table; replaying the
-// ledger on demand is convergent by construction, so the controller's view
-// can't drift from a kiosk's the way an incrementally-maintained projection
-// could. The ?kiosk_code= filter slices the fleet view to one kiosk.
-func (h *Handlers) ReportOpenCheckouts(re *core.RequestEvent) error {
-	if err := h.requireAdmin(re); err != nil {
-		return err
-	}
-	kioskCode := re.Request.URL.Query().Get("kiosk_code")
-
-	rows, err := replayOpenRows(h.App, kioskCode)
-	if err != nil {
-		return re.InternalServerError("replay open rows", err)
-	}
-	dtos, err := ledger.Hydrate(h.App, rows)
-	if err != nil {
-		return re.InternalServerError("hydrate open rows", err)
-	}
-	return re.JSON(http.StatusOK, dtos)
 }
 
 // ReportOpenCheckoutsCSV mirrors ReportOpenCheckouts as a CSV download. Same
-// data path (replay + hydrate) so the export stays consistent with the screen.
-func (h *Handlers) ReportOpenCheckoutsCSV(re *core.RequestEvent) error {
-	if err := h.requireAdmin(re); err != nil {
-		return err
+// gather path so the export stays consistent with the screen.
+func (h *Handlers) ReportOpenCheckoutsCSV(nc *nats.Conn, reg *HeartbeatRegistry) func(*core.RequestEvent) error {
+	return func(re *core.RequestEvent) error {
+		if err := h.requireAdmin(re); err != nil {
+			return err
+		}
+		rows, _, err := h.gatherOpenCheckouts(nc, reg, re.Request.URL.Query().Get("kiosk_code"))
+		if err != nil {
+			return re.InternalServerError("gather open checkouts", err)
+		}
+		w := re.Response
+		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+		w.Header().Set("Content-Disposition", fmt.Sprintf(
+			"attachment; filename=\"controller-open-checkouts-%s.csv\"",
+			time.Now().UTC().Format("20060102-150405"),
+		))
+		return exports.WriteOpenCheckoutsCSV(w, rows)
 	}
-	kioskCode := re.Request.URL.Query().Get("kiosk_code")
+}
 
-	rows, err := replayOpenRows(h.App, kioskCode)
-	if err != nil {
-		return re.InternalServerError("replay open rows", err)
+// OpenCheckoutsDigestRunner is the controller's override for the scheduler's
+// "open_checkouts" report. NATS-first per kiosk with a replay fallback for
+// offline kiosks (gatherOpenCheckouts), and it stamps the provenance breakdown
+// onto the context so the digest body flags any last-known or unreachable
+// kiosks instead of silently dropping them. Wired in cmd/controller/main.go via
+// scheduler.RegisterRunner("open_checkouts", …), mirroring the maintenance
+// override; the closure captures nc + the heartbeat registry the scheduler's
+// (app, row)-only runner signature can't carry.
+func (h *Handlers) OpenCheckoutsDigestRunner(nc *nats.Conn, reg *HeartbeatRegistry) func(core.App, *core.Record) (string, any, error) {
+	return func(_ core.App, row *core.Record) (string, any, error) {
+		kioskCode := row.GetString("kiosk_code")
+		dtos, prov, err := h.gatherOpenCheckouts(nc, reg, kioskCode)
+		if err != nil {
+			return "", nil, fmt.Errorf("gather open checkouts: %w", err)
+		}
+		out := make([]notifications.OpenChecksDigestRow, 0, len(dtos))
+		for _, d := range dtos {
+			r := notifications.OpenChecksDigestRow{Serial: d.Serial, CheckedOutAt: d.CheckedOutAt}
+			if d.Expand.Item != nil {
+				r.ItemCode = d.Expand.Item.Code
+				r.ItemName = d.Expand.Item.Name
+			}
+			if d.Expand.User != nil {
+				r.UserCode = d.Expand.User.Code
+				r.UserName = d.Expand.User.Name
+			}
+			out = append(out, r)
+		}
+		return notifications.EventTypeOpenChecksDigest, notifications.OpenChecksDigestContext{
+			Kiosk:           notifications.KioskInfo{Code: kioskCode},
+			GeneratedAt:     time.Now().UTC(),
+			Rows:            out,
+			RowsCount:       len(out),
+			KioskProvenance: prov,
+		}, nil
 	}
-	dtos, err := ledger.Hydrate(h.App, rows)
-	if err != nil {
-		return re.InternalServerError("hydrate open rows", err)
-	}
-
-	w := re.Response
-	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
-	w.Header().Set("Content-Disposition", fmt.Sprintf(
-		"attachment; filename=\"controller-open-checkouts-%s.csv\"",
-		time.Now().UTC().Format("20060102-150405"),
-	))
-	return exports.WriteOpenCheckoutsCSV(w, dtos)
 }
 
 // ReportGroupActivityCSV is the controller's CSV companion to the SPA's

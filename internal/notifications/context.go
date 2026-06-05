@@ -153,9 +153,23 @@ type MaintenanceDigestContext struct {
 	// RowsCount is duplicated from len(Rows) so templates can render counts
 	// without the {{len .Rows}} action — same convention as the other digests.
 	RowsCount int
-	// OfflineKiosks lists kiosks excluded from a controller fan-out (offline
-	// or errored). Always empty on a standalone run.
-	OfflineKiosks []string
+	// Provenance breakdown of which kiosks contributed and how. Empty on a
+	// standalone run. LastKnownKiosks were offline and served from the
+	// controller's projection; UnavailableKiosks could not be reached and
+	// have no fallback — both render a completeness note so the digest is
+	// never silently partial. See KioskProvenance.
+	KioskProvenance
+}
+
+// KioskProvenance records, for a controller fan-out, which kiosks answered
+// live, which were served from last-known projected state (offline), and
+// which could not be covered at all. Embedded in the digest contexts so
+// templates can flag partial results explicitly. All empty on a standalone
+// (non-fan-out) run.
+type KioskProvenance struct {
+	LiveKiosks        []string
+	LastKnownKiosks   []string
+	UnavailableKiosks []string
 }
 
 // PayloadSummary surfaces a compact "kiosk · N in maintenance" line in the
@@ -187,6 +201,10 @@ type OpenChecksDigestContext struct {
 	// without needing the {{len .Rows}} action and to feed the pluralize
 	// helper without an extra step.
 	RowsCount int
+	// Provenance breakdown for a controller fan-out (empty on standalone).
+	// See KioskProvenance — LastKnownKiosks/UnavailableKiosks drive the
+	// completeness note so an offline kiosk is never silently dropped.
+	KioskProvenance
 }
 
 // PayloadSummary surfaces a compact "kiosk · N rows" line in the send log.

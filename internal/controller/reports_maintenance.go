@@ -32,48 +32,60 @@ import (
 func (h *Handlers) MaintenanceDigestRunner(nc *nats.Conn, reg *HeartbeatRegistry) func(app core.App, row *core.Record) (string, any, error) {
 	return func(_ core.App, row *core.Record) (string, any, error) {
 		rowKioskCode := row.GetString("kiosk_code")
-		rows, offline := gatherMaintenanceUnits(nc, reg, rowKioskCode)
-		ctx := notifications.MaintenanceDigestContext{
-			Kiosk:         notifications.KioskInfo{Code: rowKioskCode},
-			GeneratedAt:   time.Now().UTC(),
-			Rows:          rows,
-			RowsCount:     len(rows),
-			OfflineKiosks: offline,
-		}
-		return notifications.EventTypeMaintenanceDigest, ctx, nil
+		rows, prov := h.gatherMaintenanceUnits(nc, reg, rowKioskCode)
+		return notifications.EventTypeMaintenanceDigest, notifications.MaintenanceDigestContext{
+			Kiosk:           notifications.KioskInfo{Code: rowKioskCode},
+			GeneratedAt:     time.Now().UTC(),
+			Rows:            rows,
+			RowsCount:       len(rows),
+			KioskProvenance: prov,
+		}, nil
 	}
 }
 
-// gatherMaintenanceUnits fans out instance snapshots to the online kiosks (or
-// the single scoped kiosk) and reduces them to the units in maintenance plus
-// the list of kiosks that didn't contribute. Deterministically ordered so the
-// digest body is stable across runs.
-func gatherMaintenanceUnits(nc *nats.Conn, reg *HeartbeatRegistry, kioskCodeFilter string) ([]notifications.MaintenanceDigestRow, []string) {
-	targets := onlineKiosks(reg, heartbeatFreshness)
-	if kioskCodeFilter != "" {
-		targets = filterToCode(targets, kioskCodeFilter)
-	}
-	if len(targets) == 0 {
-		return nil, nil
-	}
-
-	results := fanoutSnapshots(nc, targets, events.InstanceSnapshotCommandSubject)
-
+// gatherMaintenanceUnits collects the units in maintenance fleet-wide (or for a
+// single scoped kiosk) NATS-first: online kiosks answer from their live
+// item_instances via instance.snapshot; offline kiosks fall back to
+// reconstructing current status from the controller's projected
+// instance_lifecycle_audit (last-known) — see replayInstanceStatuses — rather
+// than being silently dropped as before. A kiosk we believe online that fails
+// to answer is reported Unavailable, not replayed. Deterministically ordered so
+// the digest body is stable across runs, with a provenance breakdown so the
+// digest can flag partial results.
+func (h *Handlers) gatherMaintenanceUnits(nc *nats.Conn, reg *HeartbeatRegistry, kioskCodeFilter string) ([]notifications.MaintenanceDigestRow, notifications.KioskProvenance) {
 	var (
-		rows    []notifications.MaintenanceDigestRow
-		offline []string
+		rows []notifications.MaintenanceDigestRow
+		prov notifications.KioskProvenance
 	)
-	for _, inv := range results {
-		if inv.err != nil {
-			offline = append(offline, inv.kioskCode)
-			continue
+	online, offline, err := h.targetKiosks(reg, kioskCodeFilter)
+	if err != nil {
+		return rows, prov
+	}
+
+	if len(online) > 0 {
+		for _, inv := range fanoutSnapshots(nc, online, events.InstanceSnapshotCommandSubject) {
+			if inv.err != nil {
+				prov.UnavailableKiosks = append(prov.UnavailableKiosks, inv.kioskCode)
+				continue
+			}
+			kioskRows, perr := maintenanceRowsForKiosk(inv.kioskCode, inv.rawData)
+			if perr != nil {
+				prov.UnavailableKiosks = append(prov.UnavailableKiosks, inv.kioskCode)
+				continue
+			}
+			rows = append(rows, kioskRows...)
+			prov.LiveKiosks = append(prov.LiveKiosks, inv.kioskCode)
 		}
-		kioskRows, perr := maintenanceRowsForKiosk(inv.kioskCode, inv.rawData)
-		if perr != nil {
-			offline = append(offline, inv.kioskCode)
+	}
+
+	for _, code := range offline {
+		kioskRows, rerr := replayInstanceStatuses(h.App, code)
+		if rerr != nil {
+			prov.UnavailableKiosks = append(prov.UnavailableKiosks, code)
 			continue
 		}
 		rows = append(rows, kioskRows...)
+		prov.LastKnownKiosks = append(prov.LastKnownKiosks, code)
 	}
 
 	sort.SliceStable(rows, func(i, j int) bool {
@@ -85,8 +97,8 @@ func gatherMaintenanceUnits(nc *nats.Conn, reg *HeartbeatRegistry, kioskCodeFilt
 		}
 		return rows[i].InstanceCode < rows[j].InstanceCode
 	})
-	sort.Strings(offline)
-	return rows, offline
+	sortProvenance(&prov)
+	return rows, prov
 }
 
 // maintenanceRowsForKiosk decodes an instance-snapshot reply and returns the

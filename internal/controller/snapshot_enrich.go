@@ -9,21 +9,21 @@ import (
 )
 
 // Snapshot enrichment. The kiosk's inventory.snapshot / instance.snapshot
-// replies carry kiosk-local mutable state (on-hand, thresholds, instance
-// metadata) but not "what's currently out" — the kiosk knows that from its
-// open_checkouts table, and the snapshot doesn't ship it. Rather than grow the
-// wire protocol, the controller derives "out" from its OWN projected ledger
-// (ledger.ReplayOpenRows — the same convergent source behind the Currently-out
-// and low-stock views) and decorates the reply with it. The SPA then computes
-// available + low-stock from on-hand + out + type exactly as the local kiosk
-// Items view does, so the controller's per-kiosk panels stay in lockstep with
-// the kiosk's own screen and with the controller's other "out" numbers.
+// replies now carry `out` directly (read from the kiosk's own open_checkouts —
+// the authoritative source), so the controller no longer replays its projected
+// ledger to learn what's out. Inventory replies still don't carry item `type`
+// (tool/consumable), so the controller adds that from its catalog. The only
+// replay left here is a transitional fallback for a pre-rollout kiosk whose
+// snapshot omits `out`; once the fleet is upgraded it never runs. These panels
+// are online-only (fetchKioskData 503s an offline kiosk), so there's no
+// offline-fallback concern — that lives in the report/digest gather paths.
 //
 // Replies are decoded as maps so any field the kiosk adds later survives the
-// round-trip untouched.
+// round-trip untouched, and so we can detect whether `out` is present.
 
-// enrichInventorySnapshot adds `out` (units currently out, from the ledger)
-// and `type` (tool/consumable, from the controller's catalog) to each item.
+// enrichInventorySnapshot adds `type` (tool/consumable, from the controller's
+// catalog) to each item, and — only for a pre-rollout kiosk that omits it —
+// backfills `out` from the projected ledger.
 func enrichInventorySnapshot(app core.App, kioskCode string, raw json.RawMessage) (any, error) {
 	var reply struct {
 		Items []map[string]any `json:"items"`
@@ -31,26 +31,48 @@ func enrichInventorySnapshot(app core.App, kioskCode string, raw json.RawMessage
 	if err := json.Unmarshal(raw, &reply); err != nil {
 		return nil, err
 	}
-	outByCode, codeToType, err := inventoryLedgerFacts(app, kioskCode)
+	hasOut := len(reply.Items) > 0
+	if hasOut {
+		_, hasOut = reply.Items[0]["out"]
+	}
+	var (
+		codeToType map[string]string
+		outByCode  map[string]int
+		err        error
+	)
+	if hasOut {
+		codeToType, err = catalogCodeToType(app) // cheap: no replay
+	} else {
+		outByCode, codeToType, err = inventoryLedgerFacts(app, kioskCode) // fallback: replay
+	}
 	if err != nil {
 		return nil, err
 	}
 	for _, it := range reply.Items {
 		code, _ := it["item_code"].(string)
-		it["out"] = outByCode[code]   // 0 when nothing is out for this item
 		it["type"] = codeToType[code] // "" if the catalog hasn't synced it yet
+		if !hasOut {
+			it["out"] = outByCode[code]
+		}
 	}
 	return reply, nil
 }
 
-// enrichInstanceSnapshot marks each instance row with whether it's currently
-// out, by membership in the ledger's open-rows set.
+// enrichInstanceSnapshot is a pass-through once the kiosk ships `out` per
+// instance; for a pre-rollout kiosk that omits it, it backfills out-status from
+// the projected ledger's open-rows set.
 func enrichInstanceSnapshot(app core.App, kioskCode string, raw json.RawMessage) (any, error) {
 	var reply struct {
 		Instances []map[string]any `json:"instances"`
 	}
 	if err := json.Unmarshal(raw, &reply); err != nil {
 		return nil, err
+	}
+	if len(reply.Instances) == 0 {
+		return reply, nil
+	}
+	if _, ok := reply.Instances[0]["out"]; ok {
+		return reply, nil // kiosk already shipped out-status
 	}
 	open, err := ledger.ReplayOpenRows(app, kioskCode)
 	if err != nil {
@@ -68,6 +90,21 @@ func enrichInstanceSnapshot(app core.App, kioskCode string, raw json.RawMessage)
 		inst["out"] = out
 	}
 	return reply, nil
+}
+
+// catalogCodeToType returns the controller catalog's item code→type map with
+// no ledger replay — used to decorate snapshots whose `out` the kiosk already
+// shipped (the kiosk's reply doesn't carry item `type`).
+func catalogCodeToType(app core.App) (map[string]string, error) {
+	rows, err := app.FindRecordsByFilter("items", "", "", 0, 0)
+	if err != nil {
+		return nil, err
+	}
+	m := make(map[string]string, len(rows))
+	for _, r := range rows {
+		m[r.GetString("code")] = r.GetString("type")
+	}
+	return m, nil
 }
 
 // inventoryLedgerFacts loads the controller's catalog once and replays the

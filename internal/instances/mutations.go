@@ -406,6 +406,11 @@ type SnapshotRow struct {
 	Notes        string `json:"notes"`
 	Created      string `json:"created"`
 	Updated      string `json:"updated"`
+	// Out reports whether this instance is currently checked out, derived
+	// from open_checkouts. Snapshot leaves it false (it has no checkout
+	// context); the command handler that ships this over the wire fills it
+	// so the controller needn't replay its ledger to learn out-status.
+	Out bool `json:"out"`
 }
 
 // Snapshot returns every item_instance row, optionally filtered by item

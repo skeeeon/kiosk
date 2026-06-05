@@ -174,5 +174,19 @@ func (d *Dispatcher) handleInstanceSnapshot(_ context.Context, payload []byte) R
 	if err != nil {
 		return Reply{Success: false, Error: "snapshot failed: " + err.Error()}
 	}
+	// Mark which instances are currently checked out from open_checkouts —
+	// the authoritative local view. Shipping `out` here means the controller
+	// doesn't replay its projected ledger to enrich the snapshot.
+	outIDs := map[string]struct{}{}
+	if ocRows, oerr := d.app.FindRecordsByFilter("open_checkouts", "item_instance != ''", "", 0, 0); oerr == nil {
+		for _, oc := range ocRows {
+			outIDs[oc.GetString("item_instance")] = struct{}{}
+		}
+	}
+	for i := range rows {
+		if _, ok := outIDs[rows[i].InstanceID]; ok {
+			rows[i].Out = true
+		}
+	}
 	return Reply{Success: true, Data: instanceSnapshotReply{Instances: rows}}
 }

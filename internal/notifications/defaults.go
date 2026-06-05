@@ -46,7 +46,11 @@ const DefaultOpenChecksBody = `Open checkouts at kiosk {{.Kiosk.Code}} as of {{f
 
 {{if eq .RowsCount 0}}No items are currently checked out.
 {{else}}{{range .Rows}}- {{.ItemName}} ({{.ItemCode}}) — held by {{.UserName}} since {{formatTime .CheckedOutAt}}{{if .Serial}} [serial: {{.Serial}}]{{end}}
-{{end}}{{end}}
+{{end}}{{end}}{{if .LastKnownKiosks}}
+Served from last-known state (kiosk offline): {{range .LastKnownKiosks}}{{.}} {{end}}
+{{end}}{{if .UnavailableKiosks}}
+Could not be reached, excluded from this digest: {{range .UnavailableKiosks}}{{.}} {{end}}
+{{end}}
 This is an automated digest. Adjust its schedule or recipients in the kiosk admin SPA.
 `
 
@@ -113,8 +117,10 @@ const DefaultMaintenanceDigestBody = `Units in maintenance as of {{formatTime .G
 
 {{if eq .RowsCount 0}}No units are currently in maintenance.
 {{else}}{{range .Rows}}- {{.ItemName}} ({{.ItemCode}}) — unit {{.InstanceCode}}{{if .Serial}} [serial: {{.Serial}}]{{end}}{{if .KioskCode}} @ {{.KioskCode}}{{end}}{{if .Notes}} — {{.Notes}}{{end}}
-{{end}}{{end}}{{if .OfflineKiosks}}
-Offline kiosks excluded from this digest: {{range .OfflineKiosks}}{{.}} {{end}}
+{{end}}{{end}}{{if .LastKnownKiosks}}
+Served from last-known state (kiosk offline): {{range .LastKnownKiosks}}{{.}} {{end}}
+{{end}}{{if .UnavailableKiosks}}
+Could not be reached, excluded from this digest: {{range .UnavailableKiosks}}{{.}} {{end}}
 {{end}}This is an automated digest. Adjust its schedule or recipients in the kiosk admin SPA.
 `
 
