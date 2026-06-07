@@ -186,7 +186,7 @@ func main() {
 			log.Printf("rfid: %v — kiosk will continue without RFID", err)
 		} else {
 			app.OnServe().BindFunc(func(e *core.ServeEvent) error {
-				_ = r.Connect(context.Background())
+				_ = r.Connect()
 				rfidReader = r
 				h.RFID = r
 				log.Printf("rfid: supervisor started for %s:%d in %s mode",

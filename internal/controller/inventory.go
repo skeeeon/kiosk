@@ -2,7 +2,6 @@ package controller
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -99,26 +98,6 @@ func (h *Handlers) InventoryAdjust(nc *nats.Conn, reg *HeartbeatRegistry) func(*
 		}
 
 		commandID := uuid.NewString()
-
-		// Fast-fail using the heartbeat snapshot. If the kiosk hasn't beat
-		// in heartbeatFreshness, skip the NATS round-trip — the SPA gets a
-		// snappy "kiosk offline" instead of a 5-second hang. Brand-new
-		// controllers haven't seen any beats yet; allow the request
-		// through and let the NATS timeout decide.
-		if !reg.IsLikelyOnline(kioskCode, heartbeatFreshness) {
-			// Only short-circuit if the controller has been up long enough
-			// to have observed at least one beat cycle. Otherwise we'd
-			// (incorrectly) reject every request for the first 90 seconds
-			// after restart.
-			if time.Since(reg.StartedAt()) > heartbeatFreshness {
-				return re.JSON(http.StatusServiceUnavailable, kioskOfflineResponse{
-					Error:     "kiosk_offline",
-					KioskCode: kioskCode,
-					CommandID: commandID,
-				})
-			}
-		}
-
 		payload := inventoryAdjustCommandPayload{
 			CommandID:         commandID,
 			ControllerAdminID: re.Auth.Id,
@@ -132,34 +111,11 @@ func (h *Handlers) InventoryAdjust(nc *nats.Conn, reg *HeartbeatRegistry) func(*
 			return re.InternalServerError("marshal command", err)
 		}
 
-		subject := events.InventoryAdjustCommandSubject(kioskCode)
-		msg, err := nc.Request(subject, data, commandTimeout)
-		if err != nil {
-			if errors.Is(err, nats.ErrTimeout) || errors.Is(err, nats.ErrNoResponders) {
-				return re.JSON(http.StatusServiceUnavailable, kioskOfflineResponse{
-					Error:     "kiosk_offline",
-					KioskCode: kioskCode,
-					CommandID: commandID,
-				})
-			}
-			return re.InternalServerError("nats request failed", err)
-		}
-
-		var env kioskCommandEnvelope
-		if err := json.Unmarshal(msg.Data, &env); err != nil {
-			return re.InternalServerError("decode kiosk reply", err)
-		}
-		if !env.Success {
-			return re.JSON(http.StatusBadGateway, map[string]any{
-				"error":      "kiosk_error",
-				"detail":     env.Error,
-				"kiosk_code": kioskCode,
-				"command_id": commandID,
-			})
-		}
-		// Pass the data through unchanged so the SPA decodes the kiosk's
-		// reply shape directly. Saves a round-trip of remap.
-		return re.JSON(http.StatusOK, json.RawMessage(env.Data))
+		// Mutation: the kiosk's reply passes through to the SPA unchanged.
+		// Heartbeat fast-fail, request, and envelope decode all live in
+		// dispatchKioskCommand (see instances.go).
+		return dispatchKioskCommand(re, nc, reg, kioskCode,
+			events.InventoryAdjustCommandSubject(kioskCode), commandID, data)
 	}
 }
 

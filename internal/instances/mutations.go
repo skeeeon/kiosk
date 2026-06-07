@@ -125,14 +125,11 @@ func PerformCreate(app core.App, in CreateInput) (*MutationOutcome, error) {
 		// Idempotency fast path: an already-processed command_id returns
 		// the prior outcome without re-inserting.
 		if in.CommandID != "" {
-			if prior, ok, lerr := findInstanceAuditByCommandID(tx, in.CommandID); lerr != nil {
+			if _, ok, lerr := findInstanceAuditByCommandID(tx, in.CommandID); lerr != nil {
 				return fmt.Errorf("idempotency lookup: %w", lerr)
 			} else if ok {
-				inst, err := tx.FindRecordById("item_instances", prior.GetString("item_instance"))
-				if err != nil {
-					return fmt.Errorf("idempotent replay re-load instance: %w", err)
-				}
-				out = buildOutcome(inst, prior)
+				// Already processed under this command_id; roll back the
+				// (empty) txn and re-read the prior outcome below.
 				return errIdempotentReplay
 			}
 		}
@@ -199,9 +196,9 @@ func PerformCreate(app core.App, in CreateInput) (*MutationOutcome, error) {
 		return nil
 	})
 	if errors.Is(err, errIdempotentReplay) {
-		if out.AuditRecordID != "" {
-			return &out, nil
-		}
+		// Both detection paths (upfront lookup + unique violation on write)
+		// converge here. Re-read the prior outcome outside the rolled-back
+		// txn so there's a single exit and one canonical result shape.
 		return refetchOutcomeByCommandID(app, in.CommandID)
 	}
 	if err != nil {
@@ -280,14 +277,11 @@ func PerformSetStatus(app core.App, in ToggleInput, target string) (*MutationOut
 	var out MutationOutcome
 	err := app.RunInTransaction(func(tx core.App) error {
 		if in.CommandID != "" {
-			if prior, ok, lerr := findInstanceAuditByCommandID(tx, in.CommandID); lerr != nil {
+			if _, ok, lerr := findInstanceAuditByCommandID(tx, in.CommandID); lerr != nil {
 				return fmt.Errorf("idempotency lookup: %w", lerr)
 			} else if ok {
-				inst, err := tx.FindRecordById("item_instances", prior.GetString("item_instance"))
-				if err != nil {
-					return fmt.Errorf("idempotent replay re-load instance: %w", err)
-				}
-				out = buildOutcome(inst, prior)
+				// Already processed under this command_id; roll back the
+				// (empty) txn and re-read the prior outcome below.
 				return errIdempotentReplay
 			}
 		}
@@ -347,9 +341,9 @@ func PerformSetStatus(app core.App, in ToggleInput, target string) (*MutationOut
 		return nil
 	})
 	if errors.Is(err, errIdempotentReplay) {
-		if out.AuditRecordID != "" {
-			return &out, nil
-		}
+		// Both detection paths (upfront lookup + unique violation on write)
+		// converge here. Re-read the prior outcome outside the rolled-back
+		// txn so there's a single exit and one canonical result shape.
 		return refetchOutcomeByCommandID(app, in.CommandID)
 	}
 	if err != nil {

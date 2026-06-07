@@ -51,7 +51,7 @@ type Reader interface {
 	// caller can assume the reader is "wiring up in the background" as
 	// soon as Connect returns; ReadFor calls during a gap return
 	// ErrNotConnected.
-	Connect(ctx context.Context) error
+	Connect() error
 
 	// ReadFor runs a single inventory cycle for the given duration and
 	// returns the set of observed EPCs. Returns ErrNotConnected if the
@@ -202,11 +202,9 @@ type impinjReader struct {
 // Connect starts the supervisor goroutine. Returns immediately; the
 // supervisor handles the actual dial + handshake + capabilities query
 // in the background, retrying with exponential backoff on failure
-// until Close is called. The ctx argument is intentionally ignored for
-// the supervisor's own lifetime — it lives until Close — but exists
-// in the signature for symmetry with the rest of the codebase and so
-// a future variant can short-circuit before spawning.
-func (r *impinjReader) Connect(_ context.Context) error {
+// until Close is called. The supervisor owns its own lifetime (a
+// context tied to Close), so Connect takes no context of its own.
+func (r *impinjReader) Connect() error {
 	r.mu.Lock()
 	if r.supCancel != nil {
 		r.mu.Unlock()

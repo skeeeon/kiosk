@@ -19,7 +19,6 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/csv"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -508,8 +507,3 @@ func upsertGroupRow(app core.App, coll *core.Collection, existing map[string]*co
 	existing[code] = rec
 	return RowResult{Code: code, Name: name, Action: ActionInsert}
 }
-
-// stable JSON encoding sanity: catches a `RowResult{Errors: nil}` from
-// growing into a json `"errors": null` surprise on the SPA. Not called at
-// runtime; kept as a compile-checked assert.
-var _ = func() error { return json.NewEncoder(io.Discard).Encode(RowResult{}) }

@@ -132,15 +132,8 @@ func PerformStockAdjustment(app core.App, itemID, actorID, source, commandID, mo
 			existing, lerr := tx.FindFirstRecordByFilter("stock_adjustments",
 				"command_id = {:c}", dbx.Params{"c": commandID})
 			if lerr == nil && existing != nil {
-				delta := existing.GetInt("delta")
-				newQty := existing.GetInt("new_quantity")
-				out = StockAdjustmentResult{
-					AdjustmentID: existing.Id,
-					ItemID:       existing.GetString("item"),
-					Delta:        delta,
-					NewQuantity:  newQty,
-					PrevQuantity: newQty - delta,
-				}
+				// Already applied under this command_id; roll back the
+				// (empty) txn and re-read the prior result below.
 				return errIdempotentReplay
 			}
 			if lerr != nil && !dberr.IsNotFound(lerr) {
@@ -216,12 +209,9 @@ func PerformStockAdjustment(app core.App, itemID, actorID, source, commandID, mo
 		return nil
 	})
 	if errors.Is(err, errIdempotentReplay) {
-		// The fast path (upfront lookup) populated `out` directly. The
-		// slow path (concurrent-insert race) needs a re-fetch outside
-		// the rolled-back txn — `out` will be zero in that case.
-		if out.AdjustmentID != "" {
-			return &out, nil
-		}
+		// Both detection paths — the upfront lookup and the concurrent-insert
+		// unique violation — converge here. Re-fetch the prior row outside the
+		// rolled-back txn so there's a single exit and one result shape.
 		return fetchAdjustmentByCommandID(app, commandID)
 	}
 	if err != nil {

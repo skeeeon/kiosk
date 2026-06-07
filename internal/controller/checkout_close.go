@@ -2,10 +2,7 @@ package controller
 
 import (
 	"encoding/json"
-	"errors"
-	"net/http"
 	"strings"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
@@ -66,19 +63,6 @@ func (h *Handlers) CheckoutClose(nc *nats.Conn, reg *HeartbeatRegistry) func(*co
 		}
 
 		commandID := uuid.NewString()
-
-		// Heartbeat-based fast-fail. See InventoryAdjust for the warmup-window
-		// reasoning behind the StartedAt guard.
-		if !reg.IsLikelyOnline(kioskCode, heartbeatFreshness) {
-			if time.Since(reg.StartedAt()) > heartbeatFreshness {
-				return re.JSON(http.StatusServiceUnavailable, kioskOfflineResponse{
-					Error:     "kiosk_offline",
-					KioskCode: kioskCode,
-					CommandID: commandID,
-				})
-			}
-		}
-
 		payload := checkoutCloseCommandPayload{
 			CommandID:         commandID,
 			ControllerAdminID: re.Auth.Id,
@@ -91,31 +75,10 @@ func (h *Handlers) CheckoutClose(nc *nats.Conn, reg *HeartbeatRegistry) func(*co
 			return re.InternalServerError("marshal command", err)
 		}
 
-		subject := events.CommandSubject(kioskCode, "checkout.close")
-		msg, err := nc.Request(subject, data, commandTimeout)
-		if err != nil {
-			if errors.Is(err, nats.ErrTimeout) || errors.Is(err, nats.ErrNoResponders) {
-				return re.JSON(http.StatusServiceUnavailable, kioskOfflineResponse{
-					Error:     "kiosk_offline",
-					KioskCode: kioskCode,
-					CommandID: commandID,
-				})
-			}
-			return re.InternalServerError("nats request failed", err)
-		}
-
-		var env kioskCommandEnvelope
-		if err := json.Unmarshal(msg.Data, &env); err != nil {
-			return re.InternalServerError("decode kiosk reply", err)
-		}
-		if !env.Success {
-			return re.JSON(http.StatusBadGateway, map[string]any{
-				"error":      "kiosk_error",
-				"detail":     env.Error,
-				"kiosk_code": kioskCode,
-				"command_id": commandID,
-			})
-		}
-		return re.JSON(http.StatusOK, json.RawMessage(env.Data))
+		// Mutation: the kiosk's reply passes through to the SPA unchanged.
+		// Heartbeat fast-fail, request, and envelope decode all live in
+		// dispatchKioskCommand (see instances.go).
+		return dispatchKioskCommand(re, nc, reg, kioskCode,
+			events.CommandSubject(kioskCode, "checkout.close"), commandID, data)
 	}
 }
