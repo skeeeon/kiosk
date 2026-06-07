@@ -642,7 +642,7 @@ const crossUserSummary = computed(() =>
       <div class="flex justify-center mt-6">
         <button
           type="button"
-          class="px-8 py-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-base"
+          class="px-8 py-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-base transition-transform active:scale-95"
           @click="dismissReceipt"
         >
           Done
@@ -697,7 +697,7 @@ const crossUserSummary = computed(() =>
       >
         <button
           type="button"
-          class="w-full flex items-center justify-between gap-3 px-4 py-3 text-left hover:bg-slate-800/40"
+          class="w-full flex items-center justify-between gap-3 px-4 py-3 text-left transition-colors hover:bg-slate-800/40 active:bg-slate-800/60"
           :aria-expanded="outstandingExpanded"
           @click="outstandingExpanded = !outstandingExpanded"
         >
@@ -755,7 +755,7 @@ const crossUserSummary = computed(() =>
     <div class="mt-8 flex gap-3 justify-end shrink-0 flex-wrap">
       <button
         type="button"
-        class="px-6 py-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-lg mr-auto"
+        class="px-6 py-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-lg mr-auto transition-transform active:scale-95"
         @click="browseOpen = true"
       >
         Browse items
@@ -763,7 +763,7 @@ const crossUserSummary = computed(() =>
       <button
         v-if="rfidScanButtonVisible"
         type="button"
-        class="relative overflow-hidden px-6 py-4 rounded-xl bg-sky-700/80 hover:bg-sky-700 disabled:bg-slate-700 disabled:text-slate-500 text-white text-lg"
+        class="relative overflow-hidden px-6 py-4 rounded-xl bg-sky-700/80 hover:bg-sky-700 disabled:bg-slate-700 disabled:text-slate-500 text-white text-lg transition-transform active:scale-95"
         :disabled="rfidScanning"
         @click="onRFIDScan"
       >
@@ -782,7 +782,7 @@ const crossUserSummary = computed(() =>
       <button
         v-if="rfidReReadButtonVisible"
         type="button"
-        class="relative overflow-hidden px-6 py-4 rounded-xl bg-sky-700/80 hover:bg-sky-700 disabled:bg-slate-700 disabled:text-slate-500 text-white text-lg"
+        class="relative overflow-hidden px-6 py-4 rounded-xl bg-sky-700/80 hover:bg-sky-700 disabled:bg-slate-700 disabled:text-slate-500 text-white text-lg transition-transform active:scale-95"
         :disabled="rfidScanning"
         @click="onReReadEnclosure"
       >
@@ -797,21 +797,21 @@ const crossUserSummary = computed(() =>
       <button
         v-if="isForeman"
         type="button"
-        class="px-6 py-4 rounded-xl bg-amber-700/80 hover:bg-amber-700 text-white text-lg"
+        class="px-6 py-4 rounded-xl bg-amber-700/80 hover:bg-amber-700 text-white text-lg transition-transform active:scale-95"
         @click="foremanReturnOpen = true"
       >
         Return on behalf of…
       </button>
       <button
         type="button"
-        class="px-6 py-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-lg"
+        class="px-6 py-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-lg transition-transform active:scale-95"
         @click="onCancel"
       >
         Cancel
       </button>
       <button
         type="button"
-        class="px-8 py-4 rounded-xl bg-brand-primary hover:bg-brand-primary-hover disabled:bg-slate-700 disabled:text-slate-500 text-white text-lg font-semibold"
+        class="px-8 py-4 rounded-xl bg-brand-primary hover:bg-brand-primary-hover disabled:bg-slate-700 disabled:text-slate-500 text-white text-lg font-semibold transition-transform active:scale-95"
         :disabled="cart.lines.length === 0 || committing"
         @click="onCommit"
       >

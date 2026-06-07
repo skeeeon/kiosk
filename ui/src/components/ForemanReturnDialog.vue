@@ -167,7 +167,7 @@ const hasWorkers = computed(() => (options.value?.workers.length ?? 0) > 0)
           />
           <button
             type="submit"
-            class="px-4 py-2 rounded-lg bg-brand-primary hover:bg-brand-primary-hover text-white font-medium disabled:bg-slate-700 disabled:text-slate-500"
+            class="px-5 py-3 rounded-lg bg-brand-primary hover:bg-brand-primary-hover text-white font-medium transition-transform active:scale-95 disabled:bg-slate-700 disabled:text-slate-500 disabled:active:scale-100"
             :disabled="!scanCode.trim() || submitting !== null"
           >
             <template v-if="submitting === `scan:${scanCode.trim()}`">Adding…</template>
@@ -204,7 +204,7 @@ const hasWorkers = computed(() => (options.value?.workers.length ?? 0) > 0)
         >
           <button
             type="button"
-            class="w-full flex items-center justify-between gap-3 px-4 py-3 text-left hover:bg-slate-800"
+            class="w-full flex items-center justify-between gap-3 px-4 py-3 text-left transition-colors hover:bg-slate-800 active:bg-slate-700"
             :aria-expanded="expandedWorker === worker.user_id"
             @click="toggleWorker(worker.user_id)"
           >
@@ -234,7 +234,7 @@ const hasWorkers = computed(() => (options.value?.workers.length ?? 0) > 0)
             >
               <button
                 type="button"
-                class="w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-slate-800/60 disabled:opacity-50"
+                class="w-full flex items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-slate-800/60 active:bg-slate-800 disabled:opacity-50"
                 :disabled="submitting !== null"
                 @click="onPickItem(worker, row)"
               >
@@ -265,7 +265,7 @@ const hasWorkers = computed(() => (options.value?.workers.length ?? 0) > 0)
       <div class="flex justify-end gap-3 pt-2">
         <button
           type="button"
-          class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200"
+          class="px-6 py-3 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 transition-transform active:scale-95"
           @click="onCancel"
         >
           Close

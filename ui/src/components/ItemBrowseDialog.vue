@@ -164,7 +164,7 @@ function isSerialized(item: Item): boolean {
           v-for="opt in TYPE_FILTERS"
           :key="opt.value"
           type="button"
-          class="px-3 py-2 text-sm transition-colors"
+          class="px-4 py-3 text-base transition-colors active:brightness-110"
           :class="
             typeFilter === opt.value
               ? 'bg-sky-600 text-white'
@@ -197,7 +197,7 @@ function isSerialized(item: Item): boolean {
             <li v-for="item in group.items" :key="item.id">
               <button
                 type="button"
-                class="w-full h-full text-left rounded-2xl bg-slate-800 hover:bg-slate-700 border border-slate-700 p-4 flex flex-col gap-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                class="w-full h-full text-left rounded-2xl bg-slate-800 hover:bg-slate-700 border border-slate-700 p-4 flex flex-col gap-2 transition active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100"
                 :disabled="(pending && pickingCode === item.code) || isSerialized(item)"
                 :title="isSerialized(item) ? 'Scan the unit barcode — serialized items need a specific instance' : ''"
                 @click="pick(item)"
@@ -251,7 +251,7 @@ function isSerialized(item: Item): boolean {
       <div class="flex justify-end pt-2 shrink-0">
         <button
           type="button"
-          class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200"
+          class="px-6 py-3 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 transition-transform active:scale-95"
           @click="emit('update:open', false)"
         >
           Done

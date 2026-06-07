@@ -29,7 +29,7 @@ const toneClass = computed(() => (current.value ? TONE[current.value.kind] : '')
 // Kiosk toasts (top position) get the larger text the touchscreen UI was
 // already using; admin toasts stay at the compact size.
 const sizeClass = computed(() =>
-  current.value?.position === 'top' ? 'px-6 py-3 text-lg' : 'px-5 py-3 text-sm',
+  current.value?.position === 'top' ? 'px-6 py-4 text-lg' : 'px-5 py-3 text-sm',
 )
 </script>
 
@@ -46,7 +46,7 @@ const sizeClass = computed(() =>
       v-if="current"
       :key="current.seq"
       type="button"
-      class="fixed z-[60] rounded-xl border shadow-lg cursor-pointer"
+      class="fixed z-[60] rounded-xl border shadow-lg cursor-pointer transition-transform active:scale-95"
       :class="[positionClass, toneClass, sizeClass]"
       @click="dismiss"
     >

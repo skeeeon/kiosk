@@ -32,6 +32,19 @@ function actionsFor(line: CartLine): { value: CartAction; label: string }[] {
   return ACTIONS_BY_TYPE[line.item_type] ?? []
 }
 
+// Quantity-tracked tools are the only lines where the worker freely chooses
+// between checkout and return. A serialized tool's action is dictated by the
+// unit's open-checkout state (resolved server-side at scan time: out-to-you →
+// return, otherwise → checkout), and consumables only consume — both render
+// as a static label, never a toggle that could pick an action commit rejects.
+function showActionToggle(line: CartLine): boolean {
+  return line.item_type === 'tool' && line.tracking_mode !== 'serialized'
+}
+
+function labelForAction(line: CartLine): string {
+  return actionsFor(line).find((a) => a.value === line.action)?.label ?? line.action
+}
+
 function actionClasses(line: CartLine, action: CartAction): string {
   if (line.action === action) {
     if (action === 'checkout') return 'bg-emerald-600 text-white'
@@ -77,15 +90,19 @@ function warningClasses(w: string): string {
           </p>
         </div>
 
+        <!-- Quantity-tracked tools get the checkout/return toggle. Serialized
+             tools and consumables don't: their action is fully determined by
+             state, so it shows as a static label rather than a toggle that
+             could choose an action the backend will reject. -->
         <div
-          v-if="actionsFor(line).length > 1"
+          v-if="showActionToggle(line)"
           class="inline-flex rounded-lg overflow-hidden border border-slate-700 shrink-0"
         >
           <button
             v-for="opt in actionsFor(line)"
             :key="opt.value"
             type="button"
-            class="px-3 py-2 text-sm font-medium transition-colors"
+            class="px-4 py-2.5 text-base font-medium transition-colors active:brightness-110"
             :class="actionClasses(line, opt.value)"
             @click="emit('update', line.id, { action: opt.value })"
           >
@@ -93,17 +110,17 @@ function warningClasses(w: string): string {
           </button>
         </div>
         <span
-          v-else-if="actionsFor(line).length === 1"
-          class="px-3 py-2 rounded-lg text-sm font-medium shrink-0"
+          v-else
+          class="px-4 py-2.5 rounded-lg text-base font-medium shrink-0"
           :class="actionClasses(line, line.action)"
         >
-          {{ actionsFor(line)[0].label }}
+          {{ labelForAction(line) }}
         </span>
 
         <div v-if="line.tracking_mode !== 'serialized'" class="inline-flex items-center gap-1 shrink-0">
           <button
             type="button"
-            class="w-11 h-11 rounded-lg bg-slate-800 text-xl hover:bg-slate-700 disabled:opacity-40"
+            class="w-11 h-11 rounded-lg bg-slate-800 text-xl hover:bg-slate-700 disabled:opacity-40 transition-transform active:scale-90"
             :disabled="line.qty <= 1"
             aria-label="Decrease quantity"
             @click="emit('update', line.id, { qty: line.qty - 1 })"
@@ -111,7 +128,7 @@ function warningClasses(w: string): string {
           <span class="w-10 text-center text-xl tabular-nums">{{ line.qty }}</span>
           <button
             type="button"
-            class="w-11 h-11 rounded-lg bg-slate-800 text-xl hover:bg-slate-700 disabled:opacity-40"
+            class="w-11 h-11 rounded-lg bg-slate-800 text-xl hover:bg-slate-700 disabled:opacity-40 transition-transform active:scale-90"
             :disabled="line.qty >= maxQty"
             aria-label="Increase quantity"
             @click="emit('update', line.id, { qty: line.qty + 1 })"
@@ -120,7 +137,7 @@ function warningClasses(w: string): string {
 
         <button
           type="button"
-          class="shrink-0 w-11 h-11 rounded-lg bg-slate-800 text-slate-300 hover:bg-red-700 hover:text-white text-2xl leading-none"
+          class="shrink-0 w-11 h-11 rounded-lg bg-slate-800 text-slate-300 hover:bg-red-700 hover:text-white text-2xl leading-none transition-transform active:scale-90"
           aria-label="Remove line"
           @click="emit('remove', line.id)"
         >
@@ -143,15 +160,21 @@ function warningClasses(w: string): string {
            return. -->
       <label
         v-if="line.tracking_mode === 'serialized' && line.action === 'return'"
-        class="flex items-center gap-2 rounded-lg bg-slate-950/60 border border-slate-800 text-slate-300 text-sm px-3 py-2 cursor-pointer"
+        class="flex items-center gap-3 rounded-lg border px-3 py-3 text-sm cursor-pointer transition-colors"
+        :class="line.request_maintenance
+          ? 'bg-amber-900/40 border-amber-700/60 text-amber-100'
+          : 'bg-slate-950/60 border-slate-800 text-slate-300 hover:bg-slate-900'"
       >
         <input
           type="checkbox"
-          class="w-4 h-4"
+          class="w-5 h-5 accent-amber-500 shrink-0"
           :checked="line.request_maintenance ?? false"
           @change="emit('update', line.id, { request_maintenance: ($event.target as HTMLInputElement).checked })"
         />
-        Needs maintenance — hold this unit out of service after return
+        <span>
+          <span class="font-medium">Needs maintenance</span>
+          — hold this unit out of service after return
+        </span>
       </label>
 
       <!-- Other warnings stay full-width below. -->

@@ -26,14 +26,14 @@ const emit = defineEmits<{
     <div class="flex justify-end gap-3">
       <button
         type="button"
-        class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200"
+        class="px-6 py-3 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 transition-transform active:scale-95"
         @click="emit('update:open', false)"
       >
         {{ cancelLabel ?? 'Cancel' }}
       </button>
       <button
         type="button"
-        class="px-4 py-2 rounded-lg font-medium text-white"
+        class="px-6 py-3 rounded-lg font-medium text-white transition-transform active:scale-95"
         :class="destructive ? 'bg-red-600 hover:bg-red-500' : 'bg-emerald-600 hover:bg-emerald-500'"
         @click="emit('confirm')"
       >

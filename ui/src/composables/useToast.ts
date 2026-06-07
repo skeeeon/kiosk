@@ -24,7 +24,7 @@ const DEFAULT_DURATION: Record<ToastKind, number> = {
   success: 2500,
   info: 2500,
   warn: 3500,
-  error: 4000,
+  error: 6000,
 }
 
 const current = ref<Toast | null>(null)

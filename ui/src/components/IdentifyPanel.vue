@@ -52,7 +52,7 @@ const available = computed(() => {
       </div>
       <div class="flex flex-col items-end gap-2 shrink-0">
         <span
-          class="inline-block px-2 py-0.5 rounded text-xs"
+          class="inline-block px-2 py-0.5 rounded text-xs capitalize"
           :class="isTool ? 'bg-amber-900/60 text-amber-200' : 'bg-sky-900/60 text-sky-200'"
         >
           {{ it.type }}
@@ -112,7 +112,7 @@ const available = computed(() => {
       <p class="text-slate-500">Scan your badge to begin a checkout.</p>
       <button
         type="button"
-        class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200"
+        class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 transition-transform active:scale-95"
         @click="$emit('dismiss')"
       >
         Dismiss

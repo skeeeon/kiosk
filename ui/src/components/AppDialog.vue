@@ -132,10 +132,10 @@ const sheetSizeClass = computed(() => {
             </DialogDescription>
           </div>
           <DialogClose
-            class="shrink-0 flex items-center justify-center h-8 w-8 rounded-md text-slate-400 hover:bg-slate-800 hover:text-slate-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-500"
+            class="shrink-0 flex items-center justify-center h-10 w-10 rounded-md text-slate-400 hover:bg-slate-800 hover:text-slate-200 transition-transform active:scale-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-500"
             aria-label="Close"
           >
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="h-4 w-4">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="h-5 w-5">
               <path d="M6.28 5.22a.75.75 0 0 0-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 1 0 1.06 1.06L10 11.06l3.72 3.72a.75.75 0 1 0 1.06-1.06L11.06 10l3.72-3.72a.75.75 0 0 0-1.06-1.06L10 8.94 6.28 5.22Z" />
             </svg>
           </DialogClose>
@@ -163,14 +163,14 @@ const sheetSizeClass = computed(() => {
         <div class="flex justify-end gap-3">
           <button
             type="button"
-            class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200"
+            class="px-6 py-3 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 transition-transform active:scale-95"
             @click="discardCancel"
           >
             Keep editing
           </button>
           <button
             type="button"
-            class="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-500 text-white font-medium"
+            class="px-6 py-3 rounded-lg bg-red-600 hover:bg-red-500 text-white font-medium transition-transform active:scale-95"
             @click="discardConfirm"
           >
             Discard
