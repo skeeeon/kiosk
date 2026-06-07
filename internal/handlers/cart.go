@@ -117,6 +117,23 @@ func (h *Handlers) addCodeToCart(cartID, code string) (*cart.Cart, *cart.Line, e
 		// already; it shouldn't be re-checked-out or re-returned.)
 		return nil, nil, errInstanceInactive
 	}
+	// A serialized unit currently checked out to a *different* worker can't go
+	// through the normal scan path: it can't be checked out (it's already out)
+	// and self-return doesn't apply. Returning someone else's unit needs
+	// explicit foreman intent via CartForemanReturn (which builds its line
+	// directly, not through here). Reject with an actionable message rather
+	// than defaulting to a checkout that dies at commit on the open_checkouts
+	// unique index — or, for a serial-less unit, silently double-books it.
+	if instance != nil {
+		open, oerr := h.App.FindFirstRecordByFilter("open_checkouts",
+			"item_instance = {:inst}", dbx.Params{"inst": instance.Id})
+		if oerr != nil && !isNotFound(oerr) {
+			return nil, nil, oerr
+		}
+		if open != nil && open.GetString("user") != c.UserID {
+			return nil, nil, errInstanceHeldByOther
+		}
+	}
 
 	action, err := h.defaultActionFor(item, instance, c.UserID)
 	if err != nil {
@@ -170,6 +187,7 @@ var (
 	errCodeNotFound            = errors.New("code not found")
 	errItemInactive            = errors.New("item is inactive")
 	errInstanceInactive        = errors.New("instance is not in service")
+	errInstanceHeldByOther     = errors.New("serialized unit is checked out to another worker")
 	errSerializedNeedsInstance = errors.New("serialized item needs a specific instance")
 )
 
@@ -188,6 +206,8 @@ func cartAddErrorToResponse(re *core.RequestEvent, err error) error {
 		return re.BadRequestError("item is inactive", nil)
 	case errors.Is(err, errInstanceInactive):
 		return re.BadRequestError("this unit isn't available — it may be in maintenance or retired", nil)
+	case errors.Is(err, errInstanceHeldByOther):
+		return re.BadRequestError("this unit is checked out to another worker — a foreman can return it using \"Return on behalf of\"", nil)
 	case errors.Is(err, errSerializedNeedsInstance):
 		return re.BadRequestError("select a specific unit (instance) for this serialized item", nil)
 	case errors.Is(err, cart.ErrQtyOutOfRange):
