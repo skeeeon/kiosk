@@ -232,6 +232,9 @@ const pagedRows = computed(() => {
           <span class="text-slate-400 text-xs truncate flex-1">{{ it.name }}</span>
           <span v-if="it.category" class="text-slate-500 text-xs">{{ it.category }}</span>
         </button>
+        <p v-if="availableItems.length > 50" class="text-xs text-slate-500 py-2 text-center">
+          Showing first 50 of {{ availableItems.length }} — type to narrow.
+        </p>
       </div>
     </div>
 

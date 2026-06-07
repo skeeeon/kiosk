@@ -303,7 +303,7 @@ const columns: ColumnDef[] = [
           audit; status transitions write a lifecycle event.
         </p>
       </div>
-      <div class="flex items-center gap-2">
+      <div class="flex flex-wrap items-center gap-2">
         <input
           v-model="itemFilter"
           type="text"
@@ -355,16 +355,16 @@ const columns: ColumnDef[] = [
       @update:per-page="(n) => { perPage = n; page = 1 }"
     >
       <template #cell-item_name="{ row }">
-        <span class="text-slate-300">{{ row.item_name }}</span>
+        <span class="text-slate-300 block sm:truncate sm:max-w-[10rem]" :title="row.item_name">{{ row.item_name }}</span>
       </template>
       <template #cell-instance_code="{ row }">
         <span class="font-mono">{{ row.instance_code }}</span>
       </template>
       <template #cell-serial="{ row }">
-        <span class="font-mono">{{ row.serial || '—' }}</span>
+        <span class="font-mono block break-all sm:truncate sm:max-w-[7rem]" :title="row.serial">{{ row.serial || '—' }}</span>
       </template>
       <template #cell-rfid_epc="{ row }">
-        <span class="font-mono">{{ row.rfid_epc || '—' }}</span>
+        <span class="font-mono block break-all sm:truncate sm:max-w-[8rem]" :title="row.rfid_epc">{{ row.rfid_epc || '—' }}</span>
       </template>
       <template #cell-status="{ row }">
         <span

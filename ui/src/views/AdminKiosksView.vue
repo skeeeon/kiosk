@@ -213,19 +213,29 @@ async function onSaveAndAdd(data: Partial<KioskRecord>) {
 
 <template>
   <main class="p-4 sm:p-6 max-w-7xl mx-auto w-full">
-    <header class="flex items-baseline justify-between mb-4">
+    <header class="flex items-center justify-between gap-3 mb-4">
       <div>
         <h1 class="text-2xl font-semibold">Kiosks</h1>
         <p class="text-sm text-slate-400">{{ kiosks.length }} registered</p>
       </div>
-      <button
-        v-if="isController"
-        type="button"
-        class="px-4 py-2 rounded-lg bg-brand-primary hover:bg-brand-primary-hover text-white font-medium"
-        @click="openNew"
-      >
-        New kiosk
-      </button>
+      <div class="flex items-center gap-2 shrink-0">
+        <button
+          type="button"
+          class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 disabled:opacity-50"
+          :disabled="loading"
+          @click="load"
+        >
+          {{ loading ? 'Loading…' : 'Refresh' }}
+        </button>
+        <button
+          v-if="isController"
+          type="button"
+          class="px-4 py-2 rounded-lg bg-brand-primary hover:bg-brand-primary-hover text-white font-medium"
+          @click="openNew"
+        >
+          New kiosk
+        </button>
+      </div>
     </header>
 
     <input
@@ -279,7 +289,7 @@ async function onSaveAndAdd(data: Partial<KioskRecord>) {
         </span>
       </template>
       <template #cell-notes="{ row }">
-        <span class="text-slate-400 truncate inline-block max-w-xs align-bottom">
+        <span class="text-slate-400 truncate inline-block max-w-[14rem] align-middle">
           {{ row.notes || '—' }}
         </span>
       </template>
