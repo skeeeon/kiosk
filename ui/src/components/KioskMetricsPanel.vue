@@ -8,8 +8,8 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import MetricsCards from './MetricsCards.vue'
-import { api, ApiError } from '../lib/api'
-import type { KioskMetrics, KioskOfflineError } from '../types'
+import { api, isKioskOfflineError as isOfflineError } from '../lib/api'
+import type { KioskMetrics } from '../types'
 
 const props = defineProps<{ kioskCode: string }>()
 
@@ -37,16 +37,6 @@ async function load() {
   } finally {
     loading.value = false
   }
-}
-
-// isOfflineError identifies the 503 + kiosk_offline body so the panel renders a
-// banner rather than a red error box. Any other error stays a generic failure.
-function isOfflineError(e: unknown): boolean {
-  if (e instanceof ApiError && e.status === 503) {
-    const data = e.data as KioskOfflineError | null
-    return data?.error === 'kiosk_offline'
-  }
-  return false
 }
 
 watch(() => props.kioskCode, (c) => { if (c) void load() }, { immediate: true })

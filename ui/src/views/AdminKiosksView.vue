@@ -9,6 +9,7 @@ import { useToast } from '../composables/useToast'
 import { useKioskIdentity } from '../composables/useKioskIdentity'
 import { useListShortcuts } from '../composables/useListShortcuts'
 import { useUrlQuerySync } from '../composables/useUrlQuerySync'
+import { onlineStatusFor as sharedOnlineStatus, onlineBadgeClass } from '../lib/onlineStatus'
 import type { HeartbeatsResponse, KioskRecord } from '../types'
 
 const toast = useToast()
@@ -78,33 +79,11 @@ onUnmounted(() => {
   if (heartbeatTimer) clearInterval(heartbeatTimer)
 })
 
-// onlineStatusFor mirrors the AdminKioskDetailView logic. Same thresholds
-// across both views so the badge stays consistent when the operator
+// Thin wrapper over the shared helper — same thresholds as
+// AdminKioskDetailView so the badge stays consistent when the operator
 // drills in.
-function onlineStatusFor(code: string): 'online' | 'stale' | 'offline' | 'unknown' {
-  const ts = heartbeats.value[code]
-  if (!ts) {
-    if (!controllerStartedAt.value) return 'unknown'
-    const sinceRestart = Date.now() - new Date(controllerStartedAt.value).getTime()
-    return sinceRestart < 90_000 ? 'unknown' : 'offline'
-  }
-  const age = Date.now() - new Date(ts).getTime()
-  if (age < 90_000) return 'online'
-  if (age < 5 * 60_000) return 'stale'
-  return 'offline'
-}
-
-function onlineBadgeClass(s: ReturnType<typeof onlineStatusFor>): string {
-  switch (s) {
-    case 'online':
-      return 'bg-emerald-900/60 text-emerald-200'
-    case 'stale':
-      return 'bg-amber-900/60 text-amber-200'
-    case 'offline':
-      return 'bg-red-900/60 text-red-200'
-    default:
-      return 'bg-slate-800 text-slate-400'
-  }
+function onlineStatusFor(code: string) {
+  return sharedOnlineStatus(heartbeats.value[code], controllerStartedAt.value)
 }
 
 const filtered = computed(() => {
@@ -285,7 +264,7 @@ async function onSaveAndAdd(data: Partial<KioskRecord>) {
       </template>
       <template #cell-last_transaction="{ row }">
         <span class="text-slate-400">
-          {{ lastSeenDisplay(row.last_transaction_at ?? row.last_seen) }}
+          {{ lastSeenDisplay(row.last_transaction_at) }}
         </span>
       </template>
       <template #cell-notes="{ row }">

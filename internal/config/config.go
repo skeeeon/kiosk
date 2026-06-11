@@ -5,6 +5,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -212,12 +213,13 @@ const MaxEnclosureReadWindow = 3500 * time.Millisecond
 // BrandingConfig customizes the kiosk's visual identity. All fields are
 // optional; empty/missing values fall back to the SPA's built-in defaults.
 //
-//   - LogoPath: absolute or working-dir-relative path to an image file the
-//     binary will stream at GET /branding/logo. Suggested formats: PNG, SVG.
+//   - LogoPath: path to an image file the binary will stream at
+//     GET /branding/logo. Relative paths resolve against the config file's
+//     directory (see resolvePaths). Suggested formats: PNG, SVG.
 //   - Tagline: shown under the logo on the idle "Scan your badge" screen.
 //   - PrimaryColor: CSS color string ("#10b981", "rgb(...)", named color).
 //     Applied to the commit button and other primary action accents.
-//   - CustomCSSPath: absolute or working-dir-relative path to a .css file
+//   - CustomCSSPath: path (resolved like LogoPath) to a .css file
 //     the binary will stream at GET /branding/custom.css. The SPA injects a
 //     <link> for it after Tailwind so any color utility can be re-skinned
 //     by overriding the matching `--color-<name>` variable on :root —
@@ -279,6 +281,9 @@ func resolvePaths(c *Config, configFile string) {
 	if p := c.Branding.LogoPath; p != "" && !filepath.IsAbs(p) {
 		c.Branding.LogoPath = filepath.Join(base, p)
 	}
+	if p := c.Branding.CustomCSSPath; p != "" && !filepath.IsAbs(p) {
+		c.Branding.CustomCSSPath = filepath.Join(base, p)
+	}
 }
 
 func applyEnvOverrides(c *Config) {
@@ -291,6 +296,8 @@ func applyEnvOverrides(c *Config) {
 	if v := os.Getenv("KIOSK_SERVER_PORT"); v != "" {
 		if p, err := strconv.Atoi(v); err == nil {
 			c.Server.Port = p
+		} else {
+			slog.Warn("config.env_override_ignored", "var", "KIOSK_SERVER_PORT", "value", v, "error", err)
 		}
 	}
 	if v := os.Getenv("KIOSK_SERVER_BIND"); v != "" {
@@ -299,11 +306,15 @@ func applyEnvOverrides(c *Config) {
 	if v := os.Getenv("KIOSK_SESSION_IDLE_TIMEOUT"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			c.Session.IdleTimeout = Duration(d)
+		} else {
+			slog.Warn("config.env_override_ignored", "var", "KIOSK_SESSION_IDLE_TIMEOUT", "value", v, "error", err)
 		}
 	}
 	if v := os.Getenv("KIOSK_SESSION_CART_GRACE_PERIOD"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			c.Session.CartGracePeriod = Duration(d)
+		} else {
+			slog.Warn("config.env_override_ignored", "var", "KIOSK_SESSION_CART_GRACE_PERIOD", "value", v, "error", err)
 		}
 	}
 	if v := os.Getenv("KIOSK_SCANNING_USER_QR_PREFIX"); v != "" {
@@ -328,6 +339,9 @@ func applyEnvOverrides(c *Config) {
 	}
 	if v := os.Getenv("KIOSK_BRANDING_PRIMARY_COLOR"); v != "" {
 		c.Branding.PrimaryColor = v
+	}
+	if v := os.Getenv("KIOSK_BRANDING_CUSTOM_CSS_PATH"); v != "" {
+		c.Branding.CustomCSSPath = v
 	}
 	if v := os.Getenv("KIOSK_NATS_ENABLED"); v != "" {
 		c.NATS.Enabled = parseBool(v)
@@ -392,11 +406,15 @@ func applyEnvOverrides(c *Config) {
 	if v := os.Getenv("KIOSK_RFID_READER_PORT"); v != "" {
 		if p, err := strconv.Atoi(v); err == nil {
 			c.RFID.Reader.Port = p
+		} else {
+			slog.Warn("config.env_override_ignored", "var", "KIOSK_RFID_READER_PORT", "value", v, "error", err)
 		}
 	}
 	if v := os.Getenv("KIOSK_RFID_READ_WINDOW"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			c.RFID.ReadWindow = Duration(d)
+		} else {
+			slog.Warn("config.env_override_ignored", "var", "KIOSK_RFID_READ_WINDOW", "value", v, "error", err)
 		}
 	}
 	if v := os.Getenv("KIOSK_RFID_DOOR_ID"); v != "" {

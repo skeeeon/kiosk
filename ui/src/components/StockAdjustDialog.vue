@@ -34,8 +34,8 @@ const form = reactive<{
   reason: '',
 })
 
-const submitting = computed(() => false) // kept for future async UX; useful as a guard
-let inFlight = false
+// Guards double-submit and disables the submit button while the POST is out.
+const inFlight = ref(false)
 
 const initialSnapshot = ref('')
 
@@ -79,12 +79,12 @@ function applyPreset(text: string) {
 }
 
 async function submit() {
-  if (inFlight) return
+  if (inFlight.value) return
   if (!form.reason.trim()) {
     toast.error('Reason is required')
     return
   }
-  inFlight = true
+  inFlight.value = true
   try {
     const result = await api.post<StockAdjustmentResult>(
       `/api/kiosk/items/${props.itemId}/adjust`,
@@ -98,7 +98,7 @@ async function submit() {
   } catch (e) {
     toast.error((e as Error).message)
   } finally {
-    inFlight = false
+    inFlight.value = false
   }
 }
 </script>
@@ -181,7 +181,7 @@ async function submit() {
         </button>
         <button
           type="submit"
-          :disabled="submitting"
+          :disabled="inFlight"
           class="px-4 py-2 rounded-lg bg-brand-primary hover:bg-brand-primary-hover text-white font-medium"
         >
           Apply adjustment

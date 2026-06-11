@@ -391,8 +391,7 @@ Recent kiosk-side migrations for the instance-status / maintenance work:
 `scheduled_reports.report_key` with `maintenance` + seeds the `digest.maintenance`
 template).
 
-`touchKiosk` in `internal/controller/consumer.go` writes `last_seen`
-(legacy, kept for one release) on every touch and advances
+`touchKiosk` in `internal/controller/consumer.go` advances
 `last_transaction_at` only from the event's own `completed_at`,
 monotonically (never wall-clock `now()`) — so a redelivery or a
 `ledger.republish` of an old transaction can't drag it forward, and the

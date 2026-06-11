@@ -15,6 +15,7 @@ package commands
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	"github.com/skeeeon/kiosk/internal/events"
 	"github.com/skeeeon/kiosk/internal/instances"
@@ -39,6 +40,12 @@ func (d *Dispatcher) handleInstanceCreate(_ context.Context, payload []byte) Rep
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return Reply{Success: false, Error: "invalid request body: " + err.Error()}
 	}
+	// Trim before validating so whitespace-only fields fail the required
+	// checks, same as the HTTP handlers.
+	req.CommandID = strings.TrimSpace(req.CommandID)
+	req.ControllerAdminID = strings.TrimSpace(req.ControllerAdminID)
+	req.ItemCode = strings.TrimSpace(req.ItemCode)
+	req.Code = strings.TrimSpace(req.Code)
 	if req.CommandID == "" {
 		return Reply{Success: false, Error: "command_id is required"}
 	}
@@ -87,6 +94,7 @@ func (d *Dispatcher) handleInstanceEdit(_ context.Context, payload []byte) Reply
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return Reply{Success: false, Error: "invalid request body: " + err.Error()}
 	}
+	req.InstanceCode = strings.TrimSpace(req.InstanceCode)
 	if req.InstanceCode == "" {
 		return Reply{Success: false, Error: "instance_code is required"}
 	}
@@ -125,6 +133,12 @@ func (d *Dispatcher) handleInstanceSetStatus(_ context.Context, payload []byte) 
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return Reply{Success: false, Error: "invalid request body: " + err.Error()}
 	}
+	// Trim before validating, same as handleInstanceCreate.
+	req.CommandID = strings.TrimSpace(req.CommandID)
+	req.ControllerAdminID = strings.TrimSpace(req.ControllerAdminID)
+	req.InstanceCode = strings.TrimSpace(req.InstanceCode)
+	req.Status = strings.TrimSpace(req.Status)
+	req.Reason = strings.TrimSpace(req.Reason)
 	if req.CommandID == "" {
 		return Reply{Success: false, Error: "command_id is required"}
 	}

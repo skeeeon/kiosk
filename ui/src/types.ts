@@ -280,10 +280,6 @@ export interface KioskRecord {
   id: string
   kiosk_code: string
   location_code: string
-  // last_seen is the legacy "last event of any kind" timestamp; written
-  // alongside last_transaction_at for one release. New SPA code should
-  // prefer last_transaction_at, which means what its name says.
-  last_seen?: string
   last_transaction_at?: string
   status: 'unknown' | 'active' | 'disabled'
   notes: string

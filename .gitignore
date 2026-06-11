@@ -18,6 +18,9 @@
 /ui/node_modules/
 /ui/dist/
 /ui/.vite/
+# Site-specific branding overrides stay local to each deployment; the
+# committed reference theme keeps its .example suffix.
+/branding/*.css
 *.log
 .DS_Store
 .env

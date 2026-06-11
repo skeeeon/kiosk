@@ -21,6 +21,7 @@ import KioskInventoryPanel from '../components/KioskInventoryPanel.vue'
 import KioskInstancesPanel from '../components/KioskInstancesPanel.vue'
 import KioskMetricsPanel from '../components/KioskMetricsPanel.vue'
 import AppDialog from '../components/AppDialog.vue'
+import { onlineStatusFor, onlineBadgeClass as badgeClassFor } from '../lib/onlineStatus'
 import type { HeartbeatsResponse, KioskRecord } from '../types'
 
 const props = defineProps<{ code: string }>()
@@ -97,21 +98,10 @@ onUnmounted(() => {
   if (pollTimer) clearInterval(pollTimer)
 })
 
-// Three-state online indicator. Mirrors the threshold constants on the
-// controller side (heartbeatFreshness=90s in internal/controller/inventory.go).
-// "Unknown" suppresses "offline" briefly after a controller restart so the
-// SPA doesn't paint a freshly-booted fleet red.
-const onlineStatus = computed<'online' | 'stale' | 'offline' | 'unknown'>(() => {
-  if (!heartbeatTs.value) {
-    if (!controllerStartedAt.value) return 'unknown'
-    const sinceRestart = Date.now() - new Date(controllerStartedAt.value).getTime()
-    return sinceRestart < 90_000 ? 'unknown' : 'offline'
-  }
-  const age = Date.now() - new Date(heartbeatTs.value).getTime()
-  if (age < 90_000) return 'online'
-  if (age < 5 * 60_000) return 'stale'
-  return 'offline'
-})
+// Three-state online indicator, shared with the list view's badges.
+const onlineStatus = computed(() =>
+  onlineStatusFor(heartbeatTs.value, controllerStartedAt.value),
+)
 
 const onlineLabel = computed(() => {
   switch (onlineStatus.value) {
@@ -126,21 +116,10 @@ const onlineLabel = computed(() => {
   }
 })
 
-const onlineBadgeClass = computed(() => {
-  switch (onlineStatus.value) {
-    case 'online':
-      return 'bg-emerald-900/60 text-emerald-200'
-    case 'stale':
-      return 'bg-amber-900/60 text-amber-200'
-    case 'offline':
-      return 'bg-red-900/60 text-red-200'
-    default:
-      return 'bg-slate-800 text-slate-400'
-  }
-})
+const onlineBadgeClass = computed(() => badgeClassFor(onlineStatus.value))
 
 function lastTransactionDisplay(): string {
-  const v = kiosk.value?.last_transaction_at ?? kiosk.value?.last_seen
+  const v = kiosk.value?.last_transaction_at
   if (!v) return 'never'
   const d = new Date(v)
   if (Number.isNaN(d.getTime())) return v

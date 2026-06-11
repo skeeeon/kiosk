@@ -54,8 +54,9 @@ These started as deferred roadmap items and are now live in the binary:
 - **`kiosks.last_transaction_at`.** New field that means what its
   name says: "when did this kiosk last actually transact?"
   `touchKiosk` is now narrowed to `transaction.complete` events only
-  — general liveness moved to the heartbeat. `last_seen` writes
-  alongside it for one release as a deprecation window.
+  — general liveness moved to the heartbeat. `last_seen` rode
+  alongside it for one release as a deprecation window, then was
+  dropped.
 - **Notifications system.** Admin-edited templates for transaction
   receipts, low-stock alerts, and scheduled open-checkouts digests
   (`notification_templates`), with per-event recipients specs, a

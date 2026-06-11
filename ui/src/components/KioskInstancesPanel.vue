@@ -8,9 +8,8 @@
 import { computed, ref, watch } from 'vue'
 import AppDialog from './AppDialog.vue'
 import DataTable, { type ColumnDef } from './DataTable.vue'
-import { api, ApiError } from '../lib/api'
+import { api, isKioskOfflineError as isOfflineError } from '../lib/api'
 import { useToast } from '../composables/useToast'
-import type { KioskOfflineError } from '../types'
 import {
   instanceActions,
   statusLabel,
@@ -119,14 +118,6 @@ async function loadSnapshot() {
   } finally {
     loading.value = false
   }
-}
-
-function isOfflineError(e: unknown): boolean {
-  if (e instanceof ApiError && e.status === 503) {
-    const data = e.data as KioskOfflineError | null
-    return data?.error === 'kiosk_offline'
-  }
-  return false
 }
 
 watch(() => props.kioskCode, (c) => { if (c) void loadSnapshot() }, { immediate: true })

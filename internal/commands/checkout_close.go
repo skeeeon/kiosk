@@ -53,6 +53,13 @@ func (d *Dispatcher) handleCheckoutClose(_ context.Context, payload []byte) Repl
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return Reply{Success: false, Error: "invalid request body: " + err.Error()}
 	}
+	// Trim before validating so whitespace-only fields fail the required
+	// checks, same as the HTTP handlers.
+	req.CommandID = strings.TrimSpace(req.CommandID)
+	req.ControllerAdminID = strings.TrimSpace(req.ControllerAdminID)
+	req.TransactionLineID = strings.TrimSpace(req.TransactionLineID)
+	req.Reason = strings.TrimSpace(req.Reason)
+	req.Notes = strings.TrimSpace(req.Notes)
 	if req.CommandID == "" {
 		return Reply{Success: false, Error: "command_id is required"}
 	}
@@ -79,8 +86,8 @@ func (d *Dispatcher) handleCheckoutClose(_ context.Context, payload []byte) Repl
 		ActorID:        req.ControllerAdminID,
 		Source:         events.SourceController,
 		CommandID:      req.CommandID,
-		Reason:         strings.TrimSpace(req.Reason),
-		Notes:          strings.TrimSpace(req.Notes),
+		Reason:         req.Reason,
+		Notes:          req.Notes,
 		Identity:       kioskctx.Get(),
 	}, events.Publish)
 	if err != nil {

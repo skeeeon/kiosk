@@ -20,6 +20,19 @@ export class ApiError extends Error {
   }
 }
 
+// isKioskOfflineError identifies the controller's 503 + {error: "kiosk_offline"}
+// reply (stale heartbeat or NATS timeout) so callers can render an offline
+// banner instead of a generic red error box.
+export function isKioskOfflineError(e: unknown): boolean {
+  return (
+    e instanceof ApiError &&
+    e.status === 503 &&
+    typeof e.data === 'object' &&
+    e.data !== null &&
+    (e.data as { error?: unknown }).error === 'kiosk_offline'
+  )
+}
+
 function authHeaders(): Record<string, string> {
   const t = pb.authStore.token
   return t ? { Authorization: `Bearer ${t}` } : {}

@@ -250,10 +250,13 @@ func TestAggregator_TouchKiosk_AutoRegistersUnknown(t *testing.T) {
 	if got := rec.GetString("location_code"); got != "EAST" {
 		t.Errorf("location_code: got %q want %q", got, "EAST")
 	}
-	firstSeen := rec.GetDateTime("last_seen").Time()
+	// A heartbeat touch carries no transaction time, so the field honestly
+	// reads "no transactions yet."
+	if got := rec.GetDateTime("last_transaction_at").Time(); !got.IsZero() {
+		t.Errorf("last_transaction_at: got %v want zero", got)
+	}
 
-	// Second touch updates last_seen without creating a duplicate row.
-	time.Sleep(10 * time.Millisecond)
+	// Second touch is a no-op rather than a duplicate row.
 	if err := agg.TouchKiosk("KIOSK-NEW", "EAST"); err != nil {
 		t.Fatalf("second touch: %v", err)
 	}
@@ -264,8 +267,5 @@ func TestAggregator_TouchKiosk_AutoRegistersUnknown(t *testing.T) {
 	}
 	if len(rows) != 1 {
 		t.Fatalf("duplicate kiosk row created: got %d", len(rows))
-	}
-	if !rows[0].GetDateTime("last_seen").Time().After(firstSeen) {
-		t.Errorf("last_seen not advanced on second touch")
 	}
 }

@@ -10,14 +10,13 @@
 import { computed, ref, watch } from 'vue'
 import AppDialog from './AppDialog.vue'
 import DataTable, { type ColumnDef } from './DataTable.vue'
-import { api, ApiError } from '../lib/api'
+import { api, isKioskOfflineError as isOfflineError } from '../lib/api'
 import { availableFor, isLowStock } from '../lib/inventory'
 import { useToast } from '../composables/useToast'
 import type {
   InventoryAdjustResponse,
   InventorySnapshotItem,
   InventorySnapshotResponse,
-  KioskOfflineError,
 } from '../types'
 
 const props = defineProps<{ kioskCode: string }>()
@@ -68,17 +67,6 @@ async function loadSnapshot() {
   } finally {
     loading.value = false
   }
-}
-
-// isOfflineError identifies the 503 + kiosk_offline body so the panel can
-// render a banner rather than a red error box. Any other error stays a
-// generic failure.
-function isOfflineError(e: unknown): boolean {
-  if (e instanceof ApiError && e.status === 503) {
-    const data = e.data as KioskOfflineError | null
-    return data?.error === 'kiosk_offline'
-  }
-  return false
 }
 
 watch(() => props.kioskCode, (c) => { if (c) void loadSnapshot() }, { immediate: true })

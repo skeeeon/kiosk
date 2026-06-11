@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
@@ -51,6 +52,12 @@ func (d *Dispatcher) handleInventoryAdjust(_ context.Context, payload []byte) Re
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return Reply{Success: false, Error: "invalid request body: " + err.Error()}
 	}
+	// Trim before validating so whitespace-only fields fail the required
+	// checks, same as the HTTP handlers.
+	req.CommandID = strings.TrimSpace(req.CommandID)
+	req.ControllerAdminID = strings.TrimSpace(req.ControllerAdminID)
+	req.ItemCode = strings.TrimSpace(req.ItemCode)
+	req.Reason = strings.TrimSpace(req.Reason)
 	if req.CommandID == "" {
 		return Reply{Success: false, Error: "command_id is required"}
 	}
