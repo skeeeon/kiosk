@@ -729,12 +729,19 @@ const crossUserSummary = computed(() =>
         <p class="text-5xl font-bold tracking-tight mb-4">Scan your badge to begin</p>
         <p class="text-xl text-slate-400">Or scan an item code to identify it.</p>
       </div>
+      <!-- Front and center on purpose: checkout starts with a badge scan
+           (no touch needed), so this is the only tappable thing on the
+           splash — it competes with nothing, and a corner placement would
+           just make the kiosk's one button easy to miss. -->
       <button
         v-if="timeclockButtonVisible"
         type="button"
-        class="px-8 py-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xl transition-transform active:scale-95"
+        class="flex items-center gap-3 px-10 py-5 rounded-2xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-100 text-2xl font-medium transition-transform active:scale-95"
         @click="timeclockOpen = true"
       >
+        <svg class="w-8 h-8 text-slate-400" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+          <path d="M10 2a8 8 0 1 0 0 16 8 8 0 0 0 0-16Zm0 1.5a6.5 6.5 0 1 1 0 13 6.5 6.5 0 0 1 0-13Zm-.75 2.75a.75.75 0 0 1 1.5 0v3.31l2.49 1.49a.75.75 0 1 1-.77 1.29l-3.22-1.93V6.25Z" />
+        </svg>
         Time clock
       </button>
     </template>

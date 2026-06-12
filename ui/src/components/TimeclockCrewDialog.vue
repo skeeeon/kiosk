@@ -87,6 +87,9 @@ function formatClock(iso?: string): string {
 }
 
 const hasWorkers = computed(() => (options.value?.workers.length ?? 0) > 0)
+const clockedInCount = computed(
+  () => options.value?.workers.filter((w) => w.clocked_in).length ?? 0,
+)
 </script>
 
 <template>
@@ -107,6 +110,11 @@ const hasWorkers = computed(() => (options.value?.workers.length ?? 0) > 0)
         class="rounded-lg bg-red-900/40 border border-red-700/60 text-red-200 text-sm px-3 py-2"
       >
         {{ errorMsg }}
+      </p>
+
+      <p v-if="hasWorkers && !loading" class="text-sm text-slate-400">
+        <span class="text-emerald-400 font-semibold tabular-nums">{{ clockedInCount }}</span>
+        of {{ options!.workers.length }} clocked in
       </p>
 
       <div class="flex flex-col gap-2 max-h-[55vh] overflow-y-auto">
