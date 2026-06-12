@@ -20,21 +20,37 @@ import KioskItemsPanel from '../components/KioskItemsPanel.vue'
 import KioskInventoryPanel from '../components/KioskInventoryPanel.vue'
 import KioskInstancesPanel from '../components/KioskInstancesPanel.vue'
 import KioskMetricsPanel from '../components/KioskMetricsPanel.vue'
+import TimeclockPunchDialog from '../components/TimeclockPunchDialog.vue'
 import AppDialog from '../components/AppDialog.vue'
+import { useKioskIdentity } from '../composables/useKioskIdentity'
 import { onlineStatusFor, onlineBadgeClass as badgeClassFor } from '../lib/onlineStatus'
-import type { HeartbeatsResponse, KioskRecord } from '../types'
+import type { HeartbeatsResponse, KioskRecord, PunchResult } from '../types'
 
 const props = defineProps<{ code: string }>()
 const router = useRouter()
 const toast = useToast()
+const { identity } = useKioskIdentity()
 
 const kiosk = ref<KioskRecord | null>(null)
 const loading = ref(false)
 const error = ref<string | null>(null)
 const saving = ref(false)
 
-type TabId = 'overview' | 'items' | 'inventory' | 'instances' | 'metrics'
+type TabId = 'overview' | 'items' | 'inventory' | 'instances' | 'metrics' | 'timeclock'
 const activeTab = ref<TabId>('overview')
+const tabs = computed<TabId[]>(() => {
+  const base: TabId[] = ['overview', 'items', 'inventory', 'instances', 'metrics']
+  if (identity.value?.timeclock_enabled) base.push('timeclock')
+  return base
+})
+const TAB_LABELS: Record<TabId, string> = {
+  overview: 'Overview',
+  items: 'Items',
+  inventory: 'Inventory',
+  instances: 'Instances',
+  metrics: 'Metrics',
+  timeclock: 'Timeclock',
+}
 
 // editable mirror of kiosk fields. kiosk_code is identity once persisted —
 // never edit. Status and notes can change from this view; location_code is
@@ -177,6 +193,34 @@ async function confirmRebuild() {
   }
 }
 
+// --- Timeclock: remote manual punch + punch republish. The kiosk is the
+// only punch writer; both actions ride the command bus and need the kiosk
+// online (503 kiosk_offline otherwise).
+const tcPunchOpen = ref(false)
+const tcRepublishSubmitting = ref(false)
+
+function onPunchRecorded(res: PunchResult) {
+  toast.success(
+    `Recorded clock-${res.direction} for ${res.user_name || res.user_code}${res.replayed ? ' (already applied)' : ''}`,
+  )
+}
+
+async function republishPunches() {
+  if (!kiosk.value || tcRepublishSubmitting.value) return
+  tcRepublishSubmitting.value = true
+  try {
+    const res = await api.post<{ published: number }>(
+      `/api/controller/kiosks/${encodeURIComponent(kiosk.value.kiosk_code)}/timeclock/republish`,
+      {},
+    )
+    toast.success(`Republished ${res.published} punches`)
+  } catch (e) {
+    toast.error((e as Error).message)
+  } finally {
+    tcRepublishSubmitting.value = false
+  }
+}
+
 async function submitRepublish() {
   if (!kiosk.value) return
   const body: Record<string, string> = {}
@@ -246,7 +290,7 @@ async function submitRepublish() {
 
     <div v-if="kiosk" class="flex gap-1 mb-4 border-b border-slate-800 tab-scroll">
       <button
-        v-for="t in (['overview','items','inventory','instances','metrics'] as TabId[])"
+        v-for="t in tabs"
         :key="t"
         type="button"
         class="px-3 sm:px-4 py-2 text-sm border-b-2 -mb-px whitespace-nowrap"
@@ -255,7 +299,7 @@ async function submitRepublish() {
           : 'border-transparent text-slate-400 hover:text-slate-200'"
         @click="activeTab = t"
       >
-        {{ t === 'overview' ? 'Overview' : t === 'items' ? 'Items' : t === 'inventory' ? 'Inventory' : t === 'instances' ? 'Instances' : 'Metrics' }}
+        {{ TAB_LABELS[t] }}
       </button>
     </div>
 
@@ -357,6 +401,43 @@ async function submitRepublish() {
     <div v-if="kiosk && activeTab === 'metrics'">
       <KioskMetricsPanel :kiosk-code="kiosk.kiosk_code" />
     </div>
+
+    <div v-if="kiosk && activeTab === 'timeclock'" class="rounded-2xl bg-slate-900 border border-slate-800 p-5">
+      <h2 class="text-sm font-medium text-slate-300 mb-2">Timeclock</h2>
+      <p class="text-xs text-slate-500 mb-4">
+        Punches are recorded AT the kiosk (it is the only punch writer) and
+        flow back to the controller&rsquo;s ledger as events. Fleet-wide punch
+        history and CSV export live under
+        <RouterLink :to="{ name: 'admin-reports' }" class="underline">Reports → Timeclock</RouterLink>.
+      </p>
+      <div class="flex gap-3 flex-wrap">
+        <button
+          type="button"
+          class="px-3 py-2 rounded-lg bg-brand-primary hover:bg-brand-primary-hover text-white text-sm font-medium"
+          @click="tcPunchOpen = true"
+        >
+          Record punch…
+        </button>
+        <button
+          type="button"
+          class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm disabled:opacity-50"
+          :disabled="tcRepublishSubmitting"
+          @click="republishPunches"
+        >
+          {{ tcRepublishSubmitting ? 'Republishing…' : 'Republish punches' }}
+        </button>
+      </div>
+    </div>
+
+    <TimeclockPunchDialog
+      v-if="kiosk"
+      :open="tcPunchOpen"
+      :is-controller="true"
+      :kiosks="kiosk ? [kiosk] : []"
+      :default-kiosk-code="kiosk.kiosk_code"
+      @update:open="tcPunchOpen = $event"
+      @recorded="onPunchRecorded"
+    />
 
     <AppDialog
       :open="rebuildOpen"

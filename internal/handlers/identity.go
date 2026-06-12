@@ -49,6 +49,13 @@ type identityPayload struct {
 	// RFIDMode mirrors cfg.RFID.Mode. Empty when RFIDEnabled is false.
 	// Set to "counter_scan" or "enclosure_diff" otherwise.
 	RFIDMode string `json:"rfid_mode,omitempty"`
+	// Timeclock flags mirror cfg.Timeclock. Enabled gates the splash-screen
+	// Time clock button + admin tab; the interlock flags let the SPA shape
+	// copy (e.g. warn that clock-out is blocked by open tools) without
+	// probing endpoints. Flat fields, matching the rfid_* precedent.
+	TimeclockEnabled        bool `json:"timeclock_enabled"`
+	TimeclockRequireClockIn bool `json:"timeclock_require_clock_in"`
+	TimeclockBlockClockOut  bool `json:"timeclock_block_clock_out"`
 }
 
 // Identity returns the kiosk's stable identity (kiosk_code + location_code)
@@ -61,6 +68,9 @@ func (h *Handlers) Identity(re *core.RequestEvent) error {
 		Managed:     h.Cfg.Controller.Enabled,
 		RFIDEnabled: h.Cfg.RFID.Enabled,
 		RFIDMode:    h.Cfg.RFID.Mode,
+		TimeclockEnabled:        h.Cfg.Timeclock.Enabled,
+		TimeclockRequireClockIn: h.Cfg.Timeclock.Enabled && h.Cfg.Timeclock.RequireClockInForCheckout,
+		TimeclockBlockClockOut:  h.Cfg.Timeclock.Enabled && h.Cfg.Timeclock.BlockClockOutWithOpenCheckouts,
 	}
 	if strings.TrimSpace(h.Cfg.Branding.LogoPath) != "" {
 		out.Branding.LogoURL = "/branding/logo"

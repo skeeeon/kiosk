@@ -82,6 +82,8 @@ function reportLabel(key: string): string {
       return 'Daily activity'
     case 'maintenance':
       return 'Items in maintenance'
+    case 'timeclock':
+      return 'Timeclock'
   }
   return key
 }

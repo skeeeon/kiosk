@@ -25,6 +25,7 @@ type Config struct {
 	NATS       NATSConfig       `yaml:"nats"`
 	Controller ControllerConfig `yaml:"controller"`
 	RFID       RFIDConfig       `yaml:"rfid"`
+	Timeclock  TimeclockConfig  `yaml:"timeclock"`
 }
 
 type KioskConfig struct {
@@ -193,6 +194,28 @@ type RFIDReaderConfig struct {
 type RFIDAntennaConfig struct {
 	ID         int     `yaml:"id"`
 	TxPowerDBm float64 `yaml:"tx_power_dbm"`
+}
+
+// TimeclockConfig opts a kiosk into the timeclock feature: an append-only
+// clock-in/clock-out punch ledger (time_punches) with optional interlocks
+// against the tool ledger. Plain bools (not the ReturnsConfig pointer trick)
+// because every default is false — an omitted block leaves existing
+// deployments exactly as they were.
+//
+//   - Enabled gates the whole surface: HTTP endpoints, the splash-screen
+//     button, event publishing, and (in managed mode) the punch-state
+//     watcher. Off → the feature does not exist.
+//   - RequireClockInForCheckout makes commit reject any cart containing
+//     checkout/consume lines when the cart user is not clocked in. Returns
+//     are ALWAYS allowed — a worker holding a tool can hand it back
+//     regardless of punch state.
+//   - BlockClockOutWithOpenCheckouts makes the punch funnel reject a
+//     clock-out while the worker has open checkouts at THIS kiosk
+//     (local-scoped by design). Admin punches with force=true bypass it.
+type TimeclockConfig struct {
+	Enabled                        bool `yaml:"enabled"`
+	RequireClockInForCheckout      bool `yaml:"require_clock_in_for_checkout"`
+	BlockClockOutWithOpenCheckouts bool `yaml:"block_clock_out_with_open_checkouts"`
 }
 
 // Valid RFID mode strings. The set is fixed; new modes get a new
@@ -419,6 +442,15 @@ func applyEnvOverrides(c *Config) {
 	}
 	if v := os.Getenv("KIOSK_RFID_DOOR_ID"); v != "" {
 		c.RFID.DoorID = v
+	}
+	if v := os.Getenv("KIOSK_TIMECLOCK_ENABLED"); v != "" {
+		c.Timeclock.Enabled = parseBool(v)
+	}
+	if v := os.Getenv("KIOSK_TIMECLOCK_REQUIRE_CLOCK_IN_FOR_CHECKOUT"); v != "" {
+		c.Timeclock.RequireClockInForCheckout = parseBool(v)
+	}
+	if v := os.Getenv("KIOSK_TIMECLOCK_BLOCK_CLOCK_OUT_WITH_OPEN_CHECKOUTS"); v != "" {
+		c.Timeclock.BlockClockOutWithOpenCheckouts = parseBool(v)
 	}
 }
 

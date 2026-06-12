@@ -24,3 +24,5 @@
 *.log
 .DS_Store
 .env
+# Local Claude Code session config
+/.claude/

@@ -95,6 +95,8 @@ func NewDispatcher(app core.App, kioskCode string) *Dispatcher {
 	d.handlers["ledger.republish"] = d.handleLedgerRepublish
 	d.handlers["cart.start"] = d.handleCartStart
 	d.handlers["read.trigger"] = d.handleReadTrigger
+	d.handlers["timeclock.punch"] = d.handleTimeclockPunch
+	d.handlers["timeclock.republish"] = d.handleTimeclockRepublish
 	return d
 }
 

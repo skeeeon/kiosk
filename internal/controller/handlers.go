@@ -51,6 +51,11 @@ func (h *Handlers) requireAdmin(re *core.RequestEvent) error {
 type identityPayload struct {
 	Role     string          `json:"role"`
 	Branding brandingPayload `json:"branding"`
+	// TimeclockEnabled mirrors cfg.Timeclock.Enabled on the controller —
+	// it gates the SPA's fleet timeclock report tab and the per-kiosk
+	// remote-punch affordances. Same flat-field shape as the kiosk's
+	// identity payload.
+	TimeclockEnabled bool `json:"timeclock_enabled"`
 }
 
 type brandingPayload struct {
@@ -63,7 +68,7 @@ type brandingPayload struct {
 // Identity returns {role: "controller"} plus branding. The SPA fetches this
 // on boot; the kiosk's analogous handler returns role: "kiosk".
 func (h *Handlers) Identity(re *core.RequestEvent) error {
-	out := identityPayload{Role: "controller"}
+	out := identityPayload{Role: "controller", TimeclockEnabled: h.Cfg.Timeclock.Enabled}
 	if strings.TrimSpace(h.Cfg.Branding.LogoPath) != "" {
 		out.Branding.LogoURL = "/branding/logo"
 	}

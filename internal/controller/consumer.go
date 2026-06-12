@@ -17,6 +17,7 @@ import (
 
 	"github.com/skeeeon/kiosk/internal/events"
 	"github.com/skeeeon/kiosk/internal/notifications"
+	"github.com/skeeeon/kiosk/internal/timeclock"
 )
 
 // consumerName is the durable consumer name. Durability means restarts
@@ -100,6 +101,19 @@ type EventPayload struct {
 	PrevStatus    string `json:"prev_status,omitempty"`
 	NewStatus     string `json:"new_status,omitempty"`
 	SourceAuditID string `json:"source_audit_id,omitempty"`
+
+	// timeclock.punch fields. PunchID is the kiosk-side time_punches.id —
+	// the idempotency anchor (projected as source_punch_id). Source here is
+	// the punch-source enum (self/foreman/admin/controller_admin), wider
+	// than the local/controller pair the other events carry — both decode
+	// into the same string field. OccurredAt is the business timestamp the
+	// KV punch-state projection orders on.
+	PunchID            string    `json:"punch_id,omitempty"`
+	Direction          string    `json:"direction,omitempty"`
+	OccurredAt         time.Time `json:"occurred_at,omitempty"`
+	RecordedByUserCode string    `json:"recorded_by_user_code,omitempty"`
+	Force              bool      `json:"force,omitempty"`
+	RecordedAt         time.Time `json:"recorded_at,omitempty"`
 }
 
 // Aggregator owns the JetStream consumer lifecycle. One per controller
@@ -115,6 +129,13 @@ type Aggregator struct {
 	// against the controller's centrally-edited template rows. Wired via
 	// SetNotifier from cmd/controller/main after the app is bootstrapped.
 	notifier *notifications.Notifier
+
+	// punchKV is the punch_state bucket the aggregator broadcasts per-user
+	// clocked-in state into after projecting a timeclock.punch. Provisioned
+	// in Start; nil until then (writePunchState nil-checks). The replica is
+	// advisory — KV failures log and the event still acks; the kiosk merge
+	// rule + the next punch self-heal.
+	punchKV jetstream.KeyValue
 
 	cancelCtx context.CancelFunc
 	consumeCC jetstream.ConsumeContext
@@ -155,6 +176,19 @@ func (a *Aggregator) Start(parent context.Context) error {
 	if err != nil {
 		cancel()
 		return fmt.Errorf("ensure consumer: %w", err)
+	}
+
+	// punch_state bucket — best-effort: a KV provisioning failure degrades
+	// managed kiosks to local-only punch state, it doesn't stop the ledger
+	// projection.
+	if kv, kvErr := a.js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
+		Bucket:      timeclock.PunchStateBucket,
+		Description: "Per-user clocked-in state, broadcast-keyed by user_code. Written by the controller aggregator, watched by managed kiosks.",
+		History:     1,
+	}); kvErr != nil {
+		slog.Warn("controller.aggregator.punch_state_bucket_failed", "error", kvErr)
+	} else {
+		a.punchKV = kv
 	}
 
 	cc, err := cons.Consume(func(msg jetstream.Msg) {
@@ -239,6 +273,9 @@ func (a *Aggregator) ensureConsumer(ctx context.Context, stream jetstream.Stream
 			events.ReceiptTransactionFilter(),
 			events.LowStockAlertFilter(),
 			events.MaintenanceAlertFilter(),
+			// Timeclock punches project into the controller's own
+			// time_punches and drive the punch_state KV broadcast.
+			events.TimeclockPunchFilter(),
 		},
 	}
 	return stream.CreateOrUpdateConsumer(ctx, cfg)
@@ -328,6 +365,8 @@ func (a *Aggregator) handle(ctx context.Context, msg jetstream.Msg) {
 		a.handleCheckoutAdminClose(msg, payload)
 	case strings.HasSuffix(subject, ".instance.lifecycle"):
 		a.handleInstanceLifecycle(msg, payload)
+	case strings.HasSuffix(subject, ".timeclock.punch"):
+		a.handleTimeclockPunch(ctx, msg, payload)
 	default:
 		// Stream subjects we don't recognize — ack so we don't pile up
 		// redeliveries, but log so the operator sees the drift.

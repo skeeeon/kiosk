@@ -26,6 +26,117 @@ export interface KioskIdentity {
   // expose a button — its reads are NATS-command-driven.
   rfid_enabled?: boolean
   rfid_mode?: 'counter_scan' | 'enclosure_diff'
+  // Timeclock gating. timeclock_enabled drives the splash "Time clock"
+  // button (kiosk) / the Timeclock report tab (both binaries); the interlock
+  // flags shape copy only — the server enforces them.
+  timeclock_enabled?: boolean
+  timeclock_require_clock_in?: boolean
+  timeclock_block_clock_out?: boolean
+}
+
+// --- Timeclock ---
+
+// PunchStatus is GET /api/kiosk/timeclock/status — merged clocked-in state
+// for one user plus the open checkouts a blocked clock-out would list.
+export interface PunchStatus {
+  user_id: string
+  user_code: string
+  user_name: string
+  user_role: 'worker' | 'foreman'
+  clocked_in: boolean
+  since?: string
+  // 'local' = this kiosk's punch ledger; 'fleet' = the controller-distributed
+  // replica (clocked in/out at another kiosk); '' = never punched.
+  origin: 'local' | 'fleet' | ''
+  open_checkouts: OpenCheckoutDetail[] | null
+  block_clock_out: boolean
+}
+
+// PunchResult is the reply from the punch endpoints.
+export interface PunchResult {
+  punch_id: string
+  user_id: string
+  user_code: string
+  user_name: string
+  direction: 'in' | 'out'
+  occurred_at: string
+  recorded_at: string
+  source: 'self' | 'foreman' | 'admin' | 'controller_admin'
+  clocked_in: boolean
+  replayed?: boolean
+}
+
+// The 409 body punch endpoints return for expected conflicts. The SPA
+// branches on `error`; open_checkouts hydrates the blocked-clock-out list.
+export interface PunchConflict {
+  error: 'not_clocked_in' | 'already_clocked_in' | 'open_checkouts'
+  message: string
+  count?: number
+  open_checkouts?: OpenCheckoutDetail[] | null
+}
+
+export interface TimeclockCrewMember {
+  user_id: string
+  user_code: string
+  user_name: string
+  clocked_in: boolean
+  since?: string
+}
+
+export interface TimeclockCrewOptions {
+  group_code: string
+  workers: TimeclockCrewMember[]
+}
+
+// One raw punch as returned by the history endpoints / exported to CSV.
+export interface TimePunchRow {
+  punch_id: string
+  occurred_at: string
+  recorded_at: string
+  user_id: string
+  user_code: string
+  user_name: string
+  direction: 'in' | 'out'
+  source: 'self' | 'foreman' | 'admin' | 'controller_admin'
+  recorded_by?: string
+  reason?: string
+  force?: boolean
+  kiosk_code: string
+  location_code?: string
+}
+
+export interface PunchInterval {
+  user_id: string
+  user_code: string
+  user_name: string
+  in: string
+  out?: string
+  open?: boolean
+  seconds: number
+}
+
+export interface PunchDayTotal {
+  user_id: string
+  user_code: string
+  user_name: string
+  date: string
+  seconds: number
+  open?: boolean
+}
+
+export interface TimeclockHistoryResponse {
+  punches: TimePunchRow[]
+  intervals: PunchInterval[]
+  day_totals: PunchDayTotal[]
+  uncorrelated: unknown[]
+}
+
+export interface ClockedInRow {
+  user_id: string
+  user_code: string
+  user_name: string
+  since: string
+  origin: string
 }
 
 export interface User {
@@ -236,7 +347,7 @@ export interface RecipientsSpec {
 
 export interface ScheduledReportRecord {
   id: string
-  report_key: 'open_checkouts' | 'daily_activity' | 'maintenance'
+  report_key: 'open_checkouts' | 'daily_activity' | 'maintenance' | 'timeclock'
   cadence: 'daily' | 'weekly' | 'monthly'
   hour: number
   weekday: number

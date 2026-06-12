@@ -126,6 +126,22 @@ func MaintenanceAlertSubject(kioskCode string) string {
 	return fmt.Sprintf("%s.%s.event.alert.maintenance", SubjectPrefix(), kioskCode)
 }
 
+// TimeclockPunchSubject builds the subject for a timeclock punch event:
+// "<prefix>.<kiosk_code>.event.timeclock.punch". One event per accepted
+// punch (clock-in or clock-out, any source), emitted after the time_punches
+// row commits. The payload's punch_id is the kiosk-side time_punches.id —
+// the controller's projection anchors idempotency on it (source_punch_id),
+// same strategy as inventory.adjust's adjustment_id.
+func TimeclockPunchSubject(kioskCode string) string {
+	return fmt.Sprintf("%s.%s.event.timeclock.punch", SubjectPrefix(), kioskCode)
+}
+
+// TimeclockPunchFilter is the controller-side consumer filter for the
+// timeclock punch subject.
+func TimeclockPunchFilter() string {
+	return SubjectPrefix() + ".*.event.timeclock.punch"
+}
+
 // ScanRFIDObservedSubject builds the subject for a "completed RFID read
 // window" event: "<prefix>.<kiosk_code>.event.scan.rfid.observed". One
 // event per ReadFor call (counter_scan or enclosure_diff), carrying the
@@ -300,6 +316,22 @@ func IntegrityRebuildCommandSubject(kioskCode string) string {
 
 func LedgerRepublishCommandSubject(kioskCode string) string {
 	return CommandSubject(kioskCode, "ledger.republish")
+}
+
+// Timeclock command subjects. timeclock.punch records a punch at the kiosk
+// on behalf of a controller admin — the kiosk stays the ONLY punch writer;
+// the controller never writes punches into its own ledger directly.
+// Idempotent via command_id. timeclock.republish re-emits the kiosk's
+// time_punches rows (optionally clipped to a window) so the controller can
+// backfill its projection after a NATS outage — sibling of ledger.republish,
+// kept separate because a flat punches walk shares nothing with the
+// transactions walk.
+func TimeclockPunchCommandSubject(kioskCode string) string {
+	return CommandSubject(kioskCode, "timeclock.punch")
+}
+
+func TimeclockRepublishCommandSubject(kioskCode string) string {
+	return CommandSubject(kioskCode, "timeclock.republish")
 }
 
 // HeartbeatSubject is the subject a kiosk publishes a periodic liveness

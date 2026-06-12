@@ -230,6 +230,59 @@ func BuildAdminClosePayload(in AdminCloseInput) map[string]any {
 	}
 }
 
+// TimeclockPunchInput holds the fields needed to emit one timeclock.punch
+// event. Both the live punch funnel (which has the values in hand) and the
+// timeclock.republish walk (which reconstructs them from persisted rows)
+// populate this struct — same anti-drift strategy as the transaction events.
+//
+// PunchID is the kiosk-side time_punches.id and the controller-side
+// idempotency anchor (projected as source_punch_id, unique when non-empty).
+// Source is one of timeclock's self/foreman/admin/controller_admin — richer
+// than the SourceLocal/SourceController pair because punches carry "who
+// physically initiated this" semantics. Exactly one of RecordedByUserCode /
+// AdminID / ControllerAdminID is set for non-self sources.
+type TimeclockPunchInput struct {
+	PunchID            string
+	KioskCode          string
+	LocationCode       string
+	UserID             string
+	UserCode           string
+	UserName           string
+	Direction          string // "in" | "out"
+	OccurredAt         time.Time
+	Source             string // self | foreman | admin | controller_admin
+	RecordedByUserCode string // foreman's user code, when Source == "foreman"
+	AdminID            string
+	ControllerAdminID  string
+	Reason             string
+	Force              bool
+	CommandID          string
+	RecordedAt         time.Time // when the row was written (≠ OccurredAt for backdated punches)
+}
+
+// BuildTimeclockPunchPayload renders the input into the map shape the
+// publisher emits. Keys mirror EventPayload in internal/controller/consumer.go.
+func BuildTimeclockPunchPayload(in TimeclockPunchInput) map[string]any {
+	return map[string]any{
+		"punch_id":              in.PunchID,
+		"kiosk_code":            in.KioskCode,
+		"location_code":         in.LocationCode,
+		"user_id":               in.UserID,
+		"user_code":             in.UserCode,
+		"user_name":             in.UserName,
+		"direction":             in.Direction,
+		"occurred_at":           in.OccurredAt,
+		"source":                in.Source,
+		"recorded_by_user_code": in.RecordedByUserCode,
+		"admin_id":              in.AdminID,
+		"controller_admin_id":   in.ControllerAdminID,
+		"reason":                in.Reason,
+		"force":                 in.Force,
+		"command_id":            in.CommandID,
+		"recorded_at":           in.RecordedAt,
+	}
+}
+
 // InstanceLifecycleInput holds the fields needed to emit one instance.lifecycle
 // event. Action is "create" / "to_maintenance" / "return_to_service" /
 // "retire" / "unretire". PrevStatus/NewStatus are the item_instances.status

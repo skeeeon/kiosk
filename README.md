@@ -64,6 +64,31 @@ it via config. See [docs/controller.md](docs/controller.md).
   reconciles what's still in vs. what left and synthesizes the
   resulting cart lines. Worker confirms on a normal checkout screen.
   See [RFID](docs/rfid.md).
+- **Optional timeclock with tool interlocks.** Workers clock in/out at
+  the kiosk (splash-screen "Time clock" button + badge scan) against an
+  append-only `time_punches` ledger — same discipline as the tool
+  ledger: punches are never edited or deleted, corrections are new
+  punches with a reason, and "who's clocked in" is derived from the
+  latest punch. Two config-gated interlocks tie the ledgers together:
+  `require_clock_in_for_checkout` (no checkout/consume unless clocked
+  in — **returns are always allowed**, and the checkout screen offers a
+  one-tap "clock in now?" instead of a dead end) and
+  `block_clock_out_with_open_checkouts` (can't clock out while holding
+  tools at this kiosk; the screen lists exactly what to return). Foremen
+  can punch crew members in their group (punch-now only); admins can
+  backdate corrections (reason required) and force a clock-out past the
+  open-tools block — the escape hatch for a worker who drove home with
+  a tool. In managed mode punches flow to the controller and per-user
+  clocked-in state is distributed back to every kiosk, so **clocking in
+  at one kiosk and out at another just works** (eventually consistent:
+  if a kiosk's replica is briefly stale it rejects the punch until sync
+  catches up — an admin punch is the override; the open-tools block
+  remains per-kiosk in v1, so a tool out at kiosk A won't block a
+  clock-out at kiosk B; standalone kiosks keep a local-only ledger).
+  Reporting shows paired intervals and daily totals for humans, but the
+  **raw-punch CSV export is the payroll contract** — no rounding,
+  overtime, or pay-period logic lives in the kiosk; downstream systems
+  interpret. A scheduled timeclock digest emails daily totals.
 - **Federation-ready.** Every transaction is stamped with `kiosk_code`
   and `location_code`. Every state change flows through
   `events.Publish`, which always logs via slog and (when enabled) also

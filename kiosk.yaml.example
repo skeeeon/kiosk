@@ -92,6 +92,31 @@ branding:
 # Connection to the reader is best-effort: a failure at startup logs a
 # warning and the binary continues, mirroring NATS unreachability
 # handling. See docs/rfid.md for the full design.
+# Optional. Clock-in/clock-out via an append-only punch ledger
+# (time_punches), with optional interlocks against the tool ledger.
+# Disabled by default; when off the feature does not exist (no splash
+# button, endpoints 404). All defaults are false — an omitted block leaves
+# existing deployments unchanged.
+#
+#   - require_clock_in_for_checkout  Commit rejects any cart containing
+#     checkout/consume lines when the worker is not clocked in. Returns are
+#     ALWAYS allowed regardless of punch state.
+#   - block_clock_out_with_open_checkouts  Clock-out is rejected while the
+#     worker has open checkouts at THIS kiosk (local-scoped by design; a
+#     tool out at another kiosk doesn't block). Admins can force past it
+#     with a reason — the "drove home with a tool" escape hatch.
+#
+# In managed mode (controller.enabled=true + NATS), punches publish as
+# events, the controller projects them fleet-wide, and per-user clocked-in
+# state is distributed back to every kiosk via the punch_state KV bucket —
+# so a worker can clock in at one kiosk and out at another. Standalone
+# kiosks keep a local-only ledger. No payroll math anywhere: the raw-punch
+# CSV export is the payroll contract.
+timeclock:
+  enabled: false
+  require_clock_in_for_checkout: false
+  block_clock_out_with_open_checkouts: false
+
 rfid:
   enabled: false
   mode: ""                  # "counter_scan" | "enclosure_diff" (required when enabled)

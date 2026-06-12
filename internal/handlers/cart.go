@@ -15,6 +15,7 @@ import (
 	"github.com/skeeeon/kiosk/internal/kioskctx"
 	"github.com/skeeeon/kiosk/internal/notifications"
 	"github.com/skeeeon/kiosk/internal/scan"
+	"github.com/skeeeon/kiosk/internal/timeclock"
 )
 
 // CartGet returns the current state of a cart by id. Used by the SPA
@@ -551,10 +552,21 @@ func (h *Handlers) CartCommit(re *core.RequestEvent) error {
 
 	id := kioskctx.Get()
 	result, err := commit.Commit(h.App, c, id, commit.Policy{
-		AllowCrossUser:    h.Cfg.Returns.CrossUserAllowed(),
-		AllowUncorrelated: h.Cfg.Returns.UncorrelatedAllowed(),
+		AllowCrossUser:            h.Cfg.Returns.CrossUserAllowed(),
+		AllowUncorrelated:         h.Cfg.Returns.UncorrelatedAllowed(),
+		RequireClockInForCheckout: h.Cfg.Timeclock.Enabled && h.Cfg.Timeclock.RequireClockInForCheckout,
+		PunchFleet:                h.PunchFleet,
 	}, events.Publish)
 	if err != nil {
+		// The timeclock interlock is an expected, user-fixable outcome —
+		// the SPA offers a one-tap "clock in now?" on this exact shape —
+		// so carve it out of the blanket 500.
+		if errors.Is(err, timeclock.ErrNotClockedIn) {
+			return re.JSON(http.StatusConflict, map[string]any{
+				"error":   "not_clocked_in",
+				"message": "Clock in before checking out or consuming items.",
+			})
+		}
 		return re.InternalServerError("commit failed", err)
 	}
 

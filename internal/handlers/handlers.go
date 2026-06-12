@@ -16,6 +16,7 @@ import (
 	"github.com/skeeeon/kiosk/internal/notifications"
 	"github.com/skeeeon/kiosk/internal/rfid"
 	"github.com/skeeeon/kiosk/internal/scan"
+	"github.com/skeeeon/kiosk/internal/timeclock"
 )
 
 type Handlers struct {
@@ -37,6 +38,11 @@ type Handlers struct {
 	// report process uptime in the metrics snapshot. Close enough to
 	// process start for an operational gauge.
 	StartedAt time.Time
+	// PunchFleet is the managed-mode replica of fleet-wide clocked-in
+	// state (see internal/timeclock.Fleet). Nil on standalone kiosks or
+	// when timeclock is disabled — every consumer is nil-safe via the
+	// timeclock merge rule.
+	PunchFleet *timeclock.Fleet
 }
 
 func New(app core.App, cfg *config.Config, carts *cart.Store, notifier *notifications.Notifier) *Handlers {

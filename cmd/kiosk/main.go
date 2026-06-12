@@ -25,6 +25,7 @@ import (
 	"github.com/skeeeon/kiosk/internal/notifications"
 	"github.com/skeeeon/kiosk/internal/rfid"
 	"github.com/skeeeon/kiosk/internal/scheduler"
+	"github.com/skeeeon/kiosk/internal/timeclock"
 	"github.com/skeeeon/kiosk/internal/ui"
 
 	// Register schema migrations via init() side effects.
@@ -75,7 +76,11 @@ func main() {
 	// project changes into local items/users. Watcher is best-effort —
 	// failures here log but don't block kiosk startup, because the kiosk
 	// can still serve checkouts against whatever catalog state it has.
-	var catalogWatcher *catalog.Watcher
+	var (
+		catalogWatcher *catalog.Watcher
+		punchFleet     *timeclock.Fleet
+		punchWatcher   *timeclock.Watcher
+	)
 	watcherCtx, watcherCancel := context.WithCancel(context.Background())
 	if cfg.Controller.Enabled {
 		if pub == nil {
@@ -95,6 +100,21 @@ func main() {
 				}
 				return e.Next()
 			})
+			// Fleet-wide clocked-in state replica (managed + timeclock only).
+			// Best-effort like the catalog watcher: a failure (e.g. the
+			// controller hasn't provisioned the bucket yet) degrades the
+			// merge rule to local-only punch state.
+			if cfg.Timeclock.Enabled {
+				punchFleet = timeclock.NewFleet()
+				punchWatcher = timeclock.NewWatcher(js, punchFleet)
+				app.OnServe().BindFunc(func(e *core.ServeEvent) error {
+					if err := punchWatcher.Start(watcherCtx); err != nil {
+						log.Printf("timeclock watcher: %v — kiosk will continue with local-only punch state", err)
+						punchWatcher = nil
+					}
+					return e.Next()
+				})
+			}
 		}
 	}
 
@@ -141,6 +161,9 @@ func main() {
 		if catalogWatcher != nil {
 			catalogWatcher.Stop()
 		}
+		if punchWatcher != nil {
+			punchWatcher.Stop()
+		}
 		watcherCancel()
 		heartbeatCancel()
 		if commandSub != nil {
@@ -165,6 +188,9 @@ func main() {
 		return e.Next()
 	})
 	h := handlers.New(app, cfg, carts, notifier)
+	// nil on standalone kiosks / when timeclock is off — the timeclock
+	// merge rule is nil-safe and degrades to local-only punch state.
+	h.PunchFleet = punchFleet
 
 	// Phase-4 enclosure_diff commands (cart.start, read.trigger) reach
 	// into the cart store and SSE broker via KioskHandlers. Set it
@@ -270,6 +296,16 @@ func main() {
 		e.Router.GET("/api/kiosk/reports/instance-lifecycle.csv", h.ReportLifecycleAuditCSV)
 		e.Router.GET("/api/kiosk/reports/notifications.csv", h.ReportNotificationsCSV)
 		e.Router.POST("/api/kiosk/ledger/republish", h.RepublishLedger)
+		// Timeclock — every handler self-gates on timeclock.enabled (404
+		// when off), so unconditional registration keeps this list flat.
+		e.Router.GET("/api/kiosk/timeclock/status", h.TimeclockStatus)
+		e.Router.POST("/api/kiosk/timeclock/punch", h.TimeclockPunch)
+		e.Router.GET("/api/kiosk/timeclock/foreman/options", h.TimeclockForemanOptions)
+		e.Router.POST("/api/kiosk/timeclock/admin-punch", h.TimeclockAdminPunch)
+		e.Router.GET("/api/kiosk/timeclock/now", h.TimeclockNow)
+		e.Router.GET("/api/kiosk/timeclock/history", h.TimeclockHistory)
+		e.Router.POST("/api/kiosk/timeclock/republish", h.TimeclockRepublish)
+		e.Router.GET("/api/kiosk/reports/timeclock.csv", h.ReportTimeclockCSV)
 		e.Router.POST("/api/kiosk/items/import", h.CSVImport)
 		e.Router.GET("/api/kiosk/items/import/template", h.CSVImportTemplate)
 		e.Router.POST("/api/kiosk/users/import", h.UsersCSVImport)
