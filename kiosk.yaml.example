@@ -105,6 +105,13 @@ branding:
 #     worker has open checkouts at THIS kiosk (local-scoped by design; a
 #     tool out at another kiosk doesn't block). Admins can force past it
 #     with a reason — the "drove home with a tool" escape hatch.
+#   - timeclock_only  Dedicated punch station: the SPA replaces the
+#     checkout splash with a persistent punch panel and badge scans go
+#     straight to it — no carts, no checkout. Pairs naturally with a gate
+#     device feeding a managed fleet. Requires enabled=true. NOTE:
+#     block_clock_out_with_open_checkouts is a no-op on a punch-only
+#     station — open_checkouts is local-scoped and never written here, so
+#     tools out at other kiosks won't block a clock-out at this one.
 #
 # In managed mode (controller.enabled=true + NATS), punches publish as
 # events, the controller projects them fleet-wide, and per-user clocked-in
@@ -116,6 +123,7 @@ timeclock:
   enabled: false
   require_clock_in_for_checkout: false
   block_clock_out_with_open_checkouts: false
+  timeclock_only: false
 
 rfid:
   enabled: false

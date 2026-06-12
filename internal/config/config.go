@@ -212,10 +212,19 @@ type RFIDAntennaConfig struct {
 //   - BlockClockOutWithOpenCheckouts makes the punch funnel reject a
 //     clock-out while the worker has open checkouts at THIS kiosk
 //     (local-scoped by design). Admin punches with force=true bypass it.
+//   - TimeclockOnly turns the device into a dedicated punch station: the
+//     SPA replaces the checkout splash with a persistent punch panel and
+//     badge scans go straight to it — no carts, no checkout. Backend
+//     surface is unchanged (the kiosk box is the trust boundary); this is
+//     a presentation mode. Requires Enabled. Note that
+//     BlockClockOutWithOpenCheckouts is a no-op here: open_checkouts is
+//     local-scoped and a punch-only station never writes it, so a worker
+//     with tools out at ANOTHER kiosk can still clock out at this one.
 type TimeclockConfig struct {
 	Enabled                        bool `yaml:"enabled"`
 	RequireClockInForCheckout      bool `yaml:"require_clock_in_for_checkout"`
 	BlockClockOutWithOpenCheckouts bool `yaml:"block_clock_out_with_open_checkouts"`
+	TimeclockOnly                  bool `yaml:"timeclock_only"`
 }
 
 // Valid RFID mode strings. The set is fixed; new modes get a new
@@ -452,6 +461,9 @@ func applyEnvOverrides(c *Config) {
 	if v := os.Getenv("KIOSK_TIMECLOCK_BLOCK_CLOCK_OUT_WITH_OPEN_CHECKOUTS"); v != "" {
 		c.Timeclock.BlockClockOutWithOpenCheckouts = parseBool(v)
 	}
+	if v := os.Getenv("KIOSK_TIMECLOCK_TIMECLOCK_ONLY"); v != "" {
+		c.Timeclock.TimeclockOnly = parseBool(v)
+	}
 }
 
 func parseBool(s string) bool {
@@ -483,6 +495,9 @@ func validate(c *Config) error {
 	}
 	if err := validateRFID(&c.RFID); err != nil {
 		return err
+	}
+	if c.Timeclock.TimeclockOnly && !c.Timeclock.Enabled {
+		return fmt.Errorf("timeclock.timeclock_only requires timeclock.enabled=true")
 	}
 	return nil
 }

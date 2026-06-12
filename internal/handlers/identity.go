@@ -56,6 +56,11 @@ type identityPayload struct {
 	TimeclockEnabled        bool `json:"timeclock_enabled"`
 	TimeclockRequireClockIn bool `json:"timeclock_require_clock_in"`
 	TimeclockBlockClockOut  bool `json:"timeclock_block_clock_out"`
+	// TimeclockOnly turns the SPA into a dedicated punch station: the
+	// checkout splash is replaced by a persistent punch panel and badge
+	// scans route straight to it. Presentation-only — the backend surface
+	// is unchanged.
+	TimeclockOnly bool `json:"timeclock_only"`
 }
 
 // Identity returns the kiosk's stable identity (kiosk_code + location_code)
@@ -71,6 +76,7 @@ func (h *Handlers) Identity(re *core.RequestEvent) error {
 		TimeclockEnabled:        h.Cfg.Timeclock.Enabled,
 		TimeclockRequireClockIn: h.Cfg.Timeclock.Enabled && h.Cfg.Timeclock.RequireClockInForCheckout,
 		TimeclockBlockClockOut:  h.Cfg.Timeclock.Enabled && h.Cfg.Timeclock.BlockClockOutWithOpenCheckouts,
+		TimeclockOnly:           h.Cfg.Timeclock.Enabled && h.Cfg.Timeclock.TimeclockOnly,
 	}
 	if strings.TrimSpace(h.Cfg.Branding.LogoPath) != "" {
 		out.Branding.LogoURL = "/branding/logo"

@@ -15,7 +15,13 @@
      auto-closes a few seconds after a successful punch — kiosk-idiomatic,
      ready for the next worker — with a draining countdown bar matching
      the checkout receipt's; tapping the panel extends it, same as the
-     receipt. -->
+     receipt.
+
+     standalone mode (timeclock-only kiosks): the panel IS the splash.
+     "Close" becomes "Done", the waiting state is the resting state (no
+     idle timer — there's nothing behind the panel to return to), and the
+     parent handles the close event by remounting via :key so every reset
+     starts from a fresh waiting panel. -->
 <script setup lang="ts">
 import { computed, onScopeDispose, ref, watch } from 'vue'
 import TimeclockCrewDialog from './TimeclockCrewDialog.vue'
@@ -24,6 +30,7 @@ import type { OpenCheckoutDetail, PunchConflict, PunchResult, PunchStatus } from
 
 const props = defineProps<{
   userCode: string | null
+  standalone?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -84,12 +91,15 @@ function armClose(ms: number, withBar = false) {
     }, 100)
   }
 }
-armClose(IDLE_CLOSE_MS)
+// Standalone panels rest in the waiting state — no timer until a badge
+// lands (loadStatus arms one).
+if (!props.standalone) armClose(IDLE_CLOSE_MS)
 
 // Tap-to-extend, consistent with the receipt screen: interacting with the
 // panel pushes the auto-close deadline back to full.
 function onPanelClick() {
   if (crewOpen.value) return
+  if (props.standalone && !status.value && !loading.value) return
   armClose(lastPunch.value ? SUCCESS_CLOSE_MS : IDLE_CLOSE_MS, !!lastPunch.value)
 }
 
@@ -293,7 +303,13 @@ function formatClock(iso?: string): string {
       </template>
     </div>
 
-    <div class="flex items-center justify-between gap-3 px-6 py-4 border-t border-slate-800 bg-slate-950/40">
+    <!-- In standalone mode the resting (waiting) state has nothing to close,
+         so the footer only appears once a badge has landed; "Done" resets
+         for the next worker instead of dismissing the panel. -->
+    <div
+      v-if="!standalone || status || loading"
+      class="flex items-center justify-between gap-3 px-6 py-4 border-t border-slate-800 bg-slate-950/40"
+    >
       <button
         v-if="status?.user_role === 'foreman'"
         type="button"
@@ -307,7 +323,7 @@ function formatClock(iso?: string): string {
         class="ml-auto px-8 py-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-base transition-transform active:scale-95"
         @click="emit('close')"
       >
-        Close
+        {{ standalone ? 'Done' : 'Close' }}
       </button>
     </div>
 

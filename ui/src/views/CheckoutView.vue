@@ -63,12 +63,28 @@ const cancelConfirmOpen = ref(false)
 
 // Timeclock splash mode: while open, badge scans route into the panel
 // (clock in/out) instead of starting a cart. Gated on the identity flag.
+// timeclockOnly goes further: the panel IS the splash (dedicated punch
+// station — no carts, no checkout); the epoch key remounts it on close so
+// every reset starts from a fresh waiting state.
 const timeclockButtonVisible = computed(() => !!identity.value?.timeclock_enabled)
+const timeclockOnly = computed(() => !!identity.value?.timeclock_only)
 const timeclockOpen = ref(false)
 const timeclockUserCode = ref<string | null>(null)
+const timeclockEpoch = ref(0)
 function closeTimeclock() {
   timeclockOpen.value = false
   timeclockUserCode.value = null
+  timeclockEpoch.value++
+}
+// Routes a badge scan into the panel. The null-then-set dance forces the
+// panel's userCode watcher to fire even when the same worker rescans —
+// a rescan should refresh their status, not be silently ignored.
+async function routeBadgeToTimeclock(code: string) {
+  if (timeclockUserCode.value === code) {
+    timeclockUserCode.value = null
+    await nextTick()
+  }
+  timeclockUserCode.value = code
 }
 // Golden path: commit returned 409 not_clocked_in → offer a one-tap
 // clock-in + retry instead of bouncing the worker to the splash button.
@@ -385,9 +401,10 @@ async function onScan(raw: string) {
   if (result.type === 'user') {
     const u = result.record as User
     // Timeclock mode owns badge scans while the panel is open (splash only —
-    // the panel isn't rendered once a cart exists).
-    if (!cart.value && timeclockOpen.value) {
-      timeclockUserCode.value = u.code
+    // the panel isn't rendered once a cart exists). On a timeclock-only
+    // kiosk every badge scan is a punch flow — there is no cart to start.
+    if (timeclockOnly.value || (!cart.value && timeclockOpen.value)) {
+      await routeBadgeToTimeclock(u.code)
       return
     }
     if (cart.value && cart.value.user_id !== u.id) {
@@ -410,6 +427,10 @@ async function onScan(raw: string) {
   }
 
   if (result.type === 'item' || result.type === 'item_instance') {
+    if (timeclockOnly.value) {
+      toast.warn('This kiosk is a time clock — item checkout is not available here.', TOP)
+      return
+    }
     if (!cart.value && timeclockOpen.value) {
       toast.warn('Time clock is open — close it to scan items.', TOP)
       return
@@ -701,8 +722,31 @@ const crossUserSummary = computed(() =>
   </main>
 
   <main v-else-if="!cart" class="flex-1 flex flex-col items-center justify-center px-8 py-16 text-center gap-10">
+    <!-- Dedicated punch station: the panel is the whole splash. Keyed on
+         the epoch so closeTimeclock remounts it back to a fresh waiting
+         state instead of unmounting it. -->
+    <template v-if="timeclockOnly">
+      <div v-if="splashLogoUrl || splashTagline" class="flex flex-col items-center gap-4">
+        <img
+          v-if="splashLogoUrl"
+          :src="splashLogoUrl"
+          alt="logo"
+          class="h-24 md:h-32 w-auto object-contain"
+          @error="splashLogoBroken = true"
+        />
+        <p v-if="splashTagline" class="text-xl text-slate-400 max-w-2xl">
+          {{ splashTagline }}
+        </p>
+      </div>
+      <TimeclockPanel
+        :key="timeclockEpoch"
+        standalone
+        :user-code="timeclockUserCode"
+        @close="closeTimeclock"
+      />
+    </template>
     <IdentifyPanel
-      v-if="identify"
+      v-else-if="identify"
       :item="identify.item"
       :instance="identify.instance"
       @dismiss="dismissIdentify"

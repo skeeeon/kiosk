@@ -506,6 +506,13 @@ turns into a one-tap "clock in now?" — keep that carve-out when touching
 commit error handling). `block_clock_out_with_open_checkouts` rejects
 clock-outs while the worker has open checkouts at THIS kiosk
 (local-scoped in v1, deliberately no fleet-wide WAN check at punch time).
+**Timeclock-only mode** (`timeclock.timeclock_only`, requires `enabled`)
+turns the device into a dedicated punch station: the SPA replaces the
+checkout splash with a persistent `TimeclockPanel` (`standalone` prop)
+and routes badge scans straight to it; item scans toast. Presentation
+only — no backend changes, carts simply never start. The
+open-checkouts clock-out block is a no-op there (local-scoped,
+nothing local to block on).
 **Cross-kiosk punches work in managed mode**: the controller projects
 each punch into its own `time_punches` and broadcasts per-user state into
 the `punch_state` KV bucket (key = `user_code`, like `catalog_users`;

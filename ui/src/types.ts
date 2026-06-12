@@ -32,6 +32,9 @@ export interface KioskIdentity {
   timeclock_enabled?: boolean
   timeclock_require_clock_in?: boolean
   timeclock_block_clock_out?: boolean
+  // Dedicated punch station: the checkout splash is replaced by a
+  // persistent punch panel and badge scans route straight to it.
+  timeclock_only?: boolean
 }
 
 // --- Timeclock ---

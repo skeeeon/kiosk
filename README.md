@@ -89,6 +89,15 @@ it via config. See [docs/controller.md](docs/controller.md).
   **raw-punch CSV export is the payroll contract** — no rounding,
   overtime, or pay-period logic lives in the kiosk; downstream systems
   interpret. A scheduled timeclock digest emails daily totals.
+  `timeclock_only: true` turns a device into a **dedicated punch
+  station**: the checkout splash is replaced by a persistent punch panel
+  and badge scans go straight to it — no carts, no checkout. The natural
+  pairing is a cheap gate device in a managed fleet: workers punch at the
+  gate, and the tool-crib kiosk's `require_clock_in_for_checkout`
+  interlock sees them as clocked in via the distributed punch state.
+  (Note: `block_clock_out_with_open_checkouts` is a no-op on a punch-only
+  station — the block is per-kiosk and a station with no checkouts has
+  nothing to block on.)
 - **Federation-ready.** Every transaction is stamped with `kiosk_code`
   and `location_code`. Every state change flows through
   `events.Publish`, which always logs via slog and (when enabled) also
