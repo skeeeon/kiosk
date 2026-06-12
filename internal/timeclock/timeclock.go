@@ -158,6 +158,10 @@ func PerformPunch(app core.App, fleet *Fleet, rules Rules, id kioskctx.Identity,
 	} else if occurredAt.After(now.Add(futureSkew)) {
 		return nil, fmt.Errorf("occurred_at %s is in the future", occurredAt.Format(time.RFC3339))
 	}
+	// PB DateTime stores ms; this value also rides the punch event to the
+	// controller and back via the punch_state replica. One precision
+	// everywhere keeps the local row and its fleet echo comparable.
+	occurredAt = occurredAt.Truncate(time.Millisecond)
 
 	var out PunchResult
 	err := app.RunInTransaction(func(tx core.App) error {

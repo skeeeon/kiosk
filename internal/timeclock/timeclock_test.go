@@ -454,3 +454,52 @@ func TestCurrentState_FleetMergeRule(t *testing.T) {
 		t.Fatal("older fleet entry must not apply")
 	}
 }
+
+// A punch made at THIS kiosk echoes back through controller → punch_state →
+// fleet replica. Even if the echo's timestamp reads fractionally fresher than
+// the local row (pre-truncation deployments published ns while the DB stored
+// ms), the same punch must never be reported as "fleet" — the SPA renders
+// that as "clocked in at another kiosk".
+func TestCurrentState_OwnPunchEchoStaysLocal(t *testing.T) {
+	app := setupApp(t)
+	s := seedFixtures(t, app)
+	fleet := timeclock.NewFleet()
+
+	res, err := timeclock.PerformPunch(app, fleet, timeclock.Rules{}, testIdentity, selfPunch("EMP-2", "in"))
+	if err != nil {
+		t.Fatalf("clock in: %v", err)
+	}
+
+	fleet.Upsert(timeclock.PunchStatePayload{
+		UserCode:      "EMP-2",
+		ClockedIn:     true,
+		OccurredAt:    res.OccurredAt.Add(time.Microsecond),
+		SourcePunchID: res.PunchID,
+	})
+
+	state, err := timeclock.CurrentState(app, fleet, s.WorkerID, "EMP-2")
+	if err != nil {
+		t.Fatalf("current state: %v", err)
+	}
+	if state.Origin != "local" {
+		t.Fatalf("own punch echo must stay local, got %+v", state)
+	}
+	if !state.ClockedIn {
+		t.Fatalf("expected clocked in, got %+v", state)
+	}
+
+	// A genuinely different punch (another kiosk's id) still wins when fresher.
+	fleet.Upsert(timeclock.PunchStatePayload{
+		UserCode:      "EMP-2",
+		ClockedIn:     false,
+		OccurredAt:    res.OccurredAt.Add(time.Minute),
+		SourcePunchID: "punch-from-kiosk-b",
+	})
+	state, err = timeclock.CurrentState(app, fleet, s.WorkerID, "EMP-2")
+	if err != nil {
+		t.Fatalf("current state: %v", err)
+	}
+	if state.Origin != "fleet" || state.ClockedIn {
+		t.Fatalf("fresher foreign punch must win as fleet, got %+v", state)
+	}
+}

@@ -146,7 +146,13 @@ func CurrentState(app core.App, fleet *Fleet, userID, userCode string) (State, e
 		s.OccurredAt = p.GetDateTime("occurred_at").Time()
 		s.Origin = "local"
 	}
-	if e, ok := fleet.Get(userCode); ok && e.OccurredAt.After(s.OccurredAt) {
+	// A punch made HERE round-trips kiosk → controller → punch_state KV and
+	// lands back in the replica. If the fleet entry is the local latest punch
+	// itself, it's not "another kiosk" — and a precision mismatch (the DB
+	// stores ms; older deployments published the event timestamp at ns) must
+	// not make the echo look strictly fresher than its own local row.
+	if e, ok := fleet.Get(userCode); ok && e.OccurredAt.After(s.OccurredAt) &&
+		(p == nil || e.SourcePunchID != p.Id) {
 		s.ClockedIn = e.ClockedIn
 		s.OccurredAt = e.OccurredAt
 		s.Origin = "fleet"
