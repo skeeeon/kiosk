@@ -15,6 +15,13 @@ go build -o kiosk-app.exe ./cmd/kiosk
 .\kiosk-app.exe
 ```
 
+The optional binaries build the same way:
+`go build ./cmd/controller` (central aggregator) and
+`go build ./cmd/timeclock` (the virtual timeclock terminal). Each uses its
+own config (`controller.yaml` / `timeclock.yaml`) and data dir
+(`pb_data_controller/` / `pb_data_timeclock/`), so all three can run from the
+same checkout during development without colliding.
+
 The binary auto-applies any new migrations on start. Migrations are tracked
 in PB's `_migrations` table; running the same binary twice is a no-op.
 
@@ -79,7 +86,17 @@ during `npm run build`.
   audit row written, empty reason rejected, item-not-found,
   controller-source routes to `controller_admin_id`, idempotent replay
   by `command_id` returns prior result without re-applying, serialized
-  items rejected with no row written and quantity untouched).
+  items rejected with no row written and quantity untouched). Also the
+  virtual terminal's self-service punch endpoints: anonymous → 401,
+  non-`users` token → 403, inactive worker → 403, and the trust invariant
+  that a punch lands on the authenticated worker even when a different
+  `user_code` is smuggled in the body; plus the `cmd/timeclock`-only
+  worker-auth migration (`AuthRule` + OAuth2 enabled).
+- `internal/timeclock` — the punch funnel (per-source rules: self/foreman
+  alternation + target-active, admin backdate/force-with-reason, the
+  open-checkouts block, command_id idempotent replay), the `CurrentState`
+  merge rule (local ledger vs fleet `punch_state` replica, including the
+  own-echo guard), and `Pair` (display-only interval/day-total pairing).
 - `internal/instances` — the audit/lifecycle hooks plus the derived
   `quantity_on_hand` recompute: create / to_maintenance / return_to_service
   / retire / unretire track the non-retired-instance count (in_service +

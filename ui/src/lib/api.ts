@@ -8,7 +8,7 @@
 // PocketBase JS SDK holds the admin token in MemoryAuthStore (see
 // lib/pb.ts) — we attach it here so plain fetch calls don't have to know
 // about that.
-import { pb } from './pb'
+import { pb, pbWorker } from './pb'
 
 export class ApiError extends Error {
   status: number
@@ -33,8 +33,15 @@ export function isKioskOfflineError(e: unknown): boolean {
   )
 }
 
-function authHeaders(): Record<string, string> {
-  const t = pb.authStore.token
+// authHeaders attaches the right bearer token for the endpoint. /api/self/*
+// is the worker self-service surface (virtual timeclock terminal), gated on a
+// `users` session held by pbWorker; everything else that needs auth is
+// admin-gated and carried by pb. Anonymous endpoints simply have no token to
+// attach. Routing by URL prefix keeps the two token lifetimes from leaking
+// into each other's requests.
+function authHeaders(url?: string): Record<string, string> {
+  const store = url && url.startsWith('/api/self/') ? pbWorker.authStore : pb.authStore
+  const t = store.token
   return t ? { Authorization: `Bearer ${t}` } : {}
 }
 
@@ -60,7 +67,7 @@ function abortError(e: unknown): ApiError {
 }
 
 async function request<T>(method: string, url: string, body?: unknown, opts?: RequestOpts): Promise<T> {
-  const headers: Record<string, string> = { ...authHeaders() }
+  const headers: Record<string, string> = { ...authHeaders(url) }
   if (body !== undefined) headers['Content-Type'] = 'application/json'
 
   let res: Response

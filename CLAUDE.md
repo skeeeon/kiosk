@@ -41,6 +41,10 @@ go build -o kiosk-app ./cmd/kiosk
 go build -o kiosk-controller ./cmd/controller
 ./kiosk-controller                       # serves on 127.0.0.1:8091 by default
 
+# Virtual timeclock terminal (optional) — authed self-service punch page
+go build -o kiosk-timeclock ./cmd/timeclock
+KIOSK_CONFIG=timeclock.yaml ./kiosk-timeclock   # expects timeclock.yaml; pb_data_timeclock/
+
 # Frontend
 npm install --prefix ui
 npm run build --prefix ui                # outputs to internal/ui/dist/ (embedded into Go binary at build)
@@ -524,6 +528,43 @@ into intervals/day-totals is DISPLAY logic (`timeclock.Pair`, pure,
 table-tested); the raw-punch CSV is the payroll contract — never add
 rounding/overtime/pay-period logic anywhere in this codebase (same stance
 as billing).
+
+**Virtual timeclock terminal** is a THIRD binary, `cmd/timeclock`
+(`pb_data_timeclock/`, `timeclock.yaml`), modeled on `cmd/controller`: it
+reuses the internal packages but registers a deliberately narrow route set.
+It's a publicly-reachable, per-user-**authenticated** self-service punch
+page (workers clock in/out from phones — no badge scan, no hardware). The
+trust model is INVERTED from a kiosk: instead of the box being the trust
+boundary, each worker authenticates and the punched identity is read from
+`re.Auth`, NEVER the body — the same server-resolved-identity discipline as
+`OriginalCheckoutUserID`. The authed endpoints live in
+`internal/handlers/timeclock_self.go` (`SelfTimeclockStatus` /
+`SelfTimeclockPunch` / `SelfTimeclockHistory`, gated by `requireWorker`
+which mirrors `requireAdmin` but checks the `users` collection + `active`)
+and force `SourceSelf` — no foreman/admin/backdate/force powers from a
+phone. The binary wires ONLY identity/branding + `/api/self/timeclock/*` +
+admin user-import; the anonymous `/api/kiosk/*` checkout surface is never
+registered, so it can't be exposed (security by construction, the
+`cmd/controller`-has-no-kiosk-handlers precedent). Worker login is enabled
+by a `cmd/timeclock`-only migration package `migrations/timeclock`
+(`package timeclockmigrations`, same isolation pattern as
+`migrations/controller`) that sets `users.AuthRule = "active = true"` +
+`OAuth2.Enabled = true` on that DB only; a runtime
+`OnRecordAuthWithOAuth2Request` guard in `main()` rejects `IsNewRecord`
+(match-only — un-provisioned IdP accounts can't self-enroll). Both OAuth2
+SSO and password auth are supported (`UserPayload.Email` already syncs, so
+OAuth2-by-email needs no payload change; password workers use PB's
+reset-by-email flow since the catalog seeds a random password). The flag is
+`timeclock.virtual` (requires `enabled`; surfaced to the SPA as
+`identity.timeclock_virtual`, which routes the SPA to
+`VirtualTimeclockView` — login screen → self-punch panel, using the
+persistent `pbWorker` client + `useWorkerAuthStore`, with `lib/api.ts`
+attaching the worker token for `/api/self/*` by URL prefix). It supports the
+SAME three modes as `cmd/kiosk` (standalone / standalone+NATS /
+controller-managed) with identical best-effort wiring — in unmanaged modes
+workers are provisioned locally and `PunchFleet` is nil (local-only state);
+managed mode adds the catalog-synced workers + `punch_state` replica. The
+fleet-wide clock-out block is still a deferred fast-follow.
 
 **Per-kiosk catalog membership.** Controller-side `kiosk_items` is the
 source of truth for "which SKUs does kiosk X stock." A row exists →

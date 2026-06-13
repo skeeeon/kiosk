@@ -67,6 +67,13 @@ rfid:                          # Optional. Off by default.
                                # capabilities at Connect.
   read_window: "3s"            # How long one inventory cycle runs
   door_id: ""                  # Required when mode=enclosure_diff
+
+timeclock:                     # Optional. Off by default.
+  enabled: false               # Gates the whole feature: endpoints, splash button, events.
+  require_clock_in_for_checkout: false   # Reject checkout/consume when not clocked in (returns always allowed).
+  block_clock_out_with_open_checkouts: false  # Reject clock-out while holding tools at THIS kiosk.
+  timeclock_only: false        # Dedicated punch station: SPA shows only the punch panel.
+  virtual: false               # cmd/timeclock binary only — see timeclock.yaml below. Leave false here.
 ```
 
 ### Returns policy
@@ -162,6 +169,67 @@ The identity payload served to the SPA grows `rfid_enabled` and
 `rfid_mode` so the frontend gates affordances appropriately. See
 [RFID](rfid.md) for the full design.
 
+### Timeclock
+
+The `timeclock.*` block opts the kiosk into an append-only clock-in/clock-out
+punch ledger (`time_punches`) with the same discipline as the tool ledger:
+punches are never edited or deleted, corrections are new punches with a
+reason, and "who's clocked in" is derived from the latest punch (merged with
+the fleet replica in managed mode). Off by default; every key is false so an
+omitted block leaves a deployment unchanged.
+
+- **`enabled`** gates the whole surface — endpoints, the splash-screen "Time
+  clock" button, event publishing, and (in managed mode) the punch-state
+  watcher. Off → the feature does not exist (endpoints 404).
+- **`require_clock_in_for_checkout`** makes commit reject any cart containing
+  checkout/consume lines when the cart user isn't clocked in. **Returns are
+  always allowed** — a worker can hand a tool back regardless of punch state —
+  and the checkout screen offers a one-tap "clock in now?" instead of a dead
+  end.
+- **`block_clock_out_with_open_checkouts`** rejects a clock-out while the
+  worker holds open checkouts **at this kiosk** (local-scoped by design — a
+  tool out at kiosk A doesn't block a clock-out at kiosk B). Admin punches with
+  `force=true` bypass it (the "drove home with a tool" escape hatch).
+- **`timeclock_only`** turns the device into a dedicated punch station: the
+  SPA replaces the checkout splash with a persistent punch panel and badge
+  scans go straight to it — no carts, no checkout. Requires `enabled`.
+  (`block_clock_out_with_open_checkouts` is a no-op here — a punch-only station
+  writes no `open_checkouts`.)
+- **`virtual`** marks the dedicated **virtual timeclock terminal** (the
+  `cmd/timeclock` binary), not a normal kiosk. Leave it `false` in
+  `kiosk.yaml`. See the next section.
+
+In managed mode (`controller.enabled=true` + NATS) punches flow to the
+controller and per-user clocked-in state is distributed back to every kiosk
+via the `punch_state` KV bucket, so **clocking in at one kiosk and out at
+another just works**. Standalone kiosks keep a local-only ledger. There is no
+payroll math anywhere — the raw-punch CSV export is the payroll contract.
+
+### Virtual timeclock terminal (`timeclock.yaml`)
+
+`cmd/timeclock` is a separate binary that serves a publicly-reachable,
+per-user-**authenticated** self-service punch page (workers clock in/out from
+their phones — no badge scanner). It reads `timeclock.yaml` (override with
+`KIOSK_CONFIG`), uses its own data dir `pb_data_timeclock/`, and requires
+`timeclock.enabled=true` + `timeclock.virtual=true`. It supports the **same
+three operating modes** as `cmd/kiosk`, selected by the `nats`/`controller`
+blocks:
+
+| Mode | `nats.enabled` | `controller.enabled` | Workers from | Clocked-in state |
+|---|---|---|---|---|
+| standalone | false | false | local (admin SPA / superuser / CSV) | local ledger |
+| standalone + NATS | true | false | local | local; punches emit events |
+| controller-managed | true | true | catalog sync | fleet-wide via `punch_state` |
+
+Managed mode is the one for a *public* terminal fronting a fleet:
+provisioning stays central on the controller, and a worker who clocked in at a
+physical kiosk can clock out from their phone. Workers authenticate against the
+`users` collection via OAuth2 SSO and/or password — a `cmd/timeclock`-only
+migration enables auth on that collection. `timeclock.yaml.example` is the
+template; deploy-time hardening (TLS, OAuth2 provider secrets, SMTP for
+password reset, firewalling the superuser UI) is covered in
+[Operations](operations.md#virtual-timeclock-terminal).
+
 ## Environment overrides
 
 Every YAML key has a `KIOSK_*` equivalent: prefix `KIOSK_`, replace dots with
@@ -188,13 +256,18 @@ KIOSK_RFID_READER_HOST=10.0.4.50
 KIOSK_RFID_READER_PORT=5084
 KIOSK_RFID_READ_WINDOW=3s
 KIOSK_RFID_DOOR_ID=cabinet-a
+KIOSK_TIMECLOCK_ENABLED=true
+KIOSK_TIMECLOCK_REQUIRE_CLOCK_IN_FOR_CHECKOUT=true
+KIOSK_TIMECLOCK_BLOCK_CLOCK_OUT_WITH_OPEN_CHECKOUTS=true
+KIOSK_TIMECLOCK_TIMECLOCK_ONLY=true
+KIOSK_TIMECLOCK_VIRTUAL=true       # cmd/timeclock binary only
 ```
 
 Other env vars:
 
 | Variable | Purpose |
 |---|---|
-| `KIOSK_CONFIG` | Path to the YAML file. Default: `kiosk.yaml` (kiosk) / `controller.yaml` (controller) |
+| `KIOSK_CONFIG` | Path to the YAML file. Default: `kiosk.yaml` (kiosk) / `controller.yaml` (controller) / `timeclock.yaml` (virtual timeclock terminal) |
 | `KIOSK_QUIET_BOOTSTRAP` | If set, suppresses the bootstrap admin credentials print (used in tests) |
 | `KIOSK_ROLE` | Set to `controller` by `cmd/controller` before config validation; relaxes the `kiosk.code` requirement. Not intended to be set by operators. |
 

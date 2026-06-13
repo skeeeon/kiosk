@@ -9,3 +9,12 @@ import PocketBase, { BaseAuthStore } from 'pocketbase'
 class MemoryAuthStore extends BaseAuthStore {}
 
 export const pb = new PocketBase('/', new MemoryAuthStore())
+
+// pbWorker authenticates the `users` collection on the public virtual
+// timeclock terminal (cmd/timeclock). It deliberately uses PocketBase's
+// DEFAULT LocalAuthStore (localStorage) rather than the admin client's
+// MemoryAuthStore: the virtual terminal runs on a worker's PERSONAL phone, so
+// the session SHOULD survive a reload — the opposite of the shared-kiosk
+// requirement above. Separate instance so the two token lifetimes never mix.
+// Idle on a regular kiosk/controller (no worker ever logs in there).
+export const pbWorker = new PocketBase('/')

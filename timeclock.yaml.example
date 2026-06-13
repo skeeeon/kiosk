@@ -1,0 +1,100 @@
+# Config for the virtual timeclock terminal (cmd/timeclock binary):
+#
+#   go build -o kiosk-timeclock ./cmd/timeclock
+#   KIOSK_CONFIG=timeclock.yaml ./kiosk-timeclock
+#
+# This binary is a kiosk in every architectural sense — it has a kiosk_code,
+# writes the time_punches ledger through the same funnel, and (in managed mode)
+# rides the punch_state KV replica to the fleet — but its trust boundary is the
+# AUTHENTICATED worker session, not the box. Workers clock in/out from their
+# phones after signing in (OAuth2 SSO or password). The binary registers ONLY
+# the authed /api/self/timeclock/* surface (plus admin user-import); none of
+# the anonymous checkout endpoints exist in this process.
+#
+# THREE OPERATING MODES, same as cmd/kiosk (only timeclock.enabled+virtual are
+# required; NATS/controller select the mode):
+#   1. standalone        nats.enabled=false: local punch ledger only; provision
+#                        workers locally (admin SPA / superuser / CSV import).
+#   2. standalone + NATS  nats.enabled=true, controller.enabled=false: also
+#                        publishes timeclock.punch events for an external
+#                        consumer; workers + clocked-in state still local.
+#   3. controller-managed nats+controller enabled (the config below): workers
+#                        sync from the catalog and clocked-in state merges
+#                        fleet-wide so a worker can clock in at a kiosk and out
+#                        here. This is the mode for a PUBLIC terminal fronting a
+#                        fleet — provisioning stays central on the controller.
+#
+# SECURITY — this is the one binary you expose to the internet:
+#   - Terminate TLS in front of it (reverse proxy / Cloudflare Tunnel) or use
+#     PocketBase's built-in autocert (serve --https). Never expose cmd/kiosk.
+#   - Restrict the PocketBase superuser UI (/_/) at the proxy/firewall — it's
+#     only password-gated otherwise.
+#   - OAuth2 is locked to MATCH-ONLY in code: an IdP account with no matching
+#     pre-provisioned worker (by email) is rejected, so SSO can't self-enroll.
+#   - Configure OAuth2 provider client IDs/secrets at deploy time via the
+#     superuser UI (/_/ → Collections → users → Options → OAuth2). They are
+#     deployment secrets and are intentionally NOT in any migration.
+#   - Password workers sign in by email; since the catalog seeds a random
+#     password nobody knows, they set one via "Forgot password" — which needs
+#     SMTP configured (superuser UI → Settings → Mail).
+
+kiosk:
+  code: "TIMECLOCK-WEB"   # the virtual kiosk's identity, stamped on every punch
+  location_code: "WEB"
+
+server:
+  port: 8090
+  # Public terminal: bind beyond localhost (TLS terminated in front of it).
+  bind: "0.0.0.0"
+
+# Unused by this binary (no carts), but the struct is shared; harmless to set.
+session:
+  idle_timeout: "5m"
+  cart_grace_period: "30s"
+
+# Mode selector. enabled=false → standalone (mode 1). enabled=true with
+# controller below → managed (mode 3); enabled=true alone → events-only (mode 2).
+nats:
+  enabled: true
+  url: "nats://localhost:4222"
+  subject_prefix: ""    # must match the controller + fleet (default: "kiosk")
+  stream_name: ""       # controller-only; ignored here
+  token: ""
+  username: ""
+  password: ""
+  credentials_file: ""
+  nkey_seed_file: ""
+  tls_ca_file: ""
+  tls_cert_file: ""
+  tls_key_file: ""
+  tls_insecure: false
+
+# Managed mode (mode 3) — the catalog watcher provisions workers locally from
+# the controller and the punch_state replica gives fleet-wide clocked-in state.
+# Set enabled=false for standalone modes (provision workers locally instead).
+controller:
+  enabled: true
+  catalog_items_bucket: "catalog_items"
+  catalog_users_bucket: "catalog_users"
+  catalog_groups_bucket: "catalog_groups"
+
+branding:
+  logo_path: "./branding/logo.svg"
+  tagline: "Time Clock"
+  primary_color: ""
+  custom_css_path: ""
+
+# enabled + virtual are REQUIRED here. require_clock_in_for_checkout and
+# timeclock_only are meaningless on the virtual terminal (no checkout, no
+# badge scan) and ignored. block_clock_out_with_open_checkouts is local-scoped
+# and a no-op here (nothing is checked out locally) — the fleet-wide variant
+# is a planned fast-follow.
+timeclock:
+  enabled: true
+  virtual: true
+  require_clock_in_for_checkout: false
+  block_clock_out_with_open_checkouts: false
+  timeclock_only: false
+
+rfid:
+  enabled: false

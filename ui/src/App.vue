@@ -13,6 +13,10 @@ const route = useRoute()
 // idle / success states are managed inside CheckoutView, which renders
 // its own upper-left logo and per-state header content as needed.
 const isAdminRoute = computed(() => route.path.startsWith('/admin'))
+// The virtual timeclock terminal is a self-contained, public, mobile page —
+// it owns its own chrome and must not surface the kiosk identity footer or
+// the Admin link, so suppress the shell footer there too.
+const hideFooter = computed(() => isAdminRoute.value || route.name === 'virtual-timeclock')
 </script>
 
 <template>
@@ -25,7 +29,7 @@ const isAdminRoute = computed(() => route.path.startsWith('/admin'))
     <RouterView class="flex-1 min-h-0" />
 
     <footer
-      v-if="!isAdminRoute"
+      v-if="!hideFooter"
       class="px-6 py-6 border-t border-slate-800 flex items-center justify-between text-xl text-slate-300"
     >
       <span class="font-mono">

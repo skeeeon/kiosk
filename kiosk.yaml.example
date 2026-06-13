@@ -119,11 +119,16 @@ branding:
 # so a worker can clock in at one kiosk and out at another. Standalone
 # kiosks keep a local-only ledger. No payroll math anywhere: the raw-punch
 # CSV export is the payroll contract.
+#   - virtual  Marks the dedicated public, per-user-authenticated terminal
+#     served by the cmd/timeclock binary (workers clock in/out from their
+#     phones). NOT for cmd/kiosk — leave false here. See timeclock.yaml.example
+#     for the virtual terminal's own config; it requires managed mode.
 timeclock:
   enabled: false
   require_clock_in_for_checkout: false
   block_clock_out_with_open_checkouts: false
   timeclock_only: false
+  virtual: false
 
 rfid:
   enabled: false

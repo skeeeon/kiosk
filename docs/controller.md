@@ -28,6 +28,19 @@ of truth for catalog plus a unified transaction ledger.
   event into its own `transactions` / `transaction_lines` rows.
   Idempotency keys (`source_kiosk_code + source_transaction_id` on
   transactions, `source_line_id` on lines) make redelivery safe.
+- **Timeclock punches up, clocked-in state down.** When a managed kiosk
+  records a punch it publishes `{prefix}.{code}.event.timeclock.punch`; the
+  aggregator projects it into the controller's own `time_punches`
+  (idempotent on `source_punch_id`) and writes the worker's merged state to
+  the `punch_state` KV bucket (keyed by `user_code`, monotonic on
+  `occurred_at`). Every kiosk watches that bucket into an in-memory replica,
+  so clocked-in state is fleet-wide — a worker can clock in at one kiosk and
+  out at another. The **virtual timeclock terminal** (`cmd/timeclock`) is
+  just another managed kiosk on this path: it authenticates workers, writes
+  punches to its own ledger, and rides the same projection + replica — so a
+  phone punch shows up fleet-wide and vice-versa. Kiosks remain the only
+  punch writers; a controller-admin punch is recorded *at* the target kiosk
+  via the `timeclock.punch` command.
 - **Kiosks registry.** Three ways a kiosk gets a row in the
   controller's `kiosks` collection: (1) **pre-registered** by an admin
   via the "New kiosk" button on AdminKiosksView — required if you want

@@ -35,6 +35,10 @@ export interface KioskIdentity {
   // Dedicated punch station: the checkout splash is replaced by a
   // persistent punch panel and badge scans route straight to it.
   timeclock_only?: boolean
+  // Public, per-user-authenticated self-service terminal (cmd/timeclock).
+  // The SPA shows a worker login screen and, once authed, the self-punch
+  // panel wired to /api/self/timeclock/* — no badge scan, no checkout.
+  timeclock_virtual?: boolean
 }
 
 // --- Timeclock ---

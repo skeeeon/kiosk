@@ -33,6 +33,36 @@ Watch the binary's stdout. The commit function rolls back the DB
 transaction on any error (invalid item ID, serialized item with qty > 1,
 etc.) and returns the wrapped error. The cart is left intact for retry.
 
+## A punch returns 409 (`already_clocked_in` / `not_clocked_in` / `open_checkouts`)
+
+These are expected conflicts, not errors — the SPA branches on the
+machine-readable `error` field. `already_clocked_in` / `not_clocked_in` mean
+the merged state already disagrees with the requested direction (often the
+worker punched at another kiosk and this kiosk's replica is fresher); the
+panel refreshes so the button matches. `open_checkouts` means
+`block_clock_out_with_open_checkouts` is on and the worker still holds tools
+at this kiosk — the body lists them. An admin punch with `force=true` is the
+override.
+
+## A worker can't sign in to the virtual timeclock terminal
+
+Check, in order:
+
+1. **Wrong binary.** Worker login only exists on `cmd/timeclock` (the
+   binary-only migration enables it). A regular `cmd/kiosk` never lets workers
+   authenticate.
+2. **`active=false`.** The `AuthRule` is `active = true`; a deactivated worker
+   can't get a session (and a still-valid token is rejected by `requireWorker`).
+3. **No email on the record.** Both SSO (email matching) and password reset
+   need the worker's email populated.
+4. **OAuth2 "this account is not provisioned for time clock access".** The
+   match-only guard rejected an IdP account whose email has no pre-provisioned
+   worker. Provision the worker first (managed: on the controller; standalone:
+   locally), with the matching email.
+5. **Password reset email never arrives.** Provisioning seeds a random
+   password, so workers must use "Forgot password" — which needs SMTP
+   configured (superuser UI → Settings → Mail).
+
 ## Tests fail with `find items: sql: no rows in result set`
 
 This means migrations didn't run before the test seeded fixtures. The

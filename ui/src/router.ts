@@ -3,6 +3,7 @@ import { useAuthStore } from './stores/auth'
 import { loadKioskIdentity } from './composables/useKioskIdentity'
 
 import CheckoutView from './views/CheckoutView.vue'
+import VirtualTimeclockView from './views/VirtualTimeclockView.vue'
 import AdminLoginView from './views/AdminLoginView.vue'
 import AdminLayout from './views/AdminLayout.vue'
 import AdminItemsView from './views/AdminItemsView.vue'
@@ -24,6 +25,10 @@ export const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: '/', name: 'checkout', component: CheckoutView },
+    // Public self-service timeclock terminal. Registered always (like the
+    // admin routes) so deep links resolve; the guard sends operators here
+    // only when the binary reports timeclock_virtual.
+    { path: '/timeclock', name: 'virtual-timeclock', component: VirtualTimeclockView },
     { path: '/admin/login', name: 'admin-login', component: AdminLoginView },
     {
       path: '/admin',
@@ -79,10 +84,23 @@ router.beforeEach(async (to) => {
   }
   // On the controller binary there is no checkout flow — operators always
   // belong in /admin. Redirect at the root; deep links into /admin work as-is.
+  // The virtual timeclock binary has no checkout either: send its root to the
+  // self-service punch terminal.
   if (to.name === 'checkout') {
     const id = await loadKioskIdentity()
     if (id?.role === 'controller') {
       return { name: auth.isAuthenticated ? await landingRoute() : 'admin-login' }
+    }
+    if (id?.timeclock_virtual) {
+      return { name: 'virtual-timeclock' }
+    }
+  }
+  // The virtual terminal route only makes sense on the virtual binary; on a
+  // standard kiosk fall back to checkout so the route can't be reached.
+  if (to.name === 'virtual-timeclock') {
+    const id = await loadKioskIdentity()
+    if (!id?.timeclock_virtual) {
+      return { name: 'checkout' }
     }
   }
 })
