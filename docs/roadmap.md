@@ -182,8 +182,10 @@ These started as deferred roadmap items and are now live in the binary:
   state distributes back via the `punch_state` KV bucket, so clock-in at
   one kiosk and out at another works. Paired intervals/day-totals for humans;
   the raw-punch CSV is the payroll contract (no rounding/overtime anywhere).
-  A `digest.timeclock` scheduled report emails daily totals.
-  `timeclock_only` turns a device into a dedicated punch station.
+  A `digest.timeclock` scheduled report emails daily totals to admins, and
+  `digest.timeclock_self` fans out a per-worker timesheet — one private email
+  per active worker. `timeclock_only` turns a device into a dedicated punch
+  station.
 - **Virtual timeclock terminal (no hardware).** A separate binary
   (`cmd/timeclock`) serves a publicly-reachable, per-user-**authenticated**
   self-service punch page so workers clock in/out from their phones — no
@@ -195,7 +197,9 @@ These started as deferred roadmap items and are now live in the binary:
   by construction — it registers only the authed `/api/self/timeclock/*`
   surface, and OAuth2 is locked match-only. See
   [Configuration](configuration.md#virtual-timeclock-terminal-timeclockyaml)
-  and [Operations](operations.md#virtual-timeclock-terminal).
+  and [Operations](operations.md#virtual-timeclock-terminal). The punch panel
+  also shows each worker a live today/this-week summary and the day's intervals
+  (a compact "X today" line on physical kiosks).
 
 ## Roadmap
 

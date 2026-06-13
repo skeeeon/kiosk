@@ -124,7 +124,12 @@ of truth for catalog plus a unified transaction ledger.
   the scheduler; the kiosk's scheduler stays off entirely. A new
   "Items in maintenance" digest (`digest.maintenance`) fans out
   `instance.snapshot` to every online kiosk, filtered to
-  `status=maintenance`, listing offline kiosks as excluded. The CRUD
+  `status=maintenance`, listing offline kiosks as excluded. The timeclock
+  digests need no such fan-out — the punch ledger is fully projected, so
+  `digest.timeclock` (one admin email) and the per-worker
+  `digest.timeclock_self` (one private email per active worker) both run
+  pure-DB against the controller's `time_punches`; a fleet-wide row gives
+  each worker their fleet-complete hours. The CRUD
   endpoints (`/api/controller/notifications`) mirror the kiosk's; the
   SPA detects role at boot and points the Templates tab at the right
   base URL. See [Notifications](notifications.md) for the full picture.

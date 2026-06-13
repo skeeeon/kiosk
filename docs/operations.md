@@ -244,6 +244,15 @@ Pick an operating mode in `timeclock.yaml` (`nats`/`controller` blocks) — see
 workers (with their email) sync from the controller and clocked-in state
 merges fleet-wide.
 
+**What workers see.** The punch panel shows each worker a live **today /
+this-week** total (week starts Monday) plus the day's in/out intervals, so
+they can confirm their own hours — the full view on the virtual terminal
+(computed from `/api/self/timeclock/history`) and a compact "X today" line on
+the physical kiosk's time-clock panel. To push the same data on a cadence,
+schedule the **per-worker timeclock summary** (Notifications → Scheduled
+reports, `digest.timeclock_self`); it emails each active worker their own
+timesheet. See [Notifications](notifications.md).
+
 **Worker provisioning.**
 
 - *Managed mode:* workers come from the controller's catalog automatically;
