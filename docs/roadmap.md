@@ -172,6 +172,30 @@ These started as deferred roadmap items and are now live in the binary:
   only reach the kiosk via NATS (per-subject ACLs gate them). USB
   HID badge readers are unchanged — they emit keyboard events and
   resolve through the existing `scan.Resolver`. See [RFID](rfid.md).
+- **Timeclock with tool interlocks.** Append-only `time_punches` ledger
+  (funnel-only writes via `timeclock.PerformPunch`, same discipline as the
+  tool ledger) with a splash "Time clock" button + badge scan. Two
+  config-gated interlocks tie the ledgers together
+  (`require_clock_in_for_checkout`, `block_clock_out_with_open_checkouts`);
+  foremen punch crew in their group, admins backdate/force with a reason.
+  In managed mode punches project to the controller and per-user clocked-in
+  state distributes back via the `punch_state` KV bucket, so clock-in at
+  one kiosk and out at another works. Paired intervals/day-totals for humans;
+  the raw-punch CSV is the payroll contract (no rounding/overtime anywhere).
+  A `digest.timeclock` scheduled report emails daily totals.
+  `timeclock_only` turns a device into a dedicated punch station.
+- **Virtual timeclock terminal (no hardware).** A separate binary
+  (`cmd/timeclock`) serves a publicly-reachable, per-user-**authenticated**
+  self-service punch page so workers clock in/out from their phones — no
+  badge scanner. Trust model inverted: each worker signs in (OAuth2 SSO
+  and/or password) and the server reads the punched identity from the
+  session, never the body. It's just another kiosk under the hood (same
+  funnel, same `punch_state` replica) and supports the same three modes as
+  `cmd/kiosk` (standalone / standalone+NATS / controller-managed). Security
+  by construction — it registers only the authed `/api/self/timeclock/*`
+  surface, and OAuth2 is locked match-only. See
+  [Configuration](configuration.md#virtual-timeclock-terminal-timeclockyaml)
+  and [Operations](operations.md#virtual-timeclock-terminal).
 
 ## Roadmap
 
@@ -202,5 +226,13 @@ subjects are in place to make them additive rather than rewrites.
 - **Tighten PB collection rules in managed mode.** UI gating is the
   v1 story; a follow-up could lock the collection rules themselves
   so a determined admin poking PB directly can't drift the catalog.
+- **Fleet-wide clock-out block.** Today `block_clock_out_with_open_checkouts`
+  is per-kiosk: a tool out at kiosk A doesn't block a clock-out at kiosk B
+  (or on the virtual terminal, where nothing is checked out locally). The
+  controller already computes fleet-wide open checkouts on demand
+  (`ledger.ReplayOpenRows`), so a follow-up could consult it at punch time —
+  at the cost of a WAN dependency on the punch path and a degraded-mode
+  decision (block vs. allow when the controller is unreachable). Deferred
+  until a deployment actually needs it.
 Each of these can be evaluated on demand. None should be built until
 there is a concrete user asking for it.

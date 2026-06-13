@@ -41,6 +41,10 @@ go build -o kiosk-app ./cmd/kiosk
 go build -o kiosk-controller ./cmd/controller
 ./kiosk-controller                       # serves on 127.0.0.1:8091 by default
 
+# Virtual timeclock terminal (optional) — authed self-service punch page
+go build -o kiosk-timeclock ./cmd/timeclock
+KIOSK_CONFIG=timeclock.yaml ./kiosk-timeclock   # expects timeclock.yaml; pb_data_timeclock/
+
 # Frontend
 npm install --prefix ui
 npm run build --prefix ui                # outputs to internal/ui/dist/ (embedded into Go binary at build)
@@ -84,6 +88,7 @@ go test ./internal/controller/...        # controller aggregator + heartbeats + 
 go test ./internal/catalog/...           # KV payload + kiosk projector
 go test ./internal/commands/...          # kiosk-side NATS command handlers
 go test ./internal/handlers/...          # stock-adjust refactor + idempotency
+go test ./internal/timeclock/...         # punch funnel + merge rule + pairing
 go test -run TestCommit_CrossUser ./internal/commit/...   # single test
 ```
 
@@ -190,6 +195,13 @@ Three invariants:
    controller: live `instance.snapshot` fan-out filtered to
    `status=maintenance`). Both are rendered + sent via the controller's SMTP,
    same family as `alert.lowstock`.
+   `<prefix>.<kiosk_code>.event.timeclock.punch` fires once per accepted
+   punch (any source — self/foreman/admin/controller_admin), published by
+   the punch funnel's callers via `handlers.PublishPunchEvent` (skipped on
+   idempotent replays). The payload's `punch_id` (kiosk-side
+   `time_punches.id`) is the controller projection's idempotency anchor
+   (`source_punch_id`) — same strategy as `inventory.adjust`'s
+   `adjustment_id`.
    `<prefix>.<kiosk_code>.event.scan.rfid.observed` fires after every
    LLRP inventory cycle in either RFID mode and carries the full
    deduplicated EPC array (the read-window observability stream —
@@ -214,7 +226,11 @@ Three invariants:
      (`create`/`edit`/`set_status`/`snapshot` — `set_status` carries the
      target status as data and covers send-to-maintenance / return-to-service
      / retire / un-retire in one command), `metrics.snapshot`,
-     `integrity.rebuild`, `ledger.republish`, and the RFID
+     `integrity.rebuild`, `ledger.republish`, the timeclock pair
+     `timeclock.punch` + `timeclock.republish` (controller-admin punch
+     recorded AT the kiosk — kiosks are the only punch writers — and the
+     punch-events backfill walk; both reach config + the punch-state
+     fleet replica through `Dispatcher.KioskHandlers`), and the RFID
      enclosure_diff pair `cart.start` + `read.trigger`. The
      enclosure_diff handlers reach the cart store / SSE broker /
      reader through `Dispatcher.KioskHandlers`, set in
@@ -391,6 +407,15 @@ Recent kiosk-side migrations for the instance-status / maintenance work:
 `scheduled_reports.report_key` with `maintenance` + seeds the `digest.maintenance`
 template).
 
+Timeclock migrations: kiosk-side `1799000000_time_punches.go` (the
+append-only punch ledger — API-readonly, funnel-only writes) and
+`1799100000_timeclock_digest.go` (extends `report_key` with `timeclock` +
+seeds the `digest.timeclock` template); controller-side
+`2001100000_time_punches_source.go` (adds `source_punch_id`
+unique-when-non-empty — the projection's idempotency anchor — plus
+`source_actor` for kiosk-admin actors whose FK can't resolve in the
+controller's DB, and a `(kiosk_code, occurred_at)` index).
+
 `touchKiosk` in `internal/controller/consumer.go` advances
 `last_transaction_at` only from the event's own `completed_at`,
 monotonically (never wall-clock `now()`) — so a redelivery or a
@@ -457,6 +482,90 @@ quick-add satisfy the Required field. CSV import ignores a
 `migrations/1793000000_backfill_serialized_qty.go` reconciles pre-existing
 rows.
 
+**Timeclock is a second append-only ledger with the same discipline as the
+tool ledger.** `time_punches` (one row per clock-in/out punch) is written
+ONLY by `timeclock.PerformPunch` in `internal/timeclock` — a LEAF package
+(imports only events/kioskctx/dberr + PB core, same cycle-avoidance
+precedent as `instances/status`) so `internal/commit` can consult
+clocked-in state. Dependency direction: commit/handlers/commands/controller
+→ timeclock; timeclock never imports cart/commit/handlers. There is
+deliberately **no materialized open-shifts table**: "is this user clocked
+in" = latest punch by `occurred_at` (`created` breaks ties), merged with
+the fleet replica — `timeclock.CurrentState` is THE single merge-rule
+function ("fresher of local ledger vs `punch_state` KV replica wins").
+Funnel rules: live (self/foreman) punches enforce in/out alternation and
+target-active, are always stamped `now()`, and can never force; foremen
+punch only crew in their own group (role+group re-read inside the txn —
+commit's gate pattern); admin/controller_admin punches may backdate and
+bypass alternation but always require a reason; `force=true` (admin only)
+bypasses the open-checkouts clock-out block — the escape hatch for "drove
+home with a tool." Idempotency on `command_id` uses the exact
+stock_adjust two-layer dance. **Interlocks** (config-gated, default off):
+`require_clock_in_for_checkout` rejects whole commits containing
+checkout/consume lines when the cart user isn't clocked in (inside
+commit's txn via `Policy.RequireClockInForCheckout` + `Policy.PunchFleet`;
+returns-only carts pass by construction; `CartCommit` maps the wrapped
+`timeclock.ErrNotClockedIn` to a 409 `{error:"not_clocked_in"}` the SPA
+turns into a one-tap "clock in now?" — keep that carve-out when touching
+commit error handling). `block_clock_out_with_open_checkouts` rejects
+clock-outs while the worker has open checkouts at THIS kiosk
+(local-scoped in v1, deliberately no fleet-wide WAN check at punch time).
+**Timeclock-only mode** (`timeclock.timeclock_only`, requires `enabled`)
+turns the device into a dedicated punch station: the SPA replaces the
+checkout splash with a persistent `TimeclockPanel` (`standalone` prop)
+and routes badge scans straight to it; item scans toast. Presentation
+only — no backend changes, carts simply never start. The
+open-checkouts clock-out block is a no-op there (local-scoped,
+nothing local to block on).
+**Cross-kiosk punches work in managed mode**: the controller projects
+each punch into its own `time_punches` and broadcasts per-user state into
+the `punch_state` KV bucket (key = `user_code`, like `catalog_users`;
+monotonic on `occurred_at` via `shouldReplacePunchState`); kiosks hydrate
+an in-memory `timeclock.Fleet` via `timeclock.Watcher` (WatchAll replays
+the bucket on start, so restarts recover; the replica is advisory — KV
+failures degrade to local-only and self-heal). Reporting: pairing punches
+into intervals/day-totals is DISPLAY logic (`timeclock.Pair`, pure,
+table-tested); the raw-punch CSV is the payroll contract — never add
+rounding/overtime/pay-period logic anywhere in this codebase (same stance
+as billing).
+
+**Virtual timeclock terminal** is a THIRD binary, `cmd/timeclock`
+(`pb_data_timeclock/`, `timeclock.yaml`), modeled on `cmd/controller`: it
+reuses the internal packages but registers a deliberately narrow route set.
+It's a publicly-reachable, per-user-**authenticated** self-service punch
+page (workers clock in/out from phones — no badge scan, no hardware). The
+trust model is INVERTED from a kiosk: instead of the box being the trust
+boundary, each worker authenticates and the punched identity is read from
+`re.Auth`, NEVER the body — the same server-resolved-identity discipline as
+`OriginalCheckoutUserID`. The authed endpoints live in
+`internal/handlers/timeclock_self.go` (`SelfTimeclockStatus` /
+`SelfTimeclockPunch` / `SelfTimeclockHistory`, gated by `requireWorker`
+which mirrors `requireAdmin` but checks the `users` collection + `active`)
+and force `SourceSelf` — no foreman/admin/backdate/force powers from a
+phone. The binary wires ONLY identity/branding + `/api/self/timeclock/*` +
+admin user-import; the anonymous `/api/kiosk/*` checkout surface is never
+registered, so it can't be exposed (security by construction, the
+`cmd/controller`-has-no-kiosk-handlers precedent). Worker login is enabled
+by a `cmd/timeclock`-only migration package `migrations/timeclock`
+(`package timeclockmigrations`, same isolation pattern as
+`migrations/controller`) that sets `users.AuthRule = "active = true"` +
+`OAuth2.Enabled = true` on that DB only; a runtime
+`OnRecordAuthWithOAuth2Request` guard in `main()` rejects `IsNewRecord`
+(match-only — un-provisioned IdP accounts can't self-enroll). Both OAuth2
+SSO and password auth are supported (`UserPayload.Email` already syncs, so
+OAuth2-by-email needs no payload change; password workers use PB's
+reset-by-email flow since the catalog seeds a random password). The flag is
+`timeclock.virtual` (requires `enabled`; surfaced to the SPA as
+`identity.timeclock_virtual`, which routes the SPA to
+`VirtualTimeclockView` — login screen → self-punch panel, using the
+persistent `pbWorker` client + `useWorkerAuthStore`, with `lib/api.ts`
+attaching the worker token for `/api/self/*` by URL prefix). It supports the
+SAME three modes as `cmd/kiosk` (standalone / standalone+NATS /
+controller-managed) with identical best-effort wiring — in unmanaged modes
+workers are provisioned locally and `PunchFleet` is nil (local-only state);
+managed mode adds the catalog-synced workers + `punch_state` replica. The
+fleet-wide clock-out block is still a deferred fast-follow.
+
 **Per-kiosk catalog membership.** Controller-side `kiosk_items` is the
 source of truth for "which SKUs does kiosk X stock." A row exists →
 that kiosk gets that item; no row → it doesn't. New items don't auto-flow
@@ -487,7 +596,11 @@ the same row.
   (3) adding a case to the dispatch switch in `handle`. Today the projected
   events are `transaction.complete` → `transactions`, `item.{action}` →
   `transaction_lines`, `inventory.adjust` → `inventory_audit`,
-  `instance.lifecycle` → `instance_lifecycle_audit`, and
+  `instance.lifecycle` → `instance_lifecycle_audit`,
+  `timeclock.punch` → `time_punches` (idempotent on `source_punch_id`;
+  after a successful project the aggregator also writes the user's state
+  to the `punch_state` KV bucket — monotonic, advisory, never blocks the
+  ack; no `touchKiosk` from this branch), and
   `checkout.admin_close` → `transactions` + `transaction_lines` (via
   `ProjectAdminCloseToLedger`, which mirrors the ledger rows
   `commit.AdminClose` writes locally: a completed transaction + one

@@ -20,6 +20,7 @@ import (
 	"github.com/skeeeon/kiosk/internal/events"
 	inststatus "github.com/skeeeon/kiosk/internal/instances/status"
 	"github.com/skeeeon/kiosk/internal/kioskctx"
+	"github.com/skeeeon/kiosk/internal/timeclock"
 )
 
 // Result is the JSON returned from the commit endpoint and is also useful
@@ -57,6 +58,16 @@ type MaintenanceEntry struct {
 type Policy struct {
 	AllowCrossUser    bool
 	AllowUncorrelated bool
+
+	// RequireClockInForCheckout rejects the whole commit when the cart
+	// contains checkout/consume lines and the cart user is not clocked in
+	// (timeclock interlock). Return lines never trigger it — a worker
+	// holding a tool can always hand it back. The error wraps
+	// timeclock.ErrNotClockedIn so the HTTP layer can map it to a 409.
+	RequireClockInForCheckout bool
+	// PunchFleet is the managed-mode punch-state replica consulted by the
+	// clocked-in merge rule. Nil on standalone kiosks (local punches only).
+	PunchFleet *timeclock.Fleet
 }
 
 // DefaultPolicy returns the permissive policy used by tests and as the
@@ -112,6 +123,30 @@ func Commit(app core.App, c *cart.Cart, id kioskctx.Identity, policy Policy, pub
 			g, err := tx.FindRecordById("groups", cartUserGroupID)
 			if err == nil {
 				cartUserGroupCode = g.GetString("code")
+			}
+		}
+
+		// Timeclock interlock: checkout/consume requires a clocked-in user;
+		// the whole commit is rejected (mixed carts included — the commit is
+		// atomic everywhere else too). Returns-only carts pass by
+		// construction. The merge rule lets a clock-in at another managed
+		// kiosk satisfy the gate via the fleet replica.
+		if policy.RequireClockInForCheckout {
+			needsClockIn := false
+			for _, l := range c.Lines {
+				if l.Action == "checkout" || l.Action == "consume" {
+					needsClockIn = true
+					break
+				}
+			}
+			if needsClockIn {
+				state, err := timeclock.CurrentState(tx, policy.PunchFleet, c.UserID, c.UserCode)
+				if err != nil {
+					return fmt.Errorf("read punch state: %w", err)
+				}
+				if !state.ClockedIn {
+					return fmt.Errorf("checkout requires clocking in first: %w", timeclock.ErrNotClockedIn)
+				}
 			}
 		}
 

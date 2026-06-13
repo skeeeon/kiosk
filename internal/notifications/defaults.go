@@ -20,6 +20,7 @@ const (
 	EventTypeOpenChecksDigest   = "digest.open_checkouts"
 	EventTypeDailyActivity      = "digest.daily_activity"
 	EventTypeMaintenanceDigest  = "digest.maintenance"
+	EventTypeTimeclockDigest    = "digest.timeclock"
 )
 
 // DefaultReceiptSubject and DefaultReceiptBody are the v1 receipt template.
@@ -124,6 +125,25 @@ Could not be reached, excluded from this digest: {{range .UnavailableKiosks}}{{.
 {{end}}This is an automated digest. Adjust its schedule or recipients in the kiosk admin SPA.
 `
 
+// DefaultTimeclockDigestSubject and DefaultTimeclockDigestBody render
+// against TimeclockDigestContext (see internal/notifications/context.go).
+// Totals are display approximations from punch pairing — the raw-punch CSV
+// export remains the payroll contract; this digest is a human summary.
+const DefaultTimeclockDigestSubject = `Timeclock digest from {{.Kiosk.Code}} — {{.PunchCount}} punches, {{.ClockedInNow}} clocked in`
+
+const DefaultTimeclockDigestBody = `Timeclock activity{{if .Kiosk.Code}} at kiosk {{.Kiosk.Code}}{{end}} from {{formatTime .WindowStart}} to {{formatTime .WindowEnd}}:
+
+{{if eq .PunchCount 0}}No punches in this window.
+{{else}}Daily totals:
+{{range .Rows}}- {{.Date}} — {{.UserName}} ({{.UserCode}}): {{.Total}}{{if .Open}} (still clocked in){{end}}
+{{end}}
+Currently clocked in: {{.ClockedInNow}}
+{{if gt .Uncorrelated 0}}Unpaired punches needing review: {{.Uncorrelated}}
+{{end}}{{end}}
+Totals are display approximations from punch pairing; the timeclock CSV export is the payroll record.
+This is an automated digest. Adjust its schedule or recipients in the admin SPA.
+`
+
 // Defaults returns the compiled-in default subject and body for the given
 // event type. ok is false when the event type is unknown — callers (the
 // migration seeder and the GET-defaults handler) treat that as "nothing
@@ -142,6 +162,8 @@ func Defaults(eventType string) (subject, body string, ok bool) {
 		return DefaultDailyActivitySubject, DefaultDailyActivityBody, true
 	case EventTypeMaintenanceDigest:
 		return DefaultMaintenanceDigestSubject, DefaultMaintenanceDigestBody, true
+	case EventTypeTimeclockDigest:
+		return DefaultTimeclockDigestSubject, DefaultTimeclockDigestBody, true
 	}
 	return "", "", false
 }
@@ -161,6 +183,8 @@ func DefaultName(eventType string) string {
 		return "Daily activity digest"
 	case EventTypeMaintenanceDigest:
 		return "Maintenance digest"
+	case EventTypeTimeclockDigest:
+		return "Timeclock digest"
 	}
 	return eventType
 }
@@ -176,6 +200,7 @@ func SeededEventTypes() []string {
 		EventTypeOpenChecksDigest,
 		EventTypeDailyActivity,
 		EventTypeMaintenanceDigest,
+		EventTypeTimeclockDigest,
 	}
 }
 
@@ -221,6 +246,8 @@ func DefaultRecipients(eventType string) Recipients {
 	case EventTypeDailyActivity:
 		return Recipients{AllAdmins: true, Extras: []string{}}
 	case EventTypeMaintenanceDigest:
+		return Recipients{AllAdmins: true, Extras: []string{}}
+	case EventTypeTimeclockDigest:
 		return Recipients{AllAdmins: true, Extras: []string{}}
 	}
 	// Conservative default for unrecognized event types: address nobody.

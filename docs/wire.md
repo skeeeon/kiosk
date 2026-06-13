@@ -338,6 +338,61 @@ controller's projection after a NATS outage.
 `source_kiosk_code + source_transaction_id` (for transactions) and
 `source_line_id` (for lines), so repeated publishes are safe.
 
+### `timeclock.punch`
+
+Record a clock-in/out punch AT the kiosk on behalf of a controller admin.
+The kiosk is the only punch writer — the controller's own ledger learns
+about the punch by consuming the resulting `event.timeclock.punch`, same
+as every other punch. Backdating (`occurred_at`) and `force` (bypass the
+open-checkouts clock-out block) follow the kiosk's admin punch rules;
+`reason` is always required. Replies with an error when timeclock is not
+enabled on the kiosk.
+
+**Publisher.** controller
+
+**Payload.**
+```json
+{
+  "command_id": "uuid",
+  "controller_admin_id": "admin record id",
+  "user_code": "EMP-2",
+  "direction": "in" | "out",
+  "reason": "forgot to clock out",
+  "occurred_at": "RFC3339 (optional; empty = now)",
+  "force": false
+}
+```
+
+**Reply data.** The punch result (`{punch_id, user_id, user_code,
+user_name, direction, occurred_at, recorded_at, source, clocked_in,
+replayed?}`). `clocked_in` is the user's merged state AFTER the punch —
+a backdated correction may leave it unchanged.
+
+**Idempotency.** `command_id` unique-when-non-empty on `time_punches`; a
+replayed command returns the prior result with `replayed: true` and does
+not publish a second event.
+
+### `timeclock.republish`
+
+Re-emit `event.timeclock.punch` for every punch in the optional window.
+Sibling of `ledger.republish` for the punch ledger.
+
+**Publisher.** controller
+
+**Payload.** All fields optional.
+```json
+{
+  "from": "RFC3339 timestamp",
+  "to": "RFC3339 timestamp"
+}
+```
+
+**Reply data.** `{published, from?, to?}`.
+
+**Idempotency.** The controller's projection dedupes on `source_punch_id`,
+and its `punch_state` KV write is monotonic on `occurred_at`, so repeated
+publishes are safe and old punches cannot drag fleet state backwards.
+
 ### `metrics.snapshot`
 
 Read-only — returns the kiosk's point-in-time operational + activity
@@ -582,6 +637,43 @@ rfid_epc, notes) and status-unchanged updates do **not** publish.
 `source_audit_id` (the kiosk-side `instance_audit.id`) which the
 controller uses as the idempotency anchor when projecting into
 `instance_lifecycle_audit`.
+
+### `event.timeclock.punch`
+
+Fires once per accepted punch, any source (`self` / `foreman` / `admin` /
+`controller_admin`). Idempotent replays of command-bus punches do **not**
+re-publish.
+
+**Payload.**
+```json
+{
+  "punch_id": "kiosk-side time_punches.id (idempotency anchor)",
+  "kiosk_code": "...",
+  "location_code": "...",
+  "user_id": "kiosk-local users.id",
+  "user_code": "EMP-2",
+  "user_name": "Bob",
+  "direction": "in" | "out",
+  "occurred_at": "RFC3339 — business timestamp (backdatable by admins)",
+  "source": "self" | "foreman" | "admin" | "controller_admin",
+  "recorded_by_user_code": "foreman's code (source=foreman)",
+  "admin_id": "kiosk admins.id (source=admin)",
+  "controller_admin_id": "controller admin id (source=controller_admin)",
+  "reason": "...",
+  "force": false,
+  "command_id": "...",
+  "recorded_at": "RFC3339 — when the row was written"
+}
+```
+
+The controller projects this into its own `time_punches`
+(`source_punch_id` dedupe) and then broadcasts the user's clocked-in
+state into the **`punch_state` JetStream KV bucket** (key = `user_code`,
+value `{user_code, clocked_in, occurred_at, source_punch_id}`), written
+monotonically on `occurred_at`. Managed kiosks watch the bucket into an
+in-memory replica; every clocked-in decision uses "fresher of local
+ledger vs replica" — which is what lets a worker clock in at one kiosk
+and out at another.
 
 ### `event.scan.rfid.observed`
 

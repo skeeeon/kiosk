@@ -7,7 +7,7 @@ PB's `/api/collections/*` is used for PB-native CRUD.
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| `GET` | `/api/kiosk/identity` | none | Returns `{kiosk_code, location_code, branding, max_qty, managed, rfid_enabled, rfid_mode}` — `managed` is true when opted into central control; `rfid_enabled` + `rfid_mode` gate the SPA's "RFID scan" / "Re-read enclosure" buttons (`counter_scan` shows the former, `enclosure_diff` shows the latter; both omitted when RFID is off) |
+| `GET` | `/api/kiosk/identity` | none | Returns `{kiosk_code, location_code, branding, max_qty, managed, rfid_enabled, rfid_mode, timeclock_enabled, timeclock_require_clock_in, timeclock_block_clock_out, timeclock_only, timeclock_virtual}` — `managed` is true when opted into central control; `rfid_enabled` + `rfid_mode` gate the SPA's "RFID scan" / "Re-read enclosure" buttons; the `timeclock_*` flags gate the splash "Time clock" button, shape interlock copy, and (`timeclock_only` / `timeclock_virtual`) switch the SPA into the punch-station / authed self-service experiences |
 | `POST` | `/api/kiosk/scan` | none | Resolves a raw scan to `user`, `item`, or `unknown` |
 | `POST` | `/api/kiosk/cart/start` | none | Returns existing or new cart for a user code |
 | `POST` | `/api/kiosk/cart/add` | none | Appends or stacks a line; computes default action. Defaults: consumable → `consume`; tool already out to the cart's user → `return`; otherwise → `checkout`. Never sets `original_checkout_user_id` — cross-user returns flow through the dedicated endpoint below. |
@@ -21,6 +21,14 @@ PB's `/api/collections/*` is used for PB-native CRUD.
 | `POST` | `/api/kiosk/cart/commit` | none | Promote cart to transaction + side effects + events |
 | `POST` | `/api/kiosk/cart/rfid-scan` | none | **RFID counter_scan mode only.** Query: `?cart_id=…`. Runs one LLRP inventory cycle, resolves each observed EPC through the same scan path `cart/add` uses, and adds matched instances to the cart. Per-EPC failures (already in cart, ineligible instance — status ≠ `in_service`, unknown tag) are skip-and-logged so one bad tag doesn't fail the batch. Returns `{cart, added_lines, observed_epcs, unresolved_epcs}`. 503 when the reader connection is down; publishes `event.scan.rfid.observed` regardless of outcome. |
 | `POST` | `/api/kiosk/cart/read-trigger` | none | **RFID enclosure_diff mode only.** Query: `?cart_id=…`. Runs one LLRP inventory cycle and reconciles observed EPCs against expected-present state via `rfid.Diff`, synthesizing checkout lines (expected, not observed) and self-return lines (held by cart user, observed). Cross-user returns are skip-and-counted. Returns `{cart, added_lines, observed_epcs, unresolved_epcs, skipped_cross_user_count}`. Also reachable as the NATS `read.trigger` command — this HTTP form is the manual-retry path on the outside-enclosure screen. |
+| `GET` | `/api/kiosk/timeclock/status` | none | Merged clocked-in state for one worker plus the context the punch screen renders. Query: `?user_code=…`. Returns `{user_id, user_code, user_name, user_role, clocked_in, since, origin, open_checkouts, block_clock_out}` (`origin` ∈ `local` \| `fleet` \| `""`). |
+| `POST` | `/api/kiosk/timeclock/punch` | none | Live punch — the worker's own (self) or a foreman punching a crew member when `target_user_code` differs. Body: `{user_code, direction: "in"\|"out", target_user_code?}`. Backdating/force are NOT accepted here. Funnels through `timeclock.PerformPunch`; the foreman+same-group gate is re-enforced inside the txn. **409** `{error: "already_clocked_in"\|"not_clocked_in"\|"open_checkouts", …}` for expected conflicts (the `open_checkouts` body carries the blocking rows). |
+| `GET` | `/api/kiosk/timeclock/foreman/options` | none | Picker for "punch a crew member": ACTIVE workers in the foreman's group, each with merged clocked-in state. Query: `?user_code=…`. Requires the user to be a `foreman` with a group. |
+| `POST` | `/api/kiosk/timeclock/admin-punch` | admin | Manual/corrective punch: backdating (`occurred_at`, RFC3339) and `force` clock-out past the open-tools block are admin-only. Body: `{user_code, direction, reason, occurred_at?, force?}` (reason required). |
+| `GET` | `/api/kiosk/timeclock/now` | admin | Everyone currently clocked in (merge rule; fleet state included on managed kiosks). |
+| `GET` | `/api/kiosk/timeclock/history` | admin | Raw punches + paired intervals/day-totals for a date range. Query: `?from=&to=` (YYYY-MM-DD), `?user_code=`. |
+| `POST` | `/api/kiosk/timeclock/republish` | admin | Re-emit `timeclock.punch` events for an optional `{from, to}` RFC3339 window (controller backfill after a NATS outage; idempotent on `source_punch_id`). |
+| `GET` | `/api/kiosk/reports/timeclock.csv` | admin | Raw-punch CSV — the **payroll contract** (no rounding/overtime/pay-period logic). Query: `?from=&to=`, `?user_code=`. |
 | `GET` | `/api/kiosk/integrity` | admin | Diff expected vs actual `open_checkouts` |
 | `POST` | `/api/kiosk/integrity/rebuild` | admin | Wipe `open_checkouts` and rebuild it from the ledger |
 | `POST` | `/api/kiosk/ledger/republish` | admin | Re-emit transaction.complete + item.{action} events for completed transactions in an optional `{from, to}` ISO8601 window. Aggregator is idempotent so safe to re-run. |
@@ -53,6 +61,11 @@ PB's `/api/collections/*` is used for PB-native CRUD.
 | `GET` | `/api/controller/kiosks/{code}/metrics` | admin | **Controller only.** Fires the `metrics.snapshot` command; returns the kiosk's live metrics in the same shape as the kiosk-local `GET /api/kiosk/metrics`. 503 on offline. |
 | `POST` | `/api/controller/kiosks/{code}/integrity/rebuild` | admin | **Controller only.** Fires `integrity.rebuild` — wipes the kiosk&rsquo;s `open_checkouts` and rebuilds from its ledger. Idempotent on its own (replay produces same state). Empty body. 503 on offline. |
 | `POST` | `/api/controller/kiosks/{code}/ledger/republish` | admin | **Controller only.** Fires `ledger.republish` — re-emits transaction.complete + item.{action} events for every completed transaction in the optional `{from, to}` window. The controller&rsquo;s projection dedupes on `source_line_id`, so duplicates are no-ops. 503 on offline. |
+| `POST` | `/api/controller/kiosks/{code}/timeclock/punch` | admin | **Controller only.** Records a controller-admin punch AT the target kiosk (kiosks are the only punch writers) via the `timeclock.punch` command. Body: `{user_code, direction, reason, occurred_at?, force?}`. Server-generates `command_id` for idempotent replay; 503 on offline. |
+| `POST` | `/api/controller/kiosks/{code}/timeclock/republish` | admin | **Controller only.** Fires `timeclock.republish` — re-emits `timeclock.punch` events for the optional `{from, to}` window. Idempotent on `source_punch_id`. 503 on offline. |
+| `GET` | `/api/controller/timeclock/now` | admin | **Controller only.** Everyone currently clocked in fleet-wide, from the controller's projected `time_punches`. |
+| `GET` | `/api/controller/timeclock/history` | admin | **Controller only.** Fleet punches + paired view. Query: `?from=&to=`, `?user_code=`, `?kiosk_code=`. |
+| `GET` | `/api/controller/reports/timeclock.csv` | admin | **Controller only.** Raw fleet punches as CSV (payroll contract), with `kiosk_code` so downstream can demux by site. |
 | `GET` | `/api/controller/reports/low-stock` | admin | **Controller only.** Fleet-wide low-stock report. Fans `inventory.snapshot` to every online managed kiosk in parallel, joins each kiosk's snapshot with `out` counts derived from the controller's projected ledger, and returns rows whose `available ≤ reorder_threshold`. Optional `?kiosk_code=` scopes to one kiosk. Response shape: `{rows: [...], errors: [{kiosk_code, error}]}` — offline kiosks appear in `errors` so partial results are explicit. |
 | `GET` | `/api/controller/reports/low-stock.csv` | admin | **Controller only.** CSV companion to the fleet low-stock report. Same fan-out path; the CSV is data-only (offline-kiosk errors are not embedded — use the JSON endpoint for status). |
 | `GET` | `/api/controller/reports/adjustment-audit.csv` | admin | **Controller only.** `inventory_audit` collection as CSV. Filters: `?from` / `?to` (YYYY-MM-DD), `?kiosk_code`, `?source` (`local` \| `controller`). |
@@ -70,6 +83,32 @@ kiosk is physically secured and bound to `127.0.0.1`. Worker
 identification happens at the application layer via badge scan — `code`
 resolves to a `users` record.
 
+## Virtual timeclock terminal (`/api/self/timeclock/*`)
+
+The `cmd/timeclock` binary serves a publicly-reachable, per-user-authenticated
+self-service punch surface — and **only** that surface. It does **not** register
+the anonymous `/api/kiosk/*` checkout/cart/inventory routes (they don't exist
+in that process), so the public box can't expose them. It registers
+`/api/kiosk/identity`, `/branding/*`, the admin user-import (for standalone
+provisioning), and these three:
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| `GET` | `/api/self/timeclock/status` | worker | The **authenticated** worker's own merged clocked-in state. Same shape as `/api/kiosk/timeclock/status`, but identity comes from `re.Auth` — there is no `user_code` query param to spoof. |
+| `POST` | `/api/self/timeclock/punch` | worker | The authenticated worker's own live punch. Body: `{direction}` **only** — the target is always the session's worker (forced `source=self`; no backdate/force/foreman powers). 409 conflict bodies match the kiosk punch endpoint. |
+| `GET` | `/api/self/timeclock/history` | worker | The authenticated worker's own punches + paired view for a `?from=&to=` range (forced to the session's worker). |
+
+**Auth model.** `worker` means a valid token for the `users` auth collection
+with `active=true` (enforced by `requireWorker`, the `users` analogue of
+`requireAdmin`). The punched identity is **server-resolved from the session,
+never the request body** — the same trust invariant as `original_checkout_user_id`.
+A `cmd/timeclock`-only migration turns the `users` collection into a real auth
+surface (`AuthRule = "active = true"`, OAuth2 enabled); workers sign in via
+OAuth2 SSO (matched by email — match-only, no self-enrollment) and/or password
+(reset-by-email, since provisioning seeds a random password). The base
+`/api/kiosk/timeclock/*` endpoints above remain anonymous on the kiosk binary;
+they are not served by `cmd/timeclock`.
+
 ## PocketBase collection rules
 
 | Collection | List/View | Create/Update/Delete |
@@ -81,6 +120,7 @@ resolves to a `users` record.
 | `transactions` | admin | forbidden via API; written by commit hook only |
 | `transaction_lines` | admin | forbidden via API |
 | `open_checkouts` | admin | forbidden via API |
+| `time_punches` | admin | forbidden via API; append-only, written by the punch funnel (`timeclock.PerformPunch`) only |
 | `stock_adjustments` | admin | forbidden via API; written by `/items/{id}/adjust` only |
 | `instance_audit` | admin | forbidden via API; written by the `item_instances` record hooks (and by `commit.AdminClose` for serialized retire-on-close) |
 | `inventory_audit` | admin | **Controller only.** Forbidden via API; written by the aggregator from `inventory.adjust` events |
@@ -89,6 +129,14 @@ resolves to a `users` record.
 The kiosk checkout flow never touches PB's REST API. Every operation
 goes through a custom `/api/kiosk/*` endpoint that runs in-process and
 bypasses collection rules.
+
+One exception: on the **virtual timeclock terminal** (`cmd/timeclock`),
+a binary-only migration sets the `users` collection's `AuthRule` to
+`active = true` and enables OAuth2, so active workers can authenticate
+(PB's built-in `/api/collections/users/auth-with-*` endpoints). The
+row-level list/view/create/update rules stay admins-only — workers
+authenticate but still can't read or mutate the collection. Regular kiosks
+and the controller never import that migration, so worker login is off there.
 
 ## Events, commands, heartbeats
 

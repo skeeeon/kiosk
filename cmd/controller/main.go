@@ -270,6 +270,15 @@ func main() {
 		e.Router.POST("/api/controller/kiosks/{code}/integrity/rebuild", h.IntegrityRebuild(nc, hbRegistry))
 		e.Router.POST("/api/controller/kiosks/{code}/ledger/republish", h.LedgerRepublish(nc, hbRegistry))
 
+		// Timeclock. Remote punches run at the target kiosk (kiosks are the
+		// only punch writers); the fleet reports read the controller's own
+		// projected time_punches.
+		e.Router.POST("/api/controller/kiosks/{code}/timeclock/punch", h.TimeclockPunch(nc, hbRegistry))
+		e.Router.POST("/api/controller/kiosks/{code}/timeclock/republish", h.TimeclockRepublish(nc, hbRegistry))
+		e.Router.GET("/api/controller/timeclock/now", h.TimeclockNow)
+		e.Router.GET("/api/controller/timeclock/history", h.TimeclockHistory)
+		e.Router.GET("/api/controller/reports/timeclock.csv", h.ReportTimeclockCSV)
+
 		// Fleet-wide reports. Low-stock fans out inventory.snapshot to
 		// every online kiosk in parallel and joins with the controller's
 		// projected ledger to compute available quantities.

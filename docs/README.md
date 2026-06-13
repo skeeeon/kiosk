@@ -7,23 +7,27 @@ detailed lives here.
 
 ## Setup & operation
 
-- [Configuration](configuration.md) — `kiosk.yaml` / `controller.yaml`,
-  environment overrides, branding and custom CSS.
+- [Configuration](configuration.md) — `kiosk.yaml` / `controller.yaml` /
+  `timeclock.yaml`, environment overrides, the timeclock block + interlocks,
+  the virtual timeclock terminal's three modes, branding and custom CSS.
 - [Development](development.md) — prerequisites, backend/frontend dev
   loops, DB reset, running the Go test suite.
 - [Operations](operations.md) — deploying, backups, ledger integrity,
   resync to controller, NATS failure modes, stock adjustments,
-  serialized instances, password reset.
+  serialized instances, the virtual timeclock terminal (deploy, SSO/SMTP,
+  hardening), password reset.
 - [Troubleshooting](troubleshooting.md) — common errors and what they mean.
 
 ## Reference
 
-- [API reference](api.md) — custom `/api/kiosk/*` and
-  `/api/controller/*` endpoints, PocketBase collection rules.
+- [API reference](api.md) — custom `/api/kiosk/*`, `/api/controller/*`, and
+  the virtual terminal's authed `/api/self/timeclock/*` endpoints, PocketBase
+  collection rules.
 - [Wire reference](wire.md) — every NATS subject (events, commands,
   heartbeats) with payload and reply shapes. Read this if you're
   integrating an external system with the kiosk over NATS.
-- [Schema](schema.md) — collections, controller-only fields,
+- [Schema](schema.md) — collections (incl. the `time_punches` ledger),
+  controller-only fields, the virtual-terminal-only worker-auth migration,
   `open_checkouts` cardinality rules, CSV import format.
 - [Ledger](ledger.md) — append-only design, the single write path,
   `open_checkouts` as a derived view, the controller's projected

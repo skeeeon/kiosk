@@ -21,13 +21,22 @@ third is a cache of "current state" derived from those facts —
 materialized so the kiosk UI can answer "what's out?" in a single SELECT
 instead of replaying history per page load.
 
-Two collections in the same database act as supporting audit logs and
+Other collections in the same database act as supporting audit logs and
 follow the same append-only discipline: `stock_adjustments` (every
 admin adjustment to a quantity-tracked item's `quantity_on_hand`) and
 `instance_audit` (every lifecycle change on a serialized unit — which
 is also what moves a serialized SKU's derived `quantity_on_hand`). They
 aren't part of the ledger's checkout state machine, but they share the
 design property that every mutation leaves a permanent row behind.
+
+`time_punches` is a **second append-only ledger** with the exact same
+discipline: one row per clock-in/clock-out punch, written only by the funnel
+`timeclock.PerformPunch`, never edited or deleted (corrections are new
+punches with a reason). Like `open_checkouts` derives "what's out," the
+clocked-in state is derived from the latest punch per worker rather than
+stored — no materialized open-shifts table. The raw-punch CSV export is the
+payroll contract; no rounding/overtime/pay-period logic lives anywhere in
+this codebase (same stance as billing).
 
 ## The single write path
 

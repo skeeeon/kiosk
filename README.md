@@ -64,6 +64,55 @@ it via config. See [docs/controller.md](docs/controller.md).
   reconciles what's still in vs. what left and synthesizes the
   resulting cart lines. Worker confirms on a normal checkout screen.
   See [RFID](docs/rfid.md).
+- **Optional timeclock with tool interlocks.** Workers clock in/out at
+  the kiosk (splash-screen "Time clock" button + badge scan) against an
+  append-only `time_punches` ledger — same discipline as the tool
+  ledger: punches are never edited or deleted, corrections are new
+  punches with a reason, and "who's clocked in" is derived from the
+  latest punch. Two config-gated interlocks tie the ledgers together:
+  `require_clock_in_for_checkout` (no checkout/consume unless clocked
+  in — **returns are always allowed**, and the checkout screen offers a
+  one-tap "clock in now?" instead of a dead end) and
+  `block_clock_out_with_open_checkouts` (can't clock out while holding
+  tools at this kiosk; the screen lists exactly what to return). Foremen
+  can punch crew members in their group (punch-now only); admins can
+  backdate corrections (reason required) and force a clock-out past the
+  open-tools block — the escape hatch for a worker who drove home with
+  a tool. In managed mode punches flow to the controller and per-user
+  clocked-in state is distributed back to every kiosk, so **clocking in
+  at one kiosk and out at another just works** (eventually consistent:
+  if a kiosk's replica is briefly stale it rejects the punch until sync
+  catches up — an admin punch is the override; the open-tools block
+  remains per-kiosk in v1, so a tool out at kiosk A won't block a
+  clock-out at kiosk B; standalone kiosks keep a local-only ledger).
+  Reporting shows paired intervals and daily totals for humans, but the
+  **raw-punch CSV export is the payroll contract** — no rounding,
+  overtime, or pay-period logic lives in the kiosk; downstream systems
+  interpret. A scheduled timeclock digest emails daily totals.
+  `timeclock_only: true` turns a device into a **dedicated punch
+  station**: the checkout splash is replaced by a persistent punch panel
+  and badge scans go straight to it — no carts, no checkout. The natural
+  pairing is a cheap gate device in a managed fleet: workers punch at the
+  gate, and the tool-crib kiosk's `require_clock_in_for_checkout`
+  interlock sees them as clocked in via the distributed punch state.
+  (Note: `block_clock_out_with_open_checkouts` is a no-op on a punch-only
+  station — the block is per-kiosk and a station with no checkouts has
+  nothing to block on.)
+- **Virtual timeclock terminal (no hardware).** A separate binary
+  (`cmd/timeclock`) serves a per-user-**authenticated** self-service
+  punch page so workers can clock in/out **from their phones** — no badge
+  scanner, no physical station. The trust model is inverted from a kiosk:
+  instead of trusting the box, each worker signs in (PocketBase **OAuth2
+  SSO** and/or **password**) and the server reads the punched identity from
+  the session, never the request — a worker can only punch their own clock.
+  It's just another kiosk under the hood (writes the same `time_punches`
+  ledger, rides the same `punch_state` replica) and supports the **same
+  three modes** as `cmd/kiosk` (standalone, standalone + NATS events,
+  controller-managed). Security is by construction: the binary registers
+  **only** the authed `/api/self/timeclock/*` surface — none of the
+  anonymous checkout endpoints exist in it — and OAuth2 is locked
+  **match-only** so an IdP account with no pre-provisioned worker can't
+  self-enroll. See [Virtual timeclock terminal](#virtual-timeclock-terminal).
 - **Federation-ready.** Every transaction is stamped with `kiosk_code`
   and `location_code`. Every state change flows through
   `events.Publish`, which always logs via slog and (when enabled) also
@@ -136,7 +185,8 @@ on the SKU.
 kiosk/
 ├── cmd/
 │   ├── kiosk/main.go            Kiosk: PB bootstrap, config, NATS, routes, watcher
-│   └── controller/main.go       Controller: PB bootstrap, JetStream consumer + KV publisher
+│   ├── controller/main.go       Controller: PB bootstrap, JetStream consumer + KV publisher
+│   └── timeclock/main.go        Virtual timeclock terminal: authed self-service punch surface only
 ├── internal/
 │   ├── cart/                    In-memory cart store + tests
 │   ├── catalog/                 Cross-fleet payload shape; kiosk-side KV watcher + projector + tests
@@ -151,14 +201,17 @@ kiosk/
 │   ├── kioskctx/                Process-global kiosk identity
 │   └── scan/                    Scan resolver + tests
 ├── migrations/                  Schema-as-code; runs on startup
+│   └── timeclock/               cmd/timeclock-only: enables worker auth on the users collection
 ├── ui/                          Vue 3 SPA source (Vite project)
 ├── pb_data/                     Kiosk SQLite (gitignored, created on first run)
 ├── pb_data_controller/          Controller SQLite (gitignored; controller binary uses this)
+├── pb_data_timeclock/           Virtual timeclock terminal SQLite (gitignored)
 ├── internal/ui/                 //go:embed seam: dist/ holds the Vite output, embedded into both binaries at build time
 ├── branding/                    Optional on-disk branding overrides (logo, custom CSS) — sit next to the binary, not embedded
 ├── kiosk.yaml                   Kiosk config (gitignored)
 ├── kiosk.yaml.example           Kiosk config template
 ├── controller.yaml.example      Controller config template
+├── timeclock.yaml.example       Virtual timeclock terminal config template
 └── go.mod, go.sum
 ```
 
@@ -204,6 +257,71 @@ Open `http://localhost:8090/`:
 
 - The kiosk checkout flow ("Scan your badge to begin").
 - Top-right header has a tiny **Admin** link → `/admin/login`.
+
+## Virtual timeclock terminal
+
+The `cmd/timeclock` binary is a publicly-reachable, per-user-authenticated
+self-service punch terminal — workers clock in/out from their phones, no
+badge scanner or dedicated station. It shares the entire timeclock stack
+with `cmd/kiosk` (the `PerformPunch` funnel, the `time_punches` ledger, the
+`punch_state` fleet replica, the payroll CSV) and adds exactly one thing:
+authentication. The worker signs in and the server reads the punched
+identity from the session — never from the request body — so a worker can
+only ever punch their own clock.
+
+```powershell
+# Same SPA build as the kiosk (step 2 above), then:
+go build -o kiosk-timeclock.exe ./cmd/timeclock   # ./kiosk-timeclock on Linux/Mac
+cp timeclock.yaml.example timeclock.yaml           # edit kiosk.code, auth, mode
+KIOSK_CONFIG=timeclock.yaml .\kiosk-timeclock.exe  # serves the same port surface
+```
+
+**Why a separate binary.** The kiosk's `/api/kiosk/*` surface is anonymous
+by design (the box on a trusted LAN is the trust boundary). You can't safely
+expose that to the internet, and putting auth *in front* of it secures
+nothing — those handlers trust `user_code` from the body. So the timeclock
+binary registers **only** the authenticated `/api/self/timeclock/*` surface
+(plus identity/branding and an admin user-import for standalone
+provisioning). The dangerous checkout/cart/inventory routes are never wired
+into this process, so a config slip can't expose them — security by
+construction, the same posture as `cmd/controller` having no kiosk handlers.
+
+**Authentication.** Workers authenticate against the `users` collection,
+which a `cmd/timeclock`-only migration turns into a real auth surface
+(`AuthRule = "active = true"`, OAuth2 enabled). Two paths:
+
+- **OAuth2 SSO** (recommended): configure your IdP's client id/secret at
+  deploy time in the superuser UI (`/_/` → Collections → `users` → Options →
+  OAuth2). Matching is by **email**, which the catalog already syncs, so no
+  payload change is needed. A runtime guard rejects any IdP account whose
+  email isn't a pre-provisioned worker (**match-only** — no self-enrollment).
+- **Password**: workers sign in by email. Because provisioning seeds a random
+  password nobody knows, they set one via the **reset-by-email** flow — which
+  needs SMTP configured (superuser UI → Settings → Mail).
+
+**Three operating modes** (same as `cmd/kiosk`; only `timeclock.enabled` +
+`timeclock.virtual` are required):
+
+| Mode | `nats` / `controller` | Workers from | Clocked-in state |
+|------|------------------------|--------------|------------------|
+| standalone | both off | local (admin SPA / superuser / CSV) | local ledger |
+| standalone + NATS | nats on, controller off | local | local; punches emit events |
+| controller-managed | both on | catalog sync | fleet-wide via `punch_state` |
+
+Managed mode is the one for a *public* terminal fronting a fleet:
+provisioning stays central on the controller, and a worker who clocked in at
+a physical kiosk can clock out from their phone.
+
+**Deploy hardening** (this is the one binary you point at the internet):
+terminate TLS in front of it (reverse proxy / Cloudflare Tunnel, or PB's
+`serve --https`); restrict the superuser UI (`/_/`) at the proxy/firewall;
+enable PocketBase's auth rate limiter. The `/admin` SPA and PB collections
+API are admins-only (same guard as every binary), but shrinking the
+reachable surface on a public host is good defense-in-depth.
+
+The fleet-wide clock-out block (reject clock-out while a tool is out at *any*
+kiosk) is a planned fast-follow — today the block is per-kiosk, so it's a
+no-op on the virtual terminal (nothing is checked out locally).
 
 ## Documentation
 

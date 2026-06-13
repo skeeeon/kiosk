@@ -178,6 +178,41 @@ func (c MaintenanceDigestContext) PayloadSummary() string {
 	return c.Kiosk.Code + " · " + strconv.Itoa(c.RowsCount) + " in maintenance"
 }
 
+// TimeclockDigestRow is one user-day total in the timeclock digest. Total is
+// pre-formatted (e.g. "7h30m") so the template stays arithmetic-free; Open
+// flags a day whose interval was still running when the digest fired.
+type TimeclockDigestRow struct {
+	UserCode string
+	UserName string
+	Date     string // YYYY-MM-DD in the serving binary's local timezone
+	Total    string
+	Open     bool
+}
+
+// TimeclockDigestContext drives the digest.timeclock template. Built by the
+// scheduler runner from the punch ledger (kiosk: local; controller: the
+// fleet projection, optionally scoped by the schedule row's kiosk_code).
+// Totals come from report-time punch pairing — display approximations; the
+// raw-punch CSV is the payroll contract. Does not implement
+// WorkerEmailProvider — digests target admins.
+type TimeclockDigestContext struct {
+	Kiosk        KioskInfo
+	GeneratedAt  time.Time
+	WindowStart  time.Time
+	WindowEnd    time.Time
+	Cadence      string // "daily" | "weekly" | "monthly"
+	PunchCount   int
+	ClockedInNow int
+	Rows         []TimeclockDigestRow
+	RowsCount    int
+	Uncorrelated int
+}
+
+// PayloadSummary surfaces a compact "kiosk · N punches" line in the send log.
+func (c TimeclockDigestContext) PayloadSummary() string {
+	return c.Kiosk.Code + " · " + strconv.Itoa(c.PunchCount) + " punches"
+}
+
 // OpenChecksDigestRow is one row in an open-checkouts digest. Field names
 // match the existing ledger.OpenCheckoutDTO shape so the conversion in the
 // scheduler is a simple field copy.

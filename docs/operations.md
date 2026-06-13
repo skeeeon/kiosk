@@ -223,6 +223,61 @@ close of a serialized unit retires its instance the same way, so the
 derived quantity drops by one without writing a `stock_adjustments`
 row.
 
+## Virtual timeclock terminal
+
+`cmd/timeclock` is the one binary you may expose to the public internet — a
+per-user-authenticated self-service punch page (workers clock in/out from
+their phones). It reuses the kiosk's timeclock stack and registers **only**
+the authed `/api/self/timeclock/*` surface plus identity/branding and an admin
+user-import; none of the anonymous `/api/kiosk/*` checkout routes exist in it.
+
+```bash
+# Build (run the SPA build first — same //go:embed requirement as the kiosk):
+go build -o kiosk-timeclock ./cmd/timeclock
+cp timeclock.yaml.example timeclock.yaml      # edit kiosk.code, server.bind, mode
+KIOSK_CONFIG=timeclock.yaml ./kiosk-timeclock # creates pb_data_timeclock/ on first run
+```
+
+Pick an operating mode in `timeclock.yaml` (`nats`/`controller` blocks) — see
+[Configuration](configuration.md#virtual-timeclock-terminal-timeclockyaml).
+**Managed mode** is the right one for a public terminal fronting a fleet:
+workers (with their email) sync from the controller and clocked-in state
+merges fleet-wide.
+
+**Worker provisioning.**
+
+- *Managed mode:* workers come from the controller's catalog automatically;
+  nothing to do on the terminal.
+- *Standalone modes:* provision workers locally — via the embedded admin SPA
+  (`/admin/login` → Users), the superuser UI (`/_/`), or the CSV importer
+  (`POST /api/kiosk/users/import`, registered on this binary). Make sure each
+  worker has an **email** (required for both SSO matching and password reset).
+
+**Authentication setup.**
+
+- *OAuth2 SSO (recommended):* in the superuser UI (`/_/` → Collections →
+  `users` → Options → OAuth2), enable a provider and paste its client id /
+  secret (deployment secrets — intentionally not in any migration). Matching is
+  by email; a runtime guard rejects any IdP account with no pre-provisioned
+  worker (**match-only** — no self-enrollment).
+- *Password:* workers sign in by email. Because provisioning seeds a random
+  password nobody knows, they set one via **"Forgot password"**, which needs
+  SMTP configured (superuser UI → Settings → Mail). The same SMTP is what the
+  controller uses for notifications.
+
+**Hardening (public exposure).**
+
+- **TLS** — terminate in front of the binary (reverse proxy / Cloudflare
+  Tunnel) or use PocketBase's built-in autocert (`serve --https`). Never expose
+  `cmd/kiosk` this way; its API is anonymous by design.
+- **Firewall the superuser UI** (`/_/`) and ideally `/admin` + the PB
+  collections API to an admin network — they're credential-gated, but shrinking
+  the reachable surface on a public host is good defense-in-depth.
+- **Rate-limit** the auth endpoints (superuser UI → Settings → enable the rate
+  limiter) to blunt credential stuffing.
+- Bind beyond localhost (`server.bind: "0.0.0.0"`) only behind that TLS/proxy
+  layer.
+
 ## Resetting the bootstrap admin password
 
 The bootstrap admin email is `admin@kiosk.local`. If you've lost the

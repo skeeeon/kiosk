@@ -7,12 +7,13 @@ import ItemBrowseDialog from '../components/ItemBrowseDialog.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import ForemanReturnDialog from '../components/ForemanReturnDialog.vue'
 import IdentifyPanel from '../components/IdentifyPanel.vue'
+import TimeclockPanel from '../components/TimeclockPanel.vue'
 import { useCart } from '../composables/useCart'
 import { useCartEvents } from '../composables/useCartEvents'
 import { useKioskIdentity } from '../composables/useKioskIdentity'
 import { useSessionStore } from '../stores/session'
 import { useToast } from '../composables/useToast'
-import { ApiError } from '../lib/api'
+import { api, ApiError } from '../lib/api'
 import type {
   Cart,
   CartAction,
@@ -59,6 +60,35 @@ const browsePending = ref(false)
 const foremanReturnOpen = ref(false)
 const crossUserConfirmOpen = ref(false)
 const cancelConfirmOpen = ref(false)
+
+// Timeclock splash mode: while open, badge scans route into the panel
+// (clock in/out) instead of starting a cart. Gated on the identity flag.
+// timeclockOnly goes further: the panel IS the splash (dedicated punch
+// station — no carts, no checkout); the epoch key remounts it on close so
+// every reset starts from a fresh waiting state.
+const timeclockButtonVisible = computed(() => !!identity.value?.timeclock_enabled)
+const timeclockOnly = computed(() => !!identity.value?.timeclock_only)
+const timeclockOpen = ref(false)
+const timeclockUserCode = ref<string | null>(null)
+const timeclockEpoch = ref(0)
+function closeTimeclock() {
+  timeclockOpen.value = false
+  timeclockUserCode.value = null
+  timeclockEpoch.value++
+}
+// Routes a badge scan into the panel. The null-then-set dance forces the
+// panel's userCode watcher to fire even when the same worker rescans —
+// a rescan should refresh their status, not be silently ignored.
+async function routeBadgeToTimeclock(code: string) {
+  if (timeclockUserCode.value === code) {
+    timeclockUserCode.value = null
+    await nextTick()
+  }
+  timeclockUserCode.value = code
+}
+// Golden path: commit returned 409 not_clocked_in → offer a one-tap
+// clock-in + retry instead of bouncing the worker to the splash button.
+const clockInPromptOpen = ref(false)
 
 // Receipt countdown: a normalized 0..1 ref that drives the progress bar at
 // the top of the success view. Each tick recomputes from the dismiss
@@ -370,6 +400,13 @@ async function onScan(raw: string) {
 
   if (result.type === 'user') {
     const u = result.record as User
+    // Timeclock mode owns badge scans while the panel is open (splash only —
+    // the panel isn't rendered once a cart exists). On a timeclock-only
+    // kiosk every badge scan is a punch flow — there is no cart to start.
+    if (timeclockOnly.value || (!cart.value && timeclockOpen.value)) {
+      await routeBadgeToTimeclock(u.code)
+      return
+    }
     if (cart.value && cart.value.user_id !== u.id) {
       toast.warn(`${cart.value.user_name} is still active. Cancel or commit first.`, TOP)
       return
@@ -390,6 +427,14 @@ async function onScan(raw: string) {
   }
 
   if (result.type === 'item' || result.type === 'item_instance') {
+    if (timeclockOnly.value) {
+      toast.warn('This kiosk is a time clock — item checkout is not available here.', TOP)
+      return
+    }
+    if (!cart.value && timeclockOpen.value) {
+      toast.warn('Time clock is open — close it to scan items.', TOP)
+      return
+    }
     if (!cart.value) {
       // Splash identify: render the scanned item's info instead of nagging
       // for a badge. The promise on the splash is "scan an item code to
@@ -509,9 +554,34 @@ async function doCommit() {
     outstandingExpanded.value = false
     startReceiptCountdown()
   } catch (e) {
-    handleApiError(e)
+    // Timeclock interlock: an expected, worker-fixable conflict — offer the
+    // one-tap clock-in instead of a red error.
+    if (
+      e instanceof ApiError &&
+      e.status === 409 &&
+      (e.data as { error?: string } | null)?.error === 'not_clocked_in'
+    ) {
+      clockInPromptOpen.value = true
+    } else {
+      handleApiError(e)
+    }
   } finally {
     committing.value = false
+  }
+}
+
+async function onConfirmClockIn() {
+  clockInPromptOpen.value = false
+  if (!cart.value) return
+  try {
+    await api.post('/api/kiosk/timeclock/punch', {
+      user_code: cart.value.user_code,
+      direction: 'in',
+    })
+    toast.success('Clocked in', TOP)
+    await doCommit()
+  } catch (e) {
+    handleApiError(e, 'Clock in')
   }
 }
 
@@ -652,11 +722,39 @@ const crossUserSummary = computed(() =>
   </main>
 
   <main v-else-if="!cart" class="flex-1 flex flex-col items-center justify-center px-8 py-16 text-center gap-10">
+    <!-- Dedicated punch station: the panel is the whole splash. Keyed on
+         the epoch so closeTimeclock remounts it back to a fresh waiting
+         state instead of unmounting it. -->
+    <template v-if="timeclockOnly">
+      <div v-if="splashLogoUrl || splashTagline" class="flex flex-col items-center gap-4">
+        <img
+          v-if="splashLogoUrl"
+          :src="splashLogoUrl"
+          alt="logo"
+          class="h-24 md:h-32 w-auto object-contain"
+          @error="splashLogoBroken = true"
+        />
+        <p v-if="splashTagline" class="text-xl text-slate-400 max-w-2xl">
+          {{ splashTagline }}
+        </p>
+      </div>
+      <TimeclockPanel
+        :key="timeclockEpoch"
+        standalone
+        :user-code="timeclockUserCode"
+        @close="closeTimeclock"
+      />
+    </template>
     <IdentifyPanel
-      v-if="identify"
+      v-else-if="identify"
       :item="identify.item"
       :instance="identify.instance"
       @dismiss="dismissIdentify"
+    />
+    <TimeclockPanel
+      v-else-if="timeclockOpen"
+      :user-code="timeclockUserCode"
+      @close="closeTimeclock"
     />
     <template v-else>
       <div v-if="splashLogoUrl || splashTagline" class="flex flex-col items-center gap-4">
@@ -675,6 +773,21 @@ const crossUserSummary = computed(() =>
         <p class="text-5xl font-bold tracking-tight mb-4">Scan your badge to begin</p>
         <p class="text-xl text-slate-400">Or scan an item code to identify it.</p>
       </div>
+      <!-- Front and center on purpose: checkout starts with a badge scan
+           (no touch needed), so this is the only tappable thing on the
+           splash — it competes with nothing, and a corner placement would
+           just make the kiosk's one button easy to miss. -->
+      <button
+        v-if="timeclockButtonVisible"
+        type="button"
+        class="flex items-center gap-3 px-10 py-5 rounded-2xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-100 text-2xl font-medium transition-transform active:scale-95"
+        @click="timeclockOpen = true"
+      >
+        <svg class="w-8 h-8 text-slate-400" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+          <path d="M10 2a8 8 0 1 0 0 16 8 8 0 0 0 0-16Zm0 1.5a6.5 6.5 0 1 1 0 13 6.5 6.5 0 0 1 0-13Zm-.75 2.75a.75.75 0 0 1 1.5 0v3.31l2.49 1.49a.75.75 0 1 1-.77 1.29l-3.22-1.93V6.25Z" />
+        </svg>
+        Time clock
+      </button>
     </template>
   </main>
 
@@ -847,6 +960,15 @@ const crossUserSummary = computed(() =>
     confirm-label="Confirm return"
     @update:open="crossUserConfirmOpen = $event"
     @confirm="onConfirmCrossUser"
+  />
+
+  <ConfirmDialog
+    :open="clockInPromptOpen"
+    title="You're not clocked in"
+    message="Checking out items requires clocking in first. Clock in now and finish this checkout?"
+    confirm-label="Clock in & finish"
+    @update:open="clockInPromptOpen = $event"
+    @confirm="onConfirmClockIn"
   />
 
   <ConfirmDialog

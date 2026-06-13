@@ -31,6 +31,14 @@ branding:
   # branding/theme.css.example for a starting point.
   custom_css_path: ""                 # e.g. "./branding/theme.css"
 
+# Optional. Surfaces the fleet timeclock UI (Reports → Timeclock tab,
+# per-kiosk Record punch) on the controller's admin SPA. The aggregator
+# always projects incoming timeclock.punch events regardless of this flag —
+# it only gates the UI affordances. The interlock flags are kiosk-side
+# settings and have no effect here.
+timeclock:
+  enabled: false
+
 # NATS is REQUIRED for the controller — without a broker connection the
 # controller has nothing to aggregate.
 nats:

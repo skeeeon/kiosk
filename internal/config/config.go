@@ -25,6 +25,7 @@ type Config struct {
 	NATS       NATSConfig       `yaml:"nats"`
 	Controller ControllerConfig `yaml:"controller"`
 	RFID       RFIDConfig       `yaml:"rfid"`
+	Timeclock  TimeclockConfig  `yaml:"timeclock"`
 }
 
 type KioskConfig struct {
@@ -193,6 +194,48 @@ type RFIDReaderConfig struct {
 type RFIDAntennaConfig struct {
 	ID         int     `yaml:"id"`
 	TxPowerDBm float64 `yaml:"tx_power_dbm"`
+}
+
+// TimeclockConfig opts a kiosk into the timeclock feature: an append-only
+// clock-in/clock-out punch ledger (time_punches) with optional interlocks
+// against the tool ledger. Plain bools (not the ReturnsConfig pointer trick)
+// because every default is false — an omitted block leaves existing
+// deployments exactly as they were.
+//
+//   - Enabled gates the whole surface: HTTP endpoints, the splash-screen
+//     button, event publishing, and (in managed mode) the punch-state
+//     watcher. Off → the feature does not exist.
+//   - RequireClockInForCheckout makes commit reject any cart containing
+//     checkout/consume lines when the cart user is not clocked in. Returns
+//     are ALWAYS allowed — a worker holding a tool can hand it back
+//     regardless of punch state.
+//   - BlockClockOutWithOpenCheckouts makes the punch funnel reject a
+//     clock-out while the worker has open checkouts at THIS kiosk
+//     (local-scoped by design). Admin punches with force=true bypass it.
+//   - TimeclockOnly turns the device into a dedicated punch station: the
+//     SPA replaces the checkout splash with a persistent punch panel and
+//     badge scans go straight to it — no carts, no checkout. Backend
+//     surface is unchanged (the kiosk box is the trust boundary); this is
+//     a presentation mode. Requires Enabled. Note that
+//     BlockClockOutWithOpenCheckouts is a no-op here: open_checkouts is
+//     local-scoped and a punch-only station never writes it, so a worker
+//     with tools out at ANOTHER kiosk can still clock out at this one.
+//   - Virtual marks the dedicated cmd/timeclock binary: a publicly-hosted,
+//     per-user-authenticated self-service punch terminal (workers clock in/
+//     out from their phones). Unlike every other kiosk the trust boundary is
+//     the authenticated `users` session, not the box, so the binary registers
+//     ONLY the authed /api/self/timeclock/* surface — none of the anonymous
+//     checkout endpoints exist. The flag is presentation+wiring intent surfaced
+//     to the SPA as timeclock_virtual; it requires Enabled and managed mode
+//     (controller + NATS) because punches reach the fleet only via the
+//     controller's punch_state broadcast and workers are sourced from the
+//     catalog_users watcher.
+type TimeclockConfig struct {
+	Enabled                        bool `yaml:"enabled"`
+	RequireClockInForCheckout      bool `yaml:"require_clock_in_for_checkout"`
+	BlockClockOutWithOpenCheckouts bool `yaml:"block_clock_out_with_open_checkouts"`
+	TimeclockOnly                  bool `yaml:"timeclock_only"`
+	Virtual                        bool `yaml:"virtual"`
 }
 
 // Valid RFID mode strings. The set is fixed; new modes get a new
@@ -420,6 +463,21 @@ func applyEnvOverrides(c *Config) {
 	if v := os.Getenv("KIOSK_RFID_DOOR_ID"); v != "" {
 		c.RFID.DoorID = v
 	}
+	if v := os.Getenv("KIOSK_TIMECLOCK_ENABLED"); v != "" {
+		c.Timeclock.Enabled = parseBool(v)
+	}
+	if v := os.Getenv("KIOSK_TIMECLOCK_REQUIRE_CLOCK_IN_FOR_CHECKOUT"); v != "" {
+		c.Timeclock.RequireClockInForCheckout = parseBool(v)
+	}
+	if v := os.Getenv("KIOSK_TIMECLOCK_BLOCK_CLOCK_OUT_WITH_OPEN_CHECKOUTS"); v != "" {
+		c.Timeclock.BlockClockOutWithOpenCheckouts = parseBool(v)
+	}
+	if v := os.Getenv("KIOSK_TIMECLOCK_TIMECLOCK_ONLY"); v != "" {
+		c.Timeclock.TimeclockOnly = parseBool(v)
+	}
+	if v := os.Getenv("KIOSK_TIMECLOCK_VIRTUAL"); v != "" {
+		c.Timeclock.Virtual = parseBool(v)
+	}
 }
 
 func parseBool(s string) bool {
@@ -451,6 +509,19 @@ func validate(c *Config) error {
 	}
 	if err := validateRFID(&c.RFID); err != nil {
 		return err
+	}
+	if c.Timeclock.TimeclockOnly && !c.Timeclock.Enabled {
+		return fmt.Errorf("timeclock.timeclock_only requires timeclock.enabled=true")
+	}
+	// The virtual terminal supports the same three modes as a physical kiosk:
+	// standalone (local punch ledger only), standalone + NATS event publishing,
+	// and controller-managed. Only timeclock.enabled is a hard requirement; the
+	// NATS/controller wiring degrades gracefully exactly like cmd/kiosk. In the
+	// unmanaged modes workers are provisioned locally (admin SPA / superuser /
+	// CSV) and clocked-in state is local-only; managed mode adds catalog-synced
+	// workers and the fleet-wide punch_state replica.
+	if c.Timeclock.Virtual && !c.Timeclock.Enabled {
+		return fmt.Errorf("timeclock.virtual requires timeclock.enabled=true")
 	}
 	return nil
 }

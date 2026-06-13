@@ -51,6 +51,7 @@ var reportRunners = map[string]reportRunner{
 	"open_checkouts": runOpenCheckoutsDigest,
 	"daily_activity": runDailyActivityDigest,
 	"maintenance":    runMaintenanceDigest,
+	"timeclock":      runTimeclockDigest,
 }
 
 // RegisterRunner installs or overrides the runner for a report key. The
