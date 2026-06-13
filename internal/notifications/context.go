@@ -213,6 +213,40 @@ func (c TimeclockDigestContext) PayloadSummary() string {
 	return c.Kiosk.Code + " · " + strconv.Itoa(c.PunchCount) + " punches"
 }
 
+// TimeclockSelfDigestContext drives the digest.timeclock_self template — ONE
+// worker's own timesheet, delivered only to them. Built by the scheduler's
+// per-worker fan-out runner (one context per active worker with punches in the
+// window). Unlike TimeclockDigestContext (admin-facing, every worker's hours in
+// one email), this implements WorkerEmailProvider so the notifier resolves the
+// recipient to the worker themselves — the same delivery primitive receipts
+// use. Rows reuse TimeclockDigestRow but carry only this worker's days; Total
+// is the pre-formatted window total. Display approximations from punch pairing;
+// the raw-punch CSV is the payroll contract.
+type TimeclockSelfDigestContext struct {
+	Kiosk        KioskInfo
+	Worker       UserInfo
+	GeneratedAt  time.Time
+	WindowStart  time.Time
+	WindowEnd    time.Time
+	Cadence      string // "daily" | "weekly" | "monthly"
+	Rows         []TimeclockDigestRow
+	RowsCount    int
+	Total        string // pre-formatted window total, e.g. "37h30m"
+	ClockedIn    bool   // worker has an interval still running in the window
+	Uncorrelated int    // this worker's unpaired punches in the window
+}
+
+// WorkerEmail implements WorkerEmailProvider so the notifier delivers this
+// digest to the worker it summarizes — and to no one else.
+func (c TimeclockSelfDigestContext) WorkerEmail() string {
+	return c.Worker.Email
+}
+
+// PayloadSummary surfaces a compact "user_code · total" line in the send log.
+func (c TimeclockSelfDigestContext) PayloadSummary() string {
+	return c.Worker.Code + " · " + c.Total
+}
+
 // OpenChecksDigestRow is one row in an open-checkouts digest. Field names
 // match the existing ledger.OpenCheckoutDTO shape so the conversion in the
 // scheduler is a simple field copy.

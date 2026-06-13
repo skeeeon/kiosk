@@ -54,6 +54,24 @@ var reportRunners = map[string]reportRunner{
 	"timeclock":      runTimeclockDigest,
 }
 
+// fanOutRunner is a report whose single schedule row expands into MANY sends —
+// one per subject (today: one private email per worker, for the per-worker
+// timeclock summary). The ordinary reportRunner contract is 1 row → 1 context
+// → 1 send (runOnce does the send); a fan-out runner instead receives the
+// Sender and performs its own per-recipient sends, so runOnce only stamps the
+// row's status. This is the 1→N delivery shape the reportRunner path can't
+// express. A fan-out runner returns an error ONLY on a structural failure
+// (e.g. the data load) — per-recipient send failures are recorded in the send
+// log and must not fail the whole schedule.
+type fanOutRunner func(app core.App, row *core.Record, send Sender) error
+
+// fanOutRunners is the dispatch table for fan-out reports, checked before
+// reportRunners in runOnce. Disjoint from reportRunners by construction (a
+// report_key is one or the other).
+var fanOutRunners = map[string]fanOutRunner{
+	"timeclock_self": runTimeclockSelfDigest,
+}
+
 // RegisterRunner installs or overrides the runner for a report key. The
 // controller binary uses it to swap the standalone maintenance digest's
 // local item_instances query (runMaintenanceDigest) for a live fleet-wide
@@ -226,10 +244,23 @@ func runOnce(app core.App, send Sender, rowID string) {
 	if !row.GetBool("enabled") {
 		return
 	}
-	runner, ok := reportRunners[row.GetString("report_key")]
+	key := row.GetString("report_key")
+
+	// Fan-out reports (1 row → N per-recipient sends) own their sending; we
+	// only stamp the row's status from the aggregate (structural) result.
+	if fan, ok := fanOutRunners[key]; ok {
+		if err := fan(app, row, send); err != nil {
+			markStatus(app, rowID, "failed", err.Error())
+			return
+		}
+		markStatus(app, rowID, "sent", "")
+		return
+	}
+
+	runner, ok := reportRunners[key]
 	if !ok {
 		markStatus(app, rowID, "failed",
-			fmt.Sprintf("unknown report key %q", row.GetString("report_key")))
+			fmt.Sprintf("unknown report key %q", key))
 		return
 	}
 

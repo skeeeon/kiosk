@@ -21,6 +21,11 @@ const (
 	EventTypeDailyActivity      = "digest.daily_activity"
 	EventTypeMaintenanceDigest  = "digest.maintenance"
 	EventTypeTimeclockDigest    = "digest.timeclock"
+	// EventTypeTimeclockSelfDigest is the per-worker timesheet digest. Unlike
+	// EventTypeTimeclockDigest (one admin email listing every worker), this is
+	// fanned out one private email per worker by the scheduler — see
+	// internal/scheduler/timeclock_self.go.
+	EventTypeTimeclockSelfDigest = "digest.timeclock_self"
 )
 
 // DefaultReceiptSubject and DefaultReceiptBody are the v1 receipt template.
@@ -144,6 +149,28 @@ Totals are display approximations from punch pairing; the timeclock CSV export i
 This is an automated digest. Adjust its schedule or recipients in the admin SPA.
 `
 
+// DefaultTimeclockSelfDigestSubject and DefaultTimeclockSelfDigestBody render
+// against TimeclockSelfDigestContext (see internal/notifications/context.go) —
+// one worker's own timesheet, addressed to them. The window total and per-day
+// rows are display approximations from punch pairing; the timeclock CSV export
+// remains the payroll record. The outer {{.Total}} is the window total; inside
+// {{range .Rows}} the scope shifts so {{.Total}} is that day's total.
+const DefaultTimeclockSelfDigestSubject = `Your timeclock summary — {{.Total}} ({{.Cadence}})`
+
+const DefaultTimeclockSelfDigestBody = `Hi {{.Worker.Name}},
+
+Here is your timeclock summary{{if .Kiosk.Code}} for {{.Kiosk.Code}}{{end}} from {{formatTime .WindowStart}} to {{formatTime .WindowEnd}}:
+
+{{if eq .RowsCount 0}}No punches recorded in this window.
+{{else}}{{range .Rows}}- {{.Date}}: {{.Total}}{{if .Open}} (still clocked in){{end}}
+{{end}}
+Total: {{.Total}}{{if .ClockedIn}} — you are currently clocked in.{{end}}
+{{if gt .Uncorrelated 0}}
+{{.Uncorrelated}} unpaired punch(es) need review — please check with your administrator.
+{{end}}{{end}}
+This summary is for your reference; your employer's payroll record is authoritative.
+`
+
 // Defaults returns the compiled-in default subject and body for the given
 // event type. ok is false when the event type is unknown — callers (the
 // migration seeder and the GET-defaults handler) treat that as "nothing
@@ -164,6 +191,8 @@ func Defaults(eventType string) (subject, body string, ok bool) {
 		return DefaultMaintenanceDigestSubject, DefaultMaintenanceDigestBody, true
 	case EventTypeTimeclockDigest:
 		return DefaultTimeclockDigestSubject, DefaultTimeclockDigestBody, true
+	case EventTypeTimeclockSelfDigest:
+		return DefaultTimeclockSelfDigestSubject, DefaultTimeclockSelfDigestBody, true
 	}
 	return "", "", false
 }
@@ -185,6 +214,8 @@ func DefaultName(eventType string) string {
 		return "Maintenance digest"
 	case EventTypeTimeclockDigest:
 		return "Timeclock digest"
+	case EventTypeTimeclockSelfDigest:
+		return "Timeclock summary (per worker)"
 	}
 	return eventType
 }
@@ -201,6 +232,7 @@ func SeededEventTypes() []string {
 		EventTypeDailyActivity,
 		EventTypeMaintenanceDigest,
 		EventTypeTimeclockDigest,
+		EventTypeTimeclockSelfDigest,
 	}
 }
 
@@ -249,6 +281,12 @@ func DefaultRecipients(eventType string) Recipients {
 		return Recipients{AllAdmins: true, Extras: []string{}}
 	case EventTypeTimeclockDigest:
 		return Recipients{AllAdmins: true, Extras: []string{}}
+	case EventTypeTimeclockSelfDigest:
+		// Per-worker fan-out: each email is delivered to the worker it
+		// summarizes via WorkerEmailProvider. The schedule row's recipients
+		// are ignored on this path; this default documents the audience and
+		// drives the template editor's worker_email checkbox.
+		return Recipients{WorkerEmail: true, Extras: []string{}}
 	}
 	// Conservative default for unrecognized event types: address nobody.
 	// Operators must explicitly opt in to a recipient class.
@@ -262,7 +300,7 @@ func DefaultRecipients(eventType string) Recipients {
 // send has fired.
 func SupportsWorker(eventType string) bool {
 	switch eventType {
-	case EventTypeReceiptTransaction:
+	case EventTypeReceiptTransaction, EventTypeTimeclockSelfDigest:
 		return true
 	}
 	return false

@@ -359,7 +359,7 @@ export interface RecipientsSpec {
 
 export interface ScheduledReportRecord {
   id: string
-  report_key: 'open_checkouts' | 'daily_activity' | 'maintenance' | 'timeclock'
+  report_key: 'open_checkouts' | 'daily_activity' | 'maintenance' | 'timeclock' | 'timeclock_self'
   cadence: 'daily' | 'weekly' | 'monthly'
   hour: number
   weekday: number

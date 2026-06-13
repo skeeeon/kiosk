@@ -408,13 +408,35 @@ Recent kiosk-side migrations for the instance-status / maintenance work:
 template).
 
 Timeclock migrations: kiosk-side `1799000000_time_punches.go` (the
-append-only punch ledger — API-readonly, funnel-only writes) and
+append-only punch ledger — API-readonly, funnel-only writes),
 `1799100000_timeclock_digest.go` (extends `report_key` with `timeclock` +
-seeds the `digest.timeclock` template); controller-side
+seeds the `digest.timeclock` template), and
+`1799200000_timeclock_self_digest.go` (extends `report_key` with
+`timeclock_self` + seeds the per-worker `digest.timeclock_self` template —
+see the scheduler fan-out note below); controller-side
 `2001100000_time_punches_source.go` (adds `source_punch_id`
 unique-when-non-empty — the projection's idempotency anchor — plus
 `source_actor` for kiosk-admin actors whose FK can't resolve in the
 controller's DB, and a `(kiosk_code, occurred_at)` index).
+
+**Scheduled-report delivery shapes.** `internal/scheduler` dispatches each
+`scheduled_reports` row through one of two registries: `reportRunners` (the
+default — 1 row → 1 rendered context → 1 send, recipients taken from the row)
+and `fanOutRunners` (1 row → N sends — the runner is handed the `Sender` and
+performs its own per-recipient sends; `runOnce` only stamps the row's status,
+and only a *structural* error fails the row, never a single recipient's
+bounce). `timeclock_self` (the per-worker timesheet, event type
+`digest.timeclock_self`) is the first fan-out: it groups paired day-totals per
+worker and emails each **active** worker their own scoped summary via
+`Recipients{WorkerEmail:true}` + the context's `WorkerEmail()` (the row's
+recipients column is intentionally ignored on this path; the SPA hides the
+recipients editor for it). Like `runTimeclockDigest` it is pure-DB and runs
+unchanged on both binaries — standalone reads local punches, the controller its
+fleet projection — with **no** NATS / `RegisterRunner` override (unlike the
+maintenance / open-checkouts fan-outs, which need live per-kiosk snapshots), so
+a fleet-wide controller row gives each worker their fleet-complete timesheet.
+Exactly one binary runs the scheduler (the kiosk skips it entirely in managed
+mode), so there is no double-send.
 
 `touchKiosk` in `internal/controller/consumer.go` advances
 `last_transaction_at` only from the event's own `completed_at`,

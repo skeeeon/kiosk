@@ -84,11 +84,16 @@ function reportLabel(key: string): string {
       return 'Items in maintenance'
     case 'timeclock':
       return 'Timeclock'
+    case 'timeclock_self':
+      return 'Timeclock (per worker)'
   }
   return key
 }
 
 function recipientsLabel(r: ScheduledReportRecord): string {
+  // Per-worker timesheets are delivered individually to each worker; the
+  // recipients spec on the row is ignored by the fan-out runner.
+  if (r.report_key === 'timeclock_self') return 'each worker'
   const parts: string[] = []
   if (r.recipients.all_admins) parts.push('all admins')
   if (r.recipients.extras && r.recipients.extras.length > 0) {

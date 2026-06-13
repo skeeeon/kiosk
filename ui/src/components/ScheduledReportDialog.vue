@@ -87,6 +87,10 @@ watch(
 )
 
 const isEdit = computed(() => !!props.report?.id)
+// Per-worker timesheet: recipients are implicit (each worker gets their own
+// email), so the recipients editor is hidden and the required-recipient check
+// is skipped — the fan-out runner ignores the row's recipients column.
+const perWorker = computed(() => form.report_key === 'timeclock_self')
 const dirty = computed(
   () => JSON.stringify({ form, extras: extrasText.value }) !== initialSnapshot.value,
 )
@@ -121,6 +125,14 @@ function isValidEmail(addr: string): boolean {
 }
 
 function buildPayload(): Partial<ScheduledReportRecord> | null {
+  if (perWorker.value) {
+    // Recipients are implicit (each worker, themselves). Store the worker_email
+    // shape so the list view labels it clearly; the runner ignores it anyway.
+    return {
+      ...form,
+      recipients: { worker_email: true, all_admins: false, extras: [] },
+    }
+  }
   const extras = parseExtras(extrasText.value)
   for (const e of extras) {
     if (!isValidEmail(e)) {
@@ -176,6 +188,7 @@ function onSubmitAndAdd() {
             <option value="daily_activity">Daily activity</option>
             <option value="maintenance">Items in maintenance</option>
             <option value="timeclock">Timeclock</option>
+            <option value="timeclock_self">Timeclock (per worker)</option>
           </select>
         </label>
         <label class="flex items-center gap-2 text-slate-300 mt-6">
@@ -241,7 +254,13 @@ function onSubmitAndAdd() {
         <span class="text-xs text-slate-500">Empty rolls every kiosk into one report; a specific kiosk scopes the data to just that one.</span>
       </label>
 
-      <fieldset class="rounded-lg border border-slate-700 p-3">
+      <p
+        v-if="perWorker"
+        class="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2.5 text-sm text-slate-300"
+      >
+        Each active worker receives their own timesheet, sent only to them. No recipient list to set.
+      </p>
+      <fieldset v-else class="rounded-lg border border-slate-700 p-3">
         <legend class="px-1 text-sm text-slate-400">Recipients</legend>
         <label class="flex items-start gap-2 text-sm text-slate-300 mb-2">
           <input v-model="form.recipients!.all_admins" type="checkbox" class="mt-1" />
