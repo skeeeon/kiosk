@@ -15,7 +15,13 @@ import { computed, onMounted, onScopeDispose, ref, watch } from 'vue'
 import { api, ApiError } from '../lib/api'
 import { useWorkerAuthStore, type AuthMethods } from '../stores/workerAuth'
 import { useKioskIdentity } from '../composables/useKioskIdentity'
-import type { OpenCheckoutDetail, PunchConflict, PunchResult, PunchStatus } from '../types'
+import type {
+  OpenCheckoutDetail,
+  PunchConflict,
+  PunchResult,
+  PunchStatus,
+  TimeclockHistoryResponse,
+} from '../types'
 
 const { identity } = useKioskIdentity()
 const auth = useWorkerAuthStore()
@@ -111,6 +117,32 @@ const punchError = ref('')
 const blockedRows = ref<OpenCheckoutDetail[]>([])
 const lastPunch = ref<PunchResult | null>(null)
 
+// ---------- timesheet summary ----------
+// A glanceable "Today / This week" total plus today's punch pairs, fetched
+// from the worker's own history. day_totals carry CLOSED-interval seconds only
+// (the running session contributes 0), so we add the live session on top and
+// let it tick off the shared `now` clock — no extra timer. Scope is THIS
+// terminal's punch ledger: in a managed deployment, punches a worker made at a
+// physical kiosk live in that kiosk's ledger and won't be reflected here.
+const summary = ref<TimeclockHistoryResponse | null>(null)
+
+async function loadSummary() {
+  // Widen the fetch a day on each side: the server filters occurred_at by UTC
+  // instants but buckets day_totals by LOCAL day, so a same-local-day punch
+  // near midnight can land on an adjacent UTC day. We pull the wider window and
+  // select local-day buckets back out (todayKey / [weekStartKey..todayKey]).
+  const from = ymd(addDays(mondayOf(new Date()), -1))
+  const to = ymd(addDays(new Date(), 1))
+  try {
+    summary.value = await api.get<TimeclockHistoryResponse>(
+      `/api/self/timeclock/history?from=${from}&to=${to}`,
+    )
+  } catch {
+    // The summary is supplementary; never let a history blip break punching.
+    summary.value = null
+  }
+}
+
 async function loadStatus() {
   loadingStatus.value = true
   punchError.value = ''
@@ -118,6 +150,7 @@ async function loadStatus() {
   lastPunch.value = null
   try {
     status.value = await api.get<PunchStatus>('/api/self/timeclock/status')
+    void loadSummary()
   } catch (e) {
     if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
       // Token expired / worker deactivated — drop back to the login screen.
@@ -140,6 +173,7 @@ async function punch(direction: 'in' | 'out') {
     const res = await api.post<PunchResult>('/api/self/timeclock/punch', { direction })
     lastPunch.value = res
     status.value = { ...status.value, clocked_in: res.clocked_in, since: res.occurred_at }
+    void loadSummary()
   } catch (e) {
     if (e instanceof ApiError && e.status === 409) {
       const data = e.data as PunchConflict | null
@@ -178,6 +212,7 @@ function logout() {
   auth.logout()
   status.value = null
   lastPunch.value = null
+  summary.value = null
   void refreshMethods()
 }
 
@@ -187,6 +222,79 @@ function formatClock(iso?: string): string {
   if (!Number.isFinite(t.getTime())) return ''
   return t.toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })
 }
+
+// Time-of-day only (today's punch list — the day is implied).
+function formatTime(iso?: string): string {
+  if (!iso) return ''
+  const t = new Date(iso)
+  if (!Number.isFinite(t.getTime())) return ''
+  return t.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+}
+
+// Local YYYY-MM-DD — matches the server's day bucketing, which pairs in
+// time.Local (see timeclock.Pair / dayTotals).
+function ymd(d: Date): string {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+// Monday 00:00 of the week containing d (the week boundary is Monday).
+function mondayOf(d: Date): Date {
+  const x = new Date(d)
+  x.setHours(0, 0, 0, 0)
+  x.setDate(x.getDate() - ((x.getDay() + 6) % 7))
+  return x
+}
+
+function addDays(d: Date, n: number): Date {
+  const x = new Date(d)
+  x.setDate(x.getDate() + n)
+  return x
+}
+
+// Whole-minute readout (e.g. "4h 28m"). Truncation for a glanceable display —
+// NOT payroll rounding; the raw-punch CSV stays the contract.
+function formatDuration(totalSeconds: number): string {
+  const s = Math.max(0, Math.floor(totalSeconds))
+  const h = Math.floor(s / 3600)
+  const m = Math.floor((s % 3600) / 60)
+  return h > 0 ? `${h}h ${m}m` : `${m}m`
+}
+
+const todayKey = computed(() => ymd(now.value))
+const weekStartKey = computed(() => ymd(mondayOf(now.value)))
+
+// Seconds in the currently-running session, ticking off `now`; zero when
+// clocked out. day_totals never count the open interval, so adding this to the
+// closed totals can't double-count.
+const liveSeconds = computed(() => {
+  if (!status.value?.clocked_in || !status.value.since) return 0
+  const since = new Date(status.value.since).getTime()
+  if (!Number.isFinite(since)) return 0
+  return Math.max(0, Math.floor((now.value.getTime() - since) / 1000))
+})
+
+const todaySeconds = computed(() => {
+  const closed = summary.value?.day_totals.find((d) => d.date === todayKey.value)?.seconds ?? 0
+  return closed + liveSeconds.value
+})
+
+const weekSeconds = computed(() => {
+  const closed = (summary.value?.day_totals ?? [])
+    .filter((d) => d.date >= weekStartKey.value && d.date <= todayKey.value)
+    .reduce((sum, d) => sum + d.seconds, 0)
+  return closed + liveSeconds.value
+})
+
+// Today's intervals, newest first so a running session sits on top.
+const todayIntervals = computed(() =>
+  (summary.value?.intervals ?? [])
+    .filter((iv) => ymd(new Date(iv.in)) === todayKey.value)
+    .slice()
+    .reverse(),
+)
 </script>
 
 <template>
@@ -273,8 +381,8 @@ function formatClock(iso?: string): string {
       </div>
 
       <!-- ============ PUNCH ============ -->
+      <template v-else>
       <div
-        v-else
         class="rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden text-center"
       >
         <div class="px-6 py-10 min-h-72 flex flex-col items-center justify-center gap-6">
@@ -357,6 +465,55 @@ function formatClock(iso?: string): string {
           </button>
         </div>
       </div>
+
+      <!-- ============ TIMESHEET SUMMARY ============ -->
+      <div
+        v-if="status && summary"
+        class="mt-4 rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden"
+      >
+        <div class="grid grid-cols-2 divide-x divide-slate-800 border-b border-slate-800">
+          <div class="px-5 py-4 text-center">
+            <p class="text-xs uppercase tracking-wide text-slate-500">Today</p>
+            <p class="mt-1 text-2xl font-semibold text-slate-100 tabular-nums">
+              {{ formatDuration(todaySeconds) }}
+              <span
+                v-if="status.clocked_in"
+                class="inline-block size-2 rounded-full bg-emerald-400 animate-pulse align-middle ml-0.5"
+                aria-label="clock running"
+              ></span>
+            </p>
+          </div>
+          <div class="px-5 py-4 text-center">
+            <p class="text-xs uppercase tracking-wide text-slate-500">This week</p>
+            <p class="mt-1 text-2xl font-semibold text-slate-100 tabular-nums">
+              {{ formatDuration(weekSeconds) }}
+            </p>
+          </div>
+        </div>
+
+        <div class="px-5 py-4">
+          <p class="text-xs uppercase tracking-wide text-slate-500 mb-2">Today's punches</p>
+          <ul v-if="todayIntervals.length" class="flex flex-col gap-1.5">
+            <li
+              v-for="(iv, i) in todayIntervals"
+              :key="i"
+              class="flex items-center justify-between text-sm"
+            >
+              <span class="text-slate-300 tabular-nums">
+                {{ formatTime(iv.in) }}
+                <span class="text-slate-600 px-0.5">→</span>
+                <span v-if="iv.open" class="text-emerald-400">in progress</span>
+                <template v-else>{{ formatTime(iv.out) }}</template>
+              </span>
+              <span class="text-slate-400 tabular-nums">
+                {{ formatDuration(iv.open ? liveSeconds : iv.seconds) }}
+              </span>
+            </li>
+          </ul>
+          <p v-else class="text-sm text-slate-500">No punches yet today.</p>
+        </div>
+      </div>
+      </template>
     </div>
   </div>
 </template>

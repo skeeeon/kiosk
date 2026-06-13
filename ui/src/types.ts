@@ -57,6 +57,11 @@ export interface PunchStatus {
   origin: 'local' | 'fleet' | ''
   open_checkouts: OpenCheckoutDetail[] | null
   block_clock_out: boolean
+  // CLOSED interval seconds for the local calendar day, scoped to this kiosk's
+  // ledger. The panel adds the live (open) session on top for the displayed
+  // "X today" total. Only the kiosk /api/kiosk/timeclock/status endpoint
+  // populates it; absent on the self-service status payload.
+  today_seconds?: number
 }
 
 // PunchResult is the reply from the punch endpoints.

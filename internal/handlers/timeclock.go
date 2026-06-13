@@ -9,6 +9,7 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 
 	"github.com/skeeeon/kiosk/internal/events"
+	"github.com/skeeeon/kiosk/internal/exports"
 	"github.com/skeeeon/kiosk/internal/kioskctx"
 	"github.com/skeeeon/kiosk/internal/scan"
 	"github.com/skeeeon/kiosk/internal/timeclock"
@@ -70,7 +71,39 @@ func (h *Handlers) TimeclockStatus(re *core.RequestEvent) error {
 		"origin":          state.Origin,
 		"open_checkouts":  h.openCheckoutsForUser(user.Id),
 		"block_clock_out": h.Cfg.Timeclock.BlockClockOutWithOpenCheckouts,
+		"today_seconds":   h.todayWorkedSeconds(userCode),
 	})
+}
+
+// todayWorkedSeconds is the worker's CLOSED interval time for the current
+// local calendar day — the kiosk panel's compact "X today" readout. The panel
+// adds the live (still-open) session on top, so an open interval contributing
+// 0 here is correct, not lossy. Scope is THIS kiosk's punch ledger: a managed
+// kiosk doesn't hold other kiosks' punch rows, so the figure reads as "time at
+// this kiosk today." Best-effort — a load error yields 0 rather than failing
+// the whole status response.
+//
+// The query window is widened a day on each side because LoadTimeclockPunches
+// filters occurred_at by UTC instants while Pair buckets by local day; the
+// widening guarantees no local-day punch is clipped at the UTC boundary, and
+// we read back only today's local bucket.
+func (h *Handlers) todayWorkedSeconds(userCode string) int64 {
+	nowLocal := time.Now().In(time.Local)
+	today := nowLocal.Format("2006-01-02")
+	_, pairRows, err := exports.LoadTimeclockPunches(h.App, exports.TimeclockQueryOptions{
+		From:     nowLocal.AddDate(0, 0, -1).Format("2006-01-02"),
+		To:       nowLocal.AddDate(0, 0, 1).Format("2006-01-02"),
+		UserCode: userCode,
+	})
+	if err != nil {
+		return 0
+	}
+	for _, dt := range timeclock.Pair(pairRows, time.Local).DayTotals {
+		if dt.Date == today {
+			return dt.Seconds
+		}
+	}
+	return 0
 }
 
 // TimeclockPunch records a live punch: the worker's own (self) or a

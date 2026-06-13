@@ -58,6 +58,27 @@ const clockDate = computed(() =>
   now.value.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' }),
 )
 
+// "X today" readout. The status payload carries today's CLOSED seconds (this
+// kiosk's ledger); the running session is added live off the wall clock so the
+// total ticks while clocked in — no extra timer, no double-count (an open
+// interval contributes nothing to the server's closed total).
+const liveSeconds = computed(() => {
+  if (!status.value?.clocked_in || !status.value.since) return 0
+  const since = new Date(status.value.since).getTime()
+  if (!Number.isFinite(since)) return 0
+  return Math.max(0, Math.floor((now.value.getTime() - since) / 1000))
+})
+const todaySeconds = computed(() => (status.value?.today_seconds ?? 0) + liveSeconds.value)
+
+// Whole-minute readout (e.g. "4h 28m"). Display truncation, NOT payroll
+// rounding — the raw-punch CSV stays the contract.
+function formatDuration(totalSeconds: number): string {
+  const s = Math.max(0, Math.floor(totalSeconds))
+  const h = Math.floor(s / 3600)
+  const m = Math.floor((s % 3600) / 60)
+  return h > 0 ? `${h}h ${m}m` : `${m}m`
+}
+
 // Auto-close keeps a walked-away panel from confusing the next worker:
 // 60s idle, shortened to 5s after a successful punch. Any state change
 // re-arms the idle timer. The success close draws a draining countdown
@@ -150,6 +171,21 @@ async function loadStatus(code: string) {
   }
 }
 
+// After a punch the closed-interval total changes (a clock-out just closed a
+// session), so re-read today_seconds — without going through loadStatus, which
+// would clear the confirmation screen and re-arm the idle close. Best-effort:
+// the displayed total just keeps its prior value if this blips.
+async function refreshTodaySeconds(code: string) {
+  try {
+    const s = await api.get<PunchStatus>(
+      `/api/kiosk/timeclock/status?user_code=${encodeURIComponent(code)}`,
+    )
+    if (status.value) status.value = { ...status.value, today_seconds: s.today_seconds }
+  } catch {
+    // Supplementary readout; ignore.
+  }
+}
+
 async function punch(direction: 'in' | 'out') {
   if (!status.value || punching.value) return
   punching.value = true
@@ -162,6 +198,7 @@ async function punch(direction: 'in' | 'out') {
     })
     lastPunch.value = res
     status.value = { ...status.value, clocked_in: res.clocked_in, since: res.occurred_at }
+    void refreshTodaySeconds(status.value.user_code)
     armClose(SUCCESS_CLOSE_MS, true)
   } catch (e) {
     armClose(IDLE_CLOSE_MS)
@@ -251,22 +288,30 @@ function formatClock(iso?: string): string {
             {{ lastPunch.direction === 'in' ? 'Clocked in' : 'Clocked out' }}
           </p>
           <p class="text-lg text-slate-400">{{ formatClock(lastPunch.occurred_at) }}</p>
+          <p v-if="todaySeconds > 0" class="text-base text-slate-500 tabular-nums">
+            {{ formatDuration(todaySeconds) }} today
+          </p>
         </div>
 
         <template v-else>
-          <span
-            class="inline-flex items-center gap-2.5 rounded-full px-5 py-2 text-lg"
-            :class="status.clocked_in
-              ? 'bg-emerald-900/40 border border-emerald-700/50 text-emerald-200'
-              : 'bg-slate-800/80 border border-slate-700/60 text-slate-400'"
-          >
-            <span class="size-2.5 rounded-full shrink-0" :class="status.clocked_in ? 'bg-emerald-400' : 'bg-slate-500'"></span>
-            <template v-if="status.clocked_in">
-              Clocked in since {{ formatClock(status.since) }}
-              <span v-if="status.origin === 'fleet'" class="text-emerald-200/60 text-base">(at another kiosk)</span>
-            </template>
-            <template v-else>Not clocked in</template>
-          </span>
+          <div class="flex flex-col items-center gap-2">
+            <span
+              class="inline-flex items-center gap-2.5 rounded-full px-5 py-2 text-lg"
+              :class="status.clocked_in
+                ? 'bg-emerald-900/40 border border-emerald-700/50 text-emerald-200'
+                : 'bg-slate-800/80 border border-slate-700/60 text-slate-400'"
+            >
+              <span class="size-2.5 rounded-full shrink-0" :class="status.clocked_in ? 'bg-emerald-400' : 'bg-slate-500'"></span>
+              <template v-if="status.clocked_in">
+                Clocked in since {{ formatClock(status.since) }}
+                <span v-if="status.origin === 'fleet'" class="text-emerald-200/60 text-base">(at another kiosk)</span>
+              </template>
+              <template v-else>Not clocked in</template>
+            </span>
+            <p v-if="todaySeconds > 0" class="text-base text-slate-400 tabular-nums">
+              {{ formatDuration(todaySeconds) }} today
+            </p>
+          </div>
 
           <p
             v-if="errorMsg"

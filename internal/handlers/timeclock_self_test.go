@@ -86,6 +86,27 @@ func wantAPIStatus(t *testing.T, err error, status int) {
 	}
 }
 
+// seedPunch writes a raw time_punches row at a known occurred_at, bypassing
+// the funnel (Go Save ignores the API-readonly rule) so a test can compose a
+// closed interval with a deterministic duration.
+func seedPunch(t *testing.T, app core.App, w *core.Record, direction string, at time.Time) {
+	t.Helper()
+	coll, err := app.FindCollectionByNameOrId(timeclock.Collection)
+	if err != nil {
+		t.Fatalf("find punches collection: %v", err)
+	}
+	p := core.NewRecord(coll)
+	p.Set("user", w.Id)
+	p.Set("user_code", w.GetString("code"))
+	p.Set("direction", direction)
+	p.Set("occurred_at", at)
+	p.Set("source", timeclock.SourceSelf)
+	p.Set("kiosk_code", "TC-TEST")
+	if err := app.Save(p); err != nil {
+		t.Fatalf("save punch: %v", err)
+	}
+}
+
 func latestPunch(t *testing.T, app core.App) *core.Record {
 	t.Helper()
 	rows, err := app.FindRecordsByFilter(timeclock.Collection, "", "-created", 1, 0, dbx.Params{})
@@ -195,6 +216,39 @@ func TestSelfTimeclockStatus_ReturnsOwnState(t *testing.T) {
 	}
 	if !strings.Contains(rec1.Body.String(), `"clocked_in":false`) {
 		t.Errorf("expected not clocked in, got: %s", rec1.Body.String())
+	}
+}
+
+// TestTimeclockStatus_TodaySeconds verifies the kiosk status endpoint reports
+// the worker's CLOSED interval time for the local day. The seeded interval is
+// anchored to local midnight, so the assertion holds regardless of when the
+// test runs or the host timezone — covering the UTC-window-vs-local-day
+// widening the handler relies on.
+func TestTimeclockStatus_TodaySeconds(t *testing.T) {
+	app := setupApp(t)
+	kioskctx.Set(kioskctx.Identity{KioskCode: "TC-TEST", LocationCode: "WEB"})
+	h := newSelfTCHandlers(app)
+
+	w := seedWorker(t, app, "W-CLOCK", true)
+
+	// A closed 2h interval (09:00→11:00 local) today, then clocked out.
+	now := time.Now().In(time.Local)
+	midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
+	seedPunch(t, app, w, timeclock.DirectionIn, midnight.Add(9*time.Hour))
+	seedPunch(t, app, w, timeclock.DirectionOut, midnight.Add(11*time.Hour))
+
+	e, rec := selfReq(app, http.MethodGet, "/api/kiosk/timeclock/status?user_code=W-CLOCK", "", nil)
+	if err := h.TimeclockStatus(e); err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status code: got %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"today_seconds":7200`) {
+		t.Errorf("expected today_seconds 7200 (2h closed), got: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"clocked_in":false`) {
+		t.Errorf("expected clocked out after the paired interval, got: %s", rec.Body.String())
 	}
 }
 
