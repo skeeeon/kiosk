@@ -26,6 +26,10 @@ const { identity } = useKioskIdentity()
 
 const isController = computed(() => identity.value?.role === 'controller')
 const managed = computed(() => identity.value?.managed ?? false)
+// The virtual timeclock terminal has no checkout flow, so checkout-world admin
+// surfaces (Items, the cart/RFID Metrics dashboard) are hidden — see the
+// navItems visibility gates below.
+const isTimeclockVirtual = computed(() => identity.value?.timeclock_virtual ?? false)
 const logoBroken = ref(false)
 const logoUrl = computed(() =>
   !logoBroken.value && identity.value?.branding?.logo_url
@@ -91,11 +95,11 @@ type NavItem = {
 const navItems = computed<NavItem[]>(() => [
   { name: 'admin-kiosks', label: 'Kiosks', section: 'catalog', visible: () => isController.value },
   { name: 'admin-transactions', label: 'Transactions', section: 'catalog', visible: () => isController.value },
-  { name: 'admin-items', label: 'Items', section: 'catalog' },
+  { name: 'admin-items', label: 'Items', section: 'catalog', visible: () => !isTimeclockVirtual.value },
   { name: 'admin-users', label: 'Workers', section: 'catalog' },
   { name: 'admin-groups', label: 'Groups', section: 'catalog' },
   { name: 'admin-reports', label: 'Reports', section: 'ops' },
-  { name: 'admin-metrics', label: 'Metrics', section: 'ops', visible: () => !isController.value },
+  { name: 'admin-metrics', label: 'Metrics', section: 'ops', visible: () => !isController.value && !isTimeclockVirtual.value },
   { name: 'admin-notifications', label: 'Notifications', section: 'ops' },
   { name: 'admin-catalog-sync', label: 'Catalog sync', section: 'ops', visible: () => isController.value },
   { name: 'admin-import', label: 'Import', section: 'ops', visible: () => isController.value || !managed.value },

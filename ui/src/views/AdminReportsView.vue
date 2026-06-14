@@ -22,6 +22,10 @@ import type {
 const { identity } = useKioskIdentity()
 const isController = computed(() => identity.value?.role === 'controller')
 const timeclockEnabled = computed(() => !!identity.value?.timeclock_enabled)
+// The virtual timeclock terminal has no checkout ledger, so only the Timeclock
+// tab is meaningful — the checkout-oriented tabs are hidden and it defaults to
+// Timeclock (see the identity watch below).
+const isTimeclockVirtual = computed(() => identity.value?.timeclock_virtual ?? false)
 
 type Tab = 'currently-out' | 'low-stock' | 'group-activity' | 'recent' | 'audit' | 'lifecycle' | 'notifications' | 'timeclock'
 const tab = ref<Tab>('currently-out')
@@ -787,6 +791,20 @@ function loadCurrentTab() {
 
 loadKiosks()
 
+// On the virtual timeclock terminal the checkout-oriented tabs are hidden, so
+// land on (and stay on) Timeclock. Registered BEFORE the tab watcher so its
+// immediate run flips the default before the first load fires — no transient
+// fetch of the now-hidden Currently-out tab in the common (identity-cached)
+// case. A cold deep-link where identity resolves a tick later is corrected by
+// the same watch firing again.
+watch(
+  identity,
+  (id) => {
+    if (id?.timeclock_virtual && tab.value === 'currently-out') tab.value = 'timeclock'
+  },
+  { immediate: true },
+)
+
 watch(tab, loadCurrentTab, { immediate: true })
 watch(kioskFilter, loadCurrentTab)
 
@@ -900,6 +918,7 @@ const lifecycleColumns = computed<ColumnDef[]>(() => {
 
     <nav class="flex gap-1 mb-4 border-b border-slate-800 tab-scroll">
       <button
+        v-if="!isTimeclockVirtual"
         type="button"
         class="px-4 py-2 border-b-2 transition-colors whitespace-nowrap shrink-0"
         :class="tabClasses('currently-out')"
@@ -908,6 +927,7 @@ const lifecycleColumns = computed<ColumnDef[]>(() => {
         Currently out
       </button>
       <button
+        v-if="!isTimeclockVirtual"
         type="button"
         class="px-4 py-2 border-b-2 transition-colors whitespace-nowrap shrink-0"
         :class="tabClasses('low-stock')"
@@ -916,6 +936,7 @@ const lifecycleColumns = computed<ColumnDef[]>(() => {
         Low stock
       </button>
       <button
+        v-if="!isTimeclockVirtual"
         type="button"
         class="px-4 py-2 border-b-2 transition-colors whitespace-nowrap shrink-0"
         :class="tabClasses('group-activity')"
@@ -924,6 +945,7 @@ const lifecycleColumns = computed<ColumnDef[]>(() => {
         Group activity
       </button>
       <button
+        v-if="!isTimeclockVirtual"
         type="button"
         class="px-4 py-2 border-b-2 transition-colors whitespace-nowrap shrink-0"
         :class="tabClasses('recent')"
@@ -941,6 +963,7 @@ const lifecycleColumns = computed<ColumnDef[]>(() => {
         Adjustment audit
       </button>
       <button
+        v-if="!isTimeclockVirtual"
         type="button"
         class="px-4 py-2 border-b-2 transition-colors whitespace-nowrap shrink-0"
         :class="tabClasses('lifecycle')"
@@ -949,6 +972,7 @@ const lifecycleColumns = computed<ColumnDef[]>(() => {
         Instance lifecycle
       </button>
       <button
+        v-if="!isTimeclockVirtual"
         type="button"
         class="px-4 py-2 border-b-2 transition-colors whitespace-nowrap shrink-0"
         :class="tabClasses('notifications')"

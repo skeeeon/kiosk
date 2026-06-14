@@ -77,6 +77,12 @@ const toast = useToast()
 const { identity } = useKioskIdentity()
 const managed = computed(() => identity.value?.managed ?? false)
 const isController = computed(() => identity.value?.role === 'controller')
+const isTimeclockVirtual = computed(() => identity.value?.timeclock_virtual ?? false)
+
+// Event types that can actually fire on a virtual timeclock terminal (it has no
+// checkout flow, so receipt/low-stock/maintenance/checkout-digest templates
+// would never send). Used to scope the editor on that binary.
+const TIMECLOCK_EVENT_TYPES = ['digest.timeclock', 'digest.timeclock_self']
 
 // The controller now owns notification authoring for the fleet: it has its
 // own notification_templates rows and serves the same CRUD endpoints under
@@ -138,7 +144,12 @@ async function load() {
   loading.value = true
   try {
     const res = await api.get<TemplatesResponse>(apiBase.value)
-    const list = res?.templates ?? []
+    let list = res?.templates ?? []
+    // The virtual timeclock terminal only fires timeclock events; hide the
+    // checkout-world templates so the editor shows only what can send here.
+    if (isTimeclockVirtual.value) {
+      list = list.filter((t) => TIMECLOCK_EVENT_TYPES.includes(t.event_type))
+    }
     templates.value = list
     drafts.value = Object.fromEntries(
       list.map((t) => [t.event_type, { ...t, recipients: { ...t.recipients, extras: [...t.recipients.extras] } }]),

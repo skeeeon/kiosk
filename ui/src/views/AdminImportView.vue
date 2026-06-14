@@ -8,6 +8,7 @@ import DataTable, { type ColumnDef } from '../components/DataTable.vue'
 const { identity } = useKioskIdentity()
 const managed = computed(() => identity.value?.managed ?? false)
 const isController = computed(() => identity.value?.role === 'controller')
+const isTimeclockVirtual = computed(() => identity.value?.timeclock_virtual ?? false)
 
 interface ImportError {
   code: string
@@ -32,11 +33,21 @@ interface ImportResult {
 }
 
 type Kind = 'items' | 'users' | 'groups'
-// All three kinds are available on both binaries. Managed kiosks see the
-// read-only banner below instead of any tab because their catalog/workers/
-// groups are owned by the controller.
-const availableKinds: Kind[] = ['items', 'users', 'groups']
-const kind = ref<Kind>('items')
+// All three kinds are available on the kiosk + controller binaries. Managed
+// kiosks see the read-only banner below instead of any tab because their
+// catalog/workers/groups are owned by the controller. The virtual timeclock
+// terminal only registers the worker importer (no items/groups endpoints) and
+// workers are the only catalog it manages, so it offers Workers alone.
+const availableKinds = computed<Kind[]>(() =>
+  isTimeclockVirtual.value ? ['users'] : ['items', 'users', 'groups'],
+)
+const kind = ref<Kind>(isTimeclockVirtual.value ? 'users' : 'items')
+// Cold deep-link case: identity may resolve a tick after setup, flipping
+// availableKinds. Keep the selected kind valid so the tab + submit target
+// stay in sync (resetting kind also clears the file/result via its watcher).
+watch(availableKinds, (kinds) => {
+  if (!kinds.includes(kind.value)) kind.value = kinds[0]
+})
 
 const KIND_META: Record<Kind, { label: string; columns: string; required: string }> = {
   items: {

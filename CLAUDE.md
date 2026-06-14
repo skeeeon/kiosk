@@ -435,8 +435,11 @@ unchanged on both binaries — standalone reads local punches, the controller it
 fleet projection — with **no** NATS / `RegisterRunner` override (unlike the
 maintenance / open-checkouts fan-outs, which need live per-kiosk snapshots), so
 a fleet-wide controller row gives each worker their fleet-complete timesheet.
-Exactly one binary runs the scheduler (the kiosk skips it entirely in managed
-mode), so there is no double-send.
+Both `cmd/kiosk` and `cmd/timeclock` run the scheduler in standalone mode and
+skip it entirely in managed mode (the controller owns the schedule rows, cron,
+and SMTP send there); so for any one deployment exactly one binary runs it and
+there is no double-send. On a standalone virtual timeclock terminal this is what
+makes the `digest.timeclock` / `digest.timeclock_self` reports actually fire.
 
 `touchKiosk` in `internal/controller/consumer.go` advances
 `last_transaction_at` only from the event's own `completed_at`,
@@ -564,10 +567,18 @@ boundary, each worker authenticates and the punched identity is read from
 `SelfTimeclockPunch` / `SelfTimeclockHistory`, gated by `requireWorker`
 which mirrors `requireAdmin` but checks the `users` collection + `active`)
 and force `SourceSelf` — no foreman/admin/backdate/force powers from a
-phone. The binary wires ONLY identity/branding + `/api/self/timeclock/*` +
-admin user-import; the anonymous `/api/kiosk/*` checkout surface is never
-registered, so it can't be exposed (security by construction, the
-`cmd/controller`-has-no-kiosk-handlers precedent). Worker login is enabled
+phone. Beyond that authed self-service surface the binary registers
+identity/branding, the **admin-gated** timeclock reporting + notification
+endpoints the admin SPA needs (`/api/kiosk/timeclock/{now,history,admin-punch}`,
+`/api/kiosk/reports/timeclock.csv`, the `/api/kiosk/notifications` template
+trio), and admin user-import — and, in standalone mode, runs the scheduler
+(see the scheduled-report section). The anonymous `/api/kiosk/*`
+checkout/cart/inventory surface is still never registered, so it can't be
+exposed (security by construction, the `cmd/controller`-has-no-kiosk-handlers
+precedent). The shared admin SPA further hides its checkout-world views
+(Items, Metrics, the non-timeclock Report tabs, non-worker imports) and scopes
+the notification-template editor to the timeclock digests when
+`identity.timeclock_virtual` is set. Worker login is enabled
 by a `cmd/timeclock`-only migration package `migrations/timeclock`
 (`package timeclockmigrations`, same isolation pattern as
 `migrations/controller`) that sets `users.AuthRule = "active = true"` +

@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/apis"
@@ -43,6 +44,7 @@ import (
 	"github.com/skeeeon/kiosk/internal/heartbeat"
 	"github.com/skeeeon/kiosk/internal/kioskctx"
 	"github.com/skeeeon/kiosk/internal/notifications"
+	"github.com/skeeeon/kiosk/internal/scheduler"
 	"github.com/skeeeon/kiosk/internal/timeclock"
 	"github.com/skeeeon/kiosk/internal/ui"
 
@@ -53,6 +55,12 @@ import (
 	_ "github.com/skeeeon/kiosk/migrations"
 	_ "github.com/skeeeon/kiosk/migrations/timeclock"
 )
+
+// sendLogRetentionDays bounds the notification_send_log + dedupe tables. Same
+// 90-day lookback and rationale as cmd/kiosk — the timeclock terminal also
+// writes send-log rows (the timeclock digests), so it needs the same daily
+// prune to keep the table from growing unbounded.
+const sendLogRetentionDays = 90
 
 func main() {
 	cfg, err := config.Load(configPath())
@@ -166,6 +174,45 @@ func main() {
 	// degrades to local-only clocked-in state.
 	h.PunchFleet = punchFleet
 
+	// Drain in-flight notification goroutines before PB tears the DB down — a
+	// deliver() waking after the DB closes would panic. Same bounded best-effort
+	// pattern as cmd/kiosk. Bound first so it's registered ahead of the
+	// watcher/publisher teardown below.
+	app.OnTerminate().BindFunc(func(e *core.TerminateEvent) error {
+		notifier.WaitInFlight(2 * time.Second)
+		return e.Next()
+	})
+
+	// Scheduled reports (the timeclock + per-worker timeclock digests) run on
+	// the terminal in standalone mode, exactly like cmd/kiosk. In managed mode
+	// the controller owns the schedule rows, cron, and SMTP send (it has the
+	// fleet-wide projected ledger + central templates), so the kiosk skips it
+	// and the SPA hides the view. The timeclock runners are pure-DB and run
+	// unchanged here against the local punch ledger.
+	if !cfg.Controller.Enabled {
+		scheduler.BindRecordHooks(app, notifier.SendTo)
+		app.OnServe().BindFunc(func(e *core.ServeEvent) error {
+			scheduler.RegisterEnabled(app, notifier.SendTo)
+			return e.Next()
+		})
+	}
+
+	// Daily retention pass on the notifications send log + dedupe table, mirroring
+	// cmd/kiosk. 03:15 local time, well outside punch windows.
+	app.Cron().Add("notifications_retention", "15 3 * * *", func() {
+		cutoff := time.Now().UTC().AddDate(0, 0, -sendLogRetentionDays).Format("2006-01-02 15:04:05.000Z")
+		if deleted, err := notifier.PruneSendLog(cutoff); err != nil {
+			log.Printf("send log prune: %v", err)
+		} else if deleted > 0 {
+			log.Printf("send log prune: removed %d rows older than %d days", deleted, sendLogRetentionDays)
+		}
+		if deleted, err := notifier.PruneDedupe(cutoff); err != nil {
+			log.Printf("dedupe prune: %v", err)
+		} else if deleted > 0 {
+			log.Printf("dedupe prune: removed %d rows older than %d days", deleted, sendLogRetentionDays)
+		}
+	})
+
 	app.OnTerminate().BindFunc(func(e *core.TerminateEvent) error {
 		if catalogWatcher != nil {
 			catalogWatcher.Stop()
@@ -194,6 +241,24 @@ func main() {
 		e.Router.GET("/api/self/timeclock/status", h.SelfTimeclockStatus)
 		e.Router.POST("/api/self/timeclock/punch", h.SelfTimeclockPunch)
 		e.Router.GET("/api/self/timeclock/history", h.SelfTimeclockHistory)
+
+		// Timeclock admin + reporting surface. Every handler self-gates on
+		// requireAdmin + timeclockGate (timeclock.enabled), so these are in
+		// scope for a timeclock device and stay consistent with the binary's
+		// narrow surface — the checkout/cart/inventory routes are still never
+		// registered here. Backs the admin SPA's Reports → Timeclock tab, the
+		// admin-punch dialog, and the payroll CSV export.
+		e.Router.GET("/api/kiosk/timeclock/now", h.TimeclockNow)
+		e.Router.GET("/api/kiosk/timeclock/history", h.TimeclockHistory)
+		e.Router.POST("/api/kiosk/timeclock/admin-punch", h.TimeclockAdminPunch)
+		e.Router.GET("/api/kiosk/reports/timeclock.csv", h.ReportTimeclockCSV)
+
+		// Notification template editing. The seeded templates (incl. the two
+		// timeclock digests) live in this binary's DB via the migrations import;
+		// these endpoints let an admin read/edit them. Admin-gated.
+		e.Router.GET("/api/kiosk/notifications", h.ListNotificationTemplates)
+		e.Router.PATCH("/api/kiosk/notifications/{event_type}", h.UpdateNotificationTemplate)
+		e.Router.GET("/api/kiosk/notifications/{event_type}/defaults", h.GetNotificationTemplateDefaults)
 
 		// Standalone provisioning aid: bulk-import workers from CSV. Admin-gated
 		// (requireAdmin) like everywhere else; the admin SPA's user CRUD already
