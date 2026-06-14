@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onScopeDispose, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import ScanInput from '../components/ScanInput.vue'
 import CartTable from '../components/CartTable.vue'
@@ -33,6 +34,16 @@ const toast = useToast()
 const TOP = { position: 'top' } as const
 const c = useCart()
 const { identity } = useKioskIdentity()
+
+// Optional per-terminal attribution: each physical screen/door is configured
+// with a ?door= URL param. Read once (the kiosk never mutates it) and passed
+// through to commit so the transaction records where it was finished. Absent
+// on single-kiosk installs, which is fully supported (door_id is optional).
+const route = useRoute()
+const doorId = computed(() => {
+  const d = route.query.door
+  return (Array.isArray(d) ? d[0] : d) || null
+})
 
 const splashLogoBroken = ref(false)
 const splashLogoUrl = computed(() =>
@@ -548,7 +559,7 @@ async function doCommit() {
   const snapshotLines = cart.value.lines.map((l) => ({ ...l }))
   const snapshotUser = cart.value.user_name
   try {
-    const result = await c.commit()
+    const result = await c.commit(doorId.value)
     success.value = { result, lines: snapshotLines, userName: snapshotUser }
     outstanding.value = []
     outstandingExpanded.value = false

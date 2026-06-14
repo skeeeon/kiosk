@@ -40,8 +40,11 @@ type EventPayload struct {
 	UserGroup     string    `json:"user_group,omitempty"`
 	CompletedAt   time.Time `json:"completed_at"`
 
-	// transaction.complete fields.
+	// transaction.complete fields. DoorID is the optional per-door/terminal
+	// attribution tag (omitted on the wire when empty, so old kiosks decode
+	// to "" with no behavior change).
 	UserName   string    `json:"user_name,omitempty"`
+	DoorID     string    `json:"door_id,omitempty"`
 	StartedAt  time.Time `json:"started_at,omitempty"`
 	LinesCount int       `json:"lines_count,omitempty"`
 	CheckedOut int       `json:"checked_out,omitempty"`
@@ -612,6 +615,7 @@ func (a *Aggregator) ProjectTransaction(p EventPayload) projectOutcome {
 	rec := core.NewRecord(col)
 	rec.Set("kiosk_code", p.KioskCode)
 	rec.Set("location_code", p.LocationCode)
+	rec.Set("door_id", p.DoorID)
 	rec.Set("user", user.Id)
 	rec.Set("user_group", p.UserGroup)
 	rec.Set("started_at", p.StartedAt)

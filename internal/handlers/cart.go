@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/pocketbase/dbx"
@@ -533,6 +534,7 @@ func (h *Handlers) CartDeleteLine(re *core.RequestEvent) error {
 func (h *Handlers) CartCommit(re *core.RequestEvent) error {
 	var body struct {
 		CartID string `json:"cart_id"`
+		DoorID string `json:"door_id"`
 	}
 	if err := re.BindBody(&body); err != nil {
 		return re.BadRequestError("invalid request body", err)
@@ -548,6 +550,21 @@ func (h *Handlers) CartCommit(re *core.RequestEvent) error {
 	c, err := h.Carts.Snapshot(body.CartID)
 	if err != nil {
 		return re.NotFoundError("cart not found or expired", nil)
+	}
+
+	// Per-door attribution: the RFID enclosure_diff path already stamps
+	// cart.DoorID at StartByExternal, so it wins. The manual badge/scan path
+	// never sets it, so a terminal can supply its door on commit (?door= URL
+	// param). Mutating the snapshot is safe — it's a private deep copy.
+	// door_id is descriptive attribution, never an auth boundary, so a
+	// client-supplied value is fine; we just trim and cap it.
+	if c.DoorID == "" {
+		if d := strings.TrimSpace(body.DoorID); d != "" {
+			if len(d) > 64 {
+				d = d[:64]
+			}
+			c.DoorID = d
+		}
 	}
 
 	id := kioskctx.Get()

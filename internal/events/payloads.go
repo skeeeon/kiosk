@@ -34,6 +34,7 @@ type TransactionCompleteInput struct {
 	TransactionID string
 	KioskCode     string
 	LocationCode  string
+	DoorID        string // optional physical-door/terminal attribution tag; on the wire only when set
 	UserID        string
 	UserCode      string
 	UserName      string
@@ -49,7 +50,7 @@ type TransactionCompleteInput struct {
 // BuildTransactionCompletePayload renders the input into the map shape the
 // publisher expects. Map keys + value types are stable across callers.
 func BuildTransactionCompletePayload(in TransactionCompleteInput) map[string]any {
-	return map[string]any{
+	p := map[string]any{
 		"transaction_id": in.TransactionID,
 		"kiosk_code":     in.KioskCode,
 		"location_code":  in.LocationCode,
@@ -64,6 +65,13 @@ func BuildTransactionCompletePayload(in TransactionCompleteInput) map[string]any
 		"returned":       in.Returned,
 		"consumed":       in.Consumed,
 	}
+	// Optional attribution tag — only ride the wire when set, so the common
+	// single-kiosk payload is unchanged and the controller's omitempty decode
+	// stays a no-op for un-tagged transactions.
+	if in.DoorID != "" {
+		p["door_id"] = in.DoorID
+	}
+	return p
 }
 
 // ItemActionInput holds the fields needed to emit one

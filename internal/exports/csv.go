@@ -143,6 +143,9 @@ func WriteTransactionsCSV(app core.App, w io.Writer, opts TransactionsOptions) e
 	if opts.IncludeSourceKiosk {
 		header = append(header, "source_kiosk_code")
 	}
+	// Appended last (after the optional source column) so positional parsers
+	// see new fields only at the end. Empty for un-tagged transactions.
+	header = append(header, "door_id")
 	if err := cw.Write(header); err != nil {
 		return err
 	}
@@ -173,6 +176,7 @@ func WriteTransactionsCSV(app core.App, w io.Writer, opts TransactionsOptions) e
 		if opts.IncludeSourceKiosk {
 			row = append(row, t.GetString("source_kiosk_code"))
 		}
+		row = append(row, t.GetString("door_id"))
 		if err := writeRow(cw, row); err != nil {
 			return err
 		}

@@ -197,7 +197,94 @@ func countOpenCheckouts(t *testing.T, app core.App, filter string, params dbx.Pa
 	return len(rows)
 }
 
+// txCompletePayload returns the transaction.complete event payload map, failing
+// the test if none was captured. Matched by subject suffix since item.{action}
+// payloads also carry a transaction_id.
+func txCompletePayload(t *testing.T, pub *captured) map[string]any {
+	t.Helper()
+	for _, e := range pub.events {
+		if strings.HasSuffix(e.Subject, ".transaction.complete") {
+			m, ok := e.Payload.(map[string]any)
+			if !ok {
+				t.Fatalf("transaction.complete payload not a map: %T", e.Payload)
+			}
+			return m
+		}
+	}
+	t.Fatalf("no transaction.complete event captured (subjects: %v)", pub.subjects())
+	return nil
+}
+
 // ----- tests -----
+
+// TestCommit_StampsDoorID: a cart carrying a DoorID (set by the enclosure_diff
+// path, or injected by the manual-commit handler) lands on the ledger row and
+// rides the transaction.complete event.
+func TestCommit_StampsDoorID(t *testing.T) {
+	app := setupApp(t)
+	s := seedFixtures(t, app)
+
+	c := newCart(s.UserID, &cart.Line{
+		ItemID: s.ToolQtyID, ItemCode: "HAMMER", ItemName: "Hammer",
+		ItemType: "tool", TrackingMode: "quantity",
+		Action: "checkout", Qty: 1,
+	})
+	c.DoorID = "DOOR-A"
+	pub := &captured{}
+
+	if _, err := commit.Commit(app, c, testIdentity, commit.DefaultPolicy(), pub.publish); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	txs, err := app.FindRecordsByFilter("transactions", "user = {:u}", "", 0, 0, dbx.Params{"u": s.UserID})
+	if err != nil {
+		t.Fatalf("find transactions: %v", err)
+	}
+	if len(txs) != 1 {
+		t.Fatalf("transactions: want 1, got %d", len(txs))
+	}
+	if got := txs[0].GetString("door_id"); got != "DOOR-A" {
+		t.Errorf("transaction door_id: want DOOR-A, got %q", got)
+	}
+
+	if got := txCompletePayload(t, pub)["door_id"]; got != "DOOR-A" {
+		t.Errorf("event door_id: want DOOR-A, got %v", got)
+	}
+}
+
+// TestCommit_OmitsDoorIDWhenEmpty: the common single-kiosk path leaves the
+// column empty and keeps door_id off the wire entirely (the conditional in
+// BuildTransactionCompletePayload), so old consumers see an unchanged payload.
+func TestCommit_OmitsDoorIDWhenEmpty(t *testing.T) {
+	app := setupApp(t)
+	s := seedFixtures(t, app)
+
+	c := newCart(s.UserID, &cart.Line{
+		ItemID: s.ToolQtyID, ItemCode: "HAMMER", ItemName: "Hammer",
+		ItemType: "tool", TrackingMode: "quantity",
+		Action: "checkout", Qty: 1,
+	})
+	pub := &captured{}
+
+	if _, err := commit.Commit(app, c, testIdentity, commit.DefaultPolicy(), pub.publish); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	txs, err := app.FindRecordsByFilter("transactions", "user = {:u}", "", 0, 0, dbx.Params{"u": s.UserID})
+	if err != nil {
+		t.Fatalf("find transactions: %v", err)
+	}
+	if len(txs) != 1 {
+		t.Fatalf("transactions: want 1, got %d", len(txs))
+	}
+	if got := txs[0].GetString("door_id"); got != "" {
+		t.Errorf("transaction door_id: want empty, got %q", got)
+	}
+
+	if _, ok := txCompletePayload(t, pub)["door_id"]; ok {
+		t.Errorf("transaction.complete should omit door_id when empty")
+	}
+}
 
 func TestCheckout_Tool_NotCurrentlyOut_InsertsOpenCheckout(t *testing.T) {
 	app := setupApp(t)

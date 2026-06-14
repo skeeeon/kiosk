@@ -117,6 +117,44 @@ func TestAggregator_ProjectTransaction_Idempotent(t *testing.T) {
 	}
 }
 
+// TestAggregator_ProjectTransaction_StampsDoorID: the optional per-door
+// attribution tag rides transaction.complete and lands on the projected
+// fleet row, so controller-side reporting/CSV keep the same fidelity as the
+// local kiosk.
+func TestAggregator_ProjectTransaction_StampsDoorID(t *testing.T) {
+	app := setupApp(t)
+	seedUser(t, app, "WORKER-1", "Alice")
+
+	agg := NewAggregator(app, nil, "")
+	payload := EventPayload{
+		TransactionID: "src-tx-door",
+		KioskCode:     "KIOSK-A",
+		LocationCode:  "WEST",
+		DoorID:        "DOOR-A",
+		UserCode:      "WORKER-1",
+		StartedAt:     time.Now().Add(-1 * time.Minute),
+		CompletedAt:   time.Now(),
+		LinesCount:    1,
+	}
+
+	if out := agg.ProjectTransaction(payload); out != projectAck {
+		t.Fatalf("projection: got %v, want projectAck", out)
+	}
+
+	rows, err := app.FindRecordsByFilter("transactions",
+		"source_kiosk_code = 'KIOSK-A' && source_transaction_id = 'src-tx-door'",
+		"", 10, 0)
+	if err != nil {
+		t.Fatalf("find: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(rows))
+	}
+	if got := rows[0].GetString("door_id"); got != "DOOR-A" {
+		t.Errorf("projected door_id: want DOOR-A, got %q", got)
+	}
+}
+
 func TestAggregator_ProjectTransaction_UnknownUserSkipped(t *testing.T) {
 	app := setupApp(t)
 	// No user seeded.
