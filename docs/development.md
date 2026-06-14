@@ -94,9 +94,12 @@ during `npm run build`.
   worker-auth migration (`AuthRule` + OAuth2 enabled).
 - `internal/timeclock` — the punch funnel (per-source rules: self/foreman
   alternation + target-active, admin backdate/force-with-reason, the
-  open-checkouts block, command_id idempotent replay), the `CurrentState`
-  merge rule (local ledger vs fleet `punch_state` replica, including the
-  own-echo guard), and `Pair` (display-only interval/day-total pairing).
+  open-checkouts block — including the fleet-wide merge: a `CheckoutFleet`
+  row at another kiosk blocks, a self-tagged replica row doesn't double-block,
+  `force`/acknowledge bypasses, and a nil fleet falls back to local-only —
+  plus command_id idempotent replay), the `CurrentState` merge rule (local
+  ledger vs fleet `punch_state` replica, including the own-echo guard), and
+  `Pair` (display-only interval/day-total pairing).
 - `internal/instances` — the audit/lifecycle hooks plus the derived
   `quantity_on_hand` recompute: create / to_maintenance / return_to_service
   / retire / unretire track the non-retired-instance count (in_service +

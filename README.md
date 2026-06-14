@@ -74,17 +74,22 @@ it via config. See [docs/controller.md](docs/controller.md).
   in — **returns are always allowed**, and the checkout screen offers a
   one-tap "clock in now?" instead of a dead end) and
   `block_clock_out_with_open_checkouts` (can't clock out while holding
-  tools at this kiosk; the screen lists exactly what to return). Foremen
-  can punch crew members in their group (punch-now only); admins can
-  backdate corrections (reason required) and force a clock-out past the
-  open-tools block — the escape hatch for a worker who drove home with
-  a tool. In managed mode punches flow to the controller and per-user
+  tools; the screen lists exactly what to return and at which building).
+  Foremen can punch crew members in their group (punch-now only); admins
+  can backdate corrections (reason required) and force a clock-out past
+  the open-tools block — the escape hatch for a worker who drove home
+  with a tool. In managed mode punches flow to the controller and per-user
   clocked-in state is distributed back to every kiosk, so **clocking in
   at one kiosk and out at another just works** (eventually consistent:
   if a kiosk's replica is briefly stale it rejects the punch until sync
-  catches up — an admin punch is the override; the open-tools block
-  remains per-kiosk in v1, so a tool out at kiosk A won't block a
-  clock-out at kiosk B; standalone kiosks keep a local-only ledger).
+  catches up — an admin punch is the override). The open-tools block is
+  **fleet-wide** in managed mode too: a tool out at kiosk A blocks a
+  clock-out at kiosk B (and on the phone terminal), each blocked row
+  tagged with the building to return it to. It's **fail-open** — a stale
+  or unavailable replica allows the clock-out rather than stranding the
+  worker — and a worker can acknowledge ("clock out anyway") to proceed
+  rather than being hard-blocked. Standalone kiosks keep a local-only
+  ledger and block on local tools only.
   Reporting shows paired intervals and daily totals for humans, but the
   **raw-punch CSV export is the payroll contract** — no rounding,
   overtime, or pay-period logic lives in the kiosk; downstream systems
@@ -95,9 +100,9 @@ it via config. See [docs/controller.md](docs/controller.md).
   pairing is a cheap gate device in a managed fleet: workers punch at the
   gate, and the tool-crib kiosk's `require_clock_in_for_checkout`
   interlock sees them as clocked in via the distributed punch state.
-  (Note: `block_clock_out_with_open_checkouts` is a no-op on a punch-only
-  station — the block is per-kiosk and a station with no checkouts has
-  nothing to block on.)
+  (Note: a punch-only station writes no checkouts of its own, but in
+  managed mode `block_clock_out_with_open_checkouts` still blocks on the
+  worker's fleet-wide open tools; standalone it's a no-op.)
 - **Virtual timeclock terminal (no hardware).** A separate binary
   (`cmd/timeclock`) serves a per-user-**authenticated** self-service
   punch page so workers can clock in/out **from their phones** — no badge
@@ -329,9 +334,12 @@ enable PocketBase's auth rate limiter. The `/admin` SPA and PB collections
 API are admins-only (same guard as every binary), but shrinking the
 reachable surface on a public host is good defense-in-depth.
 
-The fleet-wide clock-out block (reject clock-out while a tool is out at *any*
-kiosk) is a planned fast-follow — today the block is per-kiosk, so it's a
-no-op on the virtual terminal (nothing is checked out locally).
+The **fleet-wide clock-out block** is what makes this terminal genuinely
+useful: although the phone holds no local checkouts, in managed mode it blocks
+a clock-out while the worker has tools out at *any* kiosk, names the building
+to return each to, and lets them acknowledge ("clock out anyway") to proceed.
+It's eventually consistent and fail-open — a stale or unreachable replica
+allows the punch rather than stranding the worker.
 
 ## Documentation
 
