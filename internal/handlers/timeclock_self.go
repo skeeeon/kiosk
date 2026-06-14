@@ -66,7 +66,7 @@ func (h *Handlers) SelfTimeclockStatus(re *core.RequestEvent) error {
 		"clocked_in":      state.ClockedIn,
 		"since":           state.OccurredAt,
 		"origin":          state.Origin,
-		"open_checkouts":  h.openCheckoutsForUser(worker.Id),
+		"open_checkouts":  h.mergedOpenCheckoutsForUser(worker.Id, userCode),
 		"block_clock_out": h.Cfg.Timeclock.BlockClockOutWithOpenCheckouts,
 	})
 }
@@ -88,6 +88,10 @@ func (h *Handlers) SelfTimeclockPunch(re *core.RequestEvent) error {
 	}
 	var body struct {
 		Direction string `json:"direction"`
+		// Acknowledge is the worker's "clock out anyway" past the
+		// open-checkouts block (maps to the funnel's Force, which for a self
+		// punch bypasses ONLY that block).
+		Acknowledge bool `json:"acknowledge"`
 	}
 	if err := re.BindBody(&body); err != nil {
 		return re.BadRequestError("invalid request body", err)
@@ -98,8 +102,9 @@ func (h *Handlers) SelfTimeclockPunch(re *core.RequestEvent) error {
 		TargetUserCode: worker.GetString("code"),
 		Direction:      body.Direction,
 		Source:         timeclock.SourceSelf,
+		Force:          body.Acknowledge,
 	}
-	res, err := timeclock.PerformPunch(h.App, h.PunchFleet, h.punchRules(), kioskctx.Get(), in)
+	res, err := timeclock.PerformPunch(h.App, h.PunchFleet, h.CheckoutFleet, h.punchRules(), kioskctx.Get(), in)
 	if err != nil {
 		return h.punchError(re, err, in.TargetUserCode)
 	}

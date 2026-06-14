@@ -73,7 +73,7 @@ func (d *Dispatcher) handleTimeclockPunch(_ context.Context, payload []byte) Rep
 	rules := timeclock.Rules{
 		BlockClockOutWithOpenCheckouts: h.Cfg.Timeclock.BlockClockOutWithOpenCheckouts,
 	}
-	res, err := timeclock.PerformPunch(d.app, h.PunchFleet, rules, kioskctx.Get(), in)
+	res, err := timeclock.PerformPunch(d.app, h.PunchFleet, h.CheckoutFleet, rules, kioskctx.Get(), in)
 	if err != nil {
 		// Funnel errors are validation outcomes, not transport failures —
 		// always reply (within the 5s window) so the controller renders the

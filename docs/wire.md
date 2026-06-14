@@ -675,6 +675,17 @@ in-memory replica; every clocked-in decision uses "fresher of local
 ledger vs replica" — which is what lets a worker clock in at one kiosk
 and out at another.
 
+A sibling bucket carries the **clock-out gate**: after projecting each
+checkout/return/admin-close line the controller recomputes the affected
+worker's fleet-wide open checkouts and writes them to the
+**`open_checkouts_state` JetStream KV bucket** (key = `user_code`, value
+`{user_code, rows:[{item_code, item_name, serial, kiosk_code}]}`). Managed
+kiosks and the phone terminal watch it into a `CheckoutFleet`; the punch
+funnel merges it with this kiosk's local `open_checkouts` (partitioned by
+`kiosk_code`) to block a clock-out while tools are out anywhere — fail-open
+when the replica is absent, and bypassable by a worker "clock out anyway"
+acknowledgment (`acknowledge:true` → `force` on the punch).
+
 ### `event.scan.rfid.observed`
 
 Fires after every completed LLRP inventory cycle in either RFID mode.

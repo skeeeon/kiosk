@@ -336,6 +336,131 @@ func TestControllerReplay_AdminCloseRemovesRowAndIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestReplayOpenRowsForUser_ScopedToUserAcrossKiosks(t *testing.T) {
+	app := setupApp(t)
+	seedUser(t, app, "WORKER-1", "Alice")
+	seedUser(t, app, "WORKER-2", "Bob")
+	seedItem(t, app, "DRILL", "Drill")
+
+	agg := NewAggregator(app, nil, "")
+	t0 := time.Now().UTC()
+
+	// Alice: 2 out at A, 1 at B. Bob: 1 at A (must not appear in Alice's slice).
+	mustProjectTx(t, agg, "src-tx-A", "WORKER-1", "KIOSK-A", t0)
+	mustProjectLine(t, agg, EventPayload{
+		LineID: "src-line-A", KioskCode: "KIOSK-A", TransactionID: "src-tx-A",
+		ItemCode: "DRILL", UserCode: "WORKER-1", Action: "checkout", Qty: 2, CompletedAt: t0,
+	})
+	mustProjectTx(t, agg, "src-tx-B", "WORKER-1", "KIOSK-B", t0.Add(time.Minute))
+	mustProjectLine(t, agg, EventPayload{
+		LineID: "src-line-B", KioskCode: "KIOSK-B", TransactionID: "src-tx-B",
+		ItemCode: "DRILL", UserCode: "WORKER-1", Action: "checkout", Qty: 1, CompletedAt: t0.Add(time.Minute),
+	})
+	mustProjectTx(t, agg, "src-tx-bob", "WORKER-2", "KIOSK-A", t0)
+	mustProjectLine(t, agg, EventPayload{
+		LineID: "src-line-bob", KioskCode: "KIOSK-A", TransactionID: "src-tx-bob",
+		ItemCode: "DRILL", UserCode: "WORKER-2", Action: "checkout", Qty: 1, CompletedAt: t0,
+	})
+
+	aliceID := userIDByCode(t, app, "WORKER-1")
+	rows, err := ledger.ReplayOpenRowsForUser(app, aliceID)
+	if err != nil {
+		t.Fatalf("ReplayOpenRowsForUser: %v", err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("want 3 of Alice's rows (2 A + 1 B), got %d", len(rows))
+	}
+	for _, r := range rows {
+		if r.User != aliceID {
+			t.Errorf("row leaked another user: %s", r.User)
+		}
+	}
+}
+
+func TestReplayOpenRowsForUser_ForemanCrossUserReturnClosesHolder(t *testing.T) {
+	app := setupApp(t)
+	seedUser(t, app, "ALICE", "Alice")
+	seedUser(t, app, "FOREMAN", "Frank")
+	seedItem(t, app, "SPLICE", "Fiber Splicer")
+
+	agg := NewAggregator(app, nil, "")
+	t0 := time.Now().UTC()
+
+	// Alice checks out a serialized unit.
+	mustProjectTx(t, agg, "tx-checkout", "ALICE", "KIOSK-A", t0)
+	mustProjectLine(t, agg, EventPayload{
+		LineID: "line-checkout", KioskCode: "KIOSK-A", TransactionID: "tx-checkout",
+		ItemCode: "SPLICE", UserCode: "ALICE", Action: "checkout", Qty: 1,
+		Serial: "SN-1", ItemInstanceID: "inst-1", CompletedAt: t0,
+	})
+	aliceID := userIDByCode(t, app, "ALICE")
+	if rows, _ := ledger.ReplayOpenRowsForUser(app, aliceID); len(rows) != 1 {
+		t.Fatalf("setup: want 1 of Alice's rows, got %d", len(rows))
+	}
+
+	// Frank the foreman returns it ON ALICE'S BEHALF: the transaction is the
+	// FOREMAN'S (user=FOREMAN) but the line names Alice as the holder. A naive
+	// transaction.user=Alice scope would never see this return — the union is
+	// what closes Alice's row.
+	mustProjectTx(t, agg, "tx-return", "FOREMAN", "KIOSK-A", t0.Add(time.Minute))
+	mustProjectLine(t, agg, EventPayload{
+		LineID: "line-return", KioskCode: "KIOSK-A", TransactionID: "tx-return",
+		ItemCode: "SPLICE", UserCode: "FOREMAN", Action: "return", Qty: 1,
+		Serial: "SN-1", ItemInstanceID: "inst-1",
+		OriginalCheckoutUserCode: "ALICE", CompletedAt: t0.Add(time.Minute),
+	})
+
+	rows, err := ledger.ReplayOpenRowsForUser(app, aliceID)
+	if err != nil {
+		t.Fatalf("ReplayOpenRowsForUser: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("foreman cross-user return must close Alice's row: want 0, got %d", len(rows))
+	}
+}
+
+// The open_checkouts_state replica payload (what feeds the cross-kiosk
+// clock-out gate) reflects the projected ledger: a row with item + building
+// after a checkout, and an empty slice after the return clears it.
+func TestBuildOpenCheckoutsPayload_ReflectsLedger(t *testing.T) {
+	app := setupApp(t)
+	seedUser(t, app, "ALICE", "Alice")
+	seedItem(t, app, "DRILL", "Drill")
+	agg := NewAggregator(app, nil, "")
+	t0 := time.Now().UTC()
+	aliceID := userIDByCode(t, app, "ALICE")
+
+	if p, err := agg.buildOpenCheckoutsPayload(aliceID, "ALICE"); err != nil || len(p.Rows) != 0 {
+		t.Fatalf("empty ledger: want 0 rows, got %d (err %v)", len(p.Rows), err)
+	}
+
+	mustProjectTx(t, agg, "tx-A", "ALICE", "KIOSK-A", t0)
+	mustProjectLine(t, agg, EventPayload{
+		LineID: "line-A", KioskCode: "KIOSK-A", TransactionID: "tx-A",
+		ItemCode: "DRILL", UserCode: "ALICE", Action: "checkout", Qty: 1, CompletedAt: t0,
+	})
+
+	p, err := agg.buildOpenCheckoutsPayload(aliceID, "ALICE")
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if len(p.Rows) != 1 {
+		t.Fatalf("after checkout: want 1 row, got %d", len(p.Rows))
+	}
+	if r := p.Rows[0]; r.ItemCode != "DRILL" || r.KioskCode != "KIOSK-A" {
+		t.Fatalf("row should carry item code + building, got %+v", r)
+	}
+
+	mustProjectTx(t, agg, "tx-R", "ALICE", "KIOSK-A", t0.Add(time.Minute))
+	mustProjectLine(t, agg, EventPayload{
+		LineID: "line-R", KioskCode: "KIOSK-A", TransactionID: "tx-R",
+		ItemCode: "DRILL", UserCode: "ALICE", Action: "return", Qty: 1, CompletedAt: t0.Add(time.Minute),
+	})
+	if p, err := agg.buildOpenCheckoutsPayload(aliceID, "ALICE"); err != nil || len(p.Rows) != 0 {
+		t.Fatalf("after return: want 0 rows, got %d (err %v)", len(p.Rows), err)
+	}
+}
+
 func TestControllerReplay_SerializedAdminClose(t *testing.T) {
 	app := setupApp(t)
 	seedUser(t, app, "WORKER-1", "Alice")

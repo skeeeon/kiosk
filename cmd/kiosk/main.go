@@ -77,9 +77,11 @@ func main() {
 	// failures here log but don't block kiosk startup, because the kiosk
 	// can still serve checkouts against whatever catalog state it has.
 	var (
-		catalogWatcher *catalog.Watcher
-		punchFleet     *timeclock.Fleet
-		punchWatcher   *timeclock.Watcher
+		catalogWatcher  *catalog.Watcher
+		punchFleet      *timeclock.Fleet
+		punchWatcher    *timeclock.Watcher
+		checkoutFleet   *timeclock.CheckoutFleet
+		checkoutWatcher *timeclock.CheckoutWatcher
 	)
 	watcherCtx, watcherCancel := context.WithCancel(context.Background())
 	if cfg.Controller.Enabled {
@@ -111,6 +113,18 @@ func main() {
 					if err := punchWatcher.Start(watcherCtx); err != nil {
 						log.Printf("timeclock watcher: %v — kiosk will continue with local-only punch state", err)
 						punchWatcher = nil
+					}
+					return e.Next()
+				})
+				// Fleet-wide open-checkout replica feeding the cross-kiosk
+				// clock-out gate. Same best-effort posture: a failure degrades
+				// the gate to local-only open checkouts.
+				checkoutFleet = timeclock.NewCheckoutFleet()
+				checkoutWatcher = timeclock.NewCheckoutWatcher(js, checkoutFleet)
+				app.OnServe().BindFunc(func(e *core.ServeEvent) error {
+					if err := checkoutWatcher.Start(watcherCtx); err != nil {
+						log.Printf("timeclock checkout watcher: %v — kiosk will continue with local-only open-checkout gate", err)
+						checkoutWatcher = nil
 					}
 					return e.Next()
 				})
@@ -164,6 +178,9 @@ func main() {
 		if punchWatcher != nil {
 			punchWatcher.Stop()
 		}
+		if checkoutWatcher != nil {
+			checkoutWatcher.Stop()
+		}
 		watcherCancel()
 		heartbeatCancel()
 		if commandSub != nil {
@@ -191,6 +208,9 @@ func main() {
 	// nil on standalone kiosks / when timeclock is off — the timeclock
 	// merge rule is nil-safe and degrades to local-only punch state.
 	h.PunchFleet = punchFleet
+	// nil on standalone / when timeclock is off — the clock-out gate is
+	// nil-safe and degrades to local-only open checkouts.
+	h.CheckoutFleet = checkoutFleet
 
 	// Phase-4 enclosure_diff commands (cart.start, read.trigger) reach
 	// into the cart store and SSE broker via KioskHandlers. Set it

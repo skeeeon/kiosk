@@ -71,7 +71,7 @@ rfid:                          # Optional. Off by default.
 timeclock:                     # Optional. Off by default.
   enabled: false               # Gates the whole feature: endpoints, splash button, events.
   require_clock_in_for_checkout: false   # Reject checkout/consume when not clocked in (returns always allowed).
-  block_clock_out_with_open_checkouts: false  # Reject clock-out while holding tools at THIS kiosk.
+  block_clock_out_with_open_checkouts: false  # Reject clock-out while holding tools (fleet-wide in managed mode; fail-open).
   timeclock_only: false        # Dedicated punch station: SPA shows only the punch panel.
   virtual: false               # cmd/timeclock binary only — see timeclock.yaml below. Leave false here.
 ```
@@ -187,14 +187,22 @@ omitted block leaves a deployment unchanged.
   and the checkout screen offers a one-tap "clock in now?" instead of a dead
   end.
 - **`block_clock_out_with_open_checkouts`** rejects a clock-out while the
-  worker holds open checkouts **at this kiosk** (local-scoped by design — a
-  tool out at kiosk A doesn't block a clock-out at kiosk B). Admin punches with
-  `force=true` bypass it (the "drove home with a tool" escape hatch).
+  worker holds open checkouts. In **managed mode** the gate is **fleet-wide**:
+  it merges this kiosk's local checkouts with the controller's per-user
+  open-checkouts replica, so a tool out at kiosk A blocks a clock-out at kiosk
+  B (or on the phone terminal), and the worker is shown which building to
+  return each tool to. It's eventually consistent and **fail-open** — if the
+  replica is stale or the controller is unreachable, the clock-out is allowed
+  rather than stranding the worker. **Standalone** (no controller) it's
+  local-only. Admins bypass with `force=true` (the "drove home with a tool"
+  escape hatch); a worker/foreman can "clock out anyway" to acknowledge their
+  open tools and proceed (recorded on the punch).
 - **`timeclock_only`** turns the device into a dedicated punch station: the
   SPA replaces the checkout splash with a persistent punch panel and badge
   scans go straight to it — no carts, no checkout. Requires `enabled`.
-  (`block_clock_out_with_open_checkouts` is a no-op here — a punch-only station
-  writes no `open_checkouts`.)
+  (A punch-only station writes no local `open_checkouts`, but in managed mode
+  `block_clock_out_with_open_checkouts` still blocks on the fleet replica;
+  standalone it's a no-op.)
 - **`virtual`** marks the dedicated **virtual timeclock terminal** (the
   `cmd/timeclock` binary), not a normal kiosk. Leave it `false` in
   `kiosk.yaml`. See the next section.

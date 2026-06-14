@@ -256,6 +256,13 @@ binds to the event subject family and projects:
   answers "currently-out" by replaying these lines on demand
   (`ledger.ReplayOpenRows`) rather than materializing an `open_checkouts`
   table — convergent by construction, so it cannot drift from a kiosk's.
+  After each line projection it also recomputes the affected worker's
+  fleet-wide open set with `ledger.ReplayOpenRowsForUser` — a bounded
+  per-user replay (the union of the worker's own transactions and any
+  transaction whose return/close names them as `original_checkout_user`, so a
+  foreman's cross-user return still closes the holder's row) — and broadcasts
+  it to the `open_checkouts_state` KV bucket that feeds the fleet-wide
+  clock-out gate.
 - `event.inventory.adjust` → one `inventory_audit` row (idempotent
   via `source_adjustment_id`).
 - `event.instance.lifecycle` → one `instance_lifecycle_audit` row

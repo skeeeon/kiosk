@@ -109,6 +109,100 @@ func (f *Fleet) Delete(userCode string) {
 	delete(f.m, userCode)
 }
 
+// OpenCheckoutsStateBucket is the JetStream KV bucket the controller projects
+// each user's fleet-wide open-checkout summary into, broadcast-keyed by
+// user_code (same keying as punch_state — users are org-wide). Managed kiosks
+// and the virtual timeclock terminal watch it into a CheckoutFleet so a
+// clock-out at ANY surface can see tools the worker has out at OTHER kiosks.
+// Sibling of PunchStateBucket.
+const OpenCheckoutsStateBucket = "open_checkouts_state"
+
+// OpenCheckoutRow is one outstanding unit in the fleet replica — flat and
+// display-oriented (item identity + the building to return it to). Single
+// source of truth for the controller's writer and the kiosk's watcher.
+type OpenCheckoutRow struct {
+	ItemCode  string `json:"item_code"`
+	ItemName  string `json:"item_name"`
+	Serial    string `json:"serial,omitempty"`
+	KioskCode string `json:"kiosk_code"`
+}
+
+// OpenCheckoutsStatePayload is the KV value shape: a user's full set of
+// outstanding rows across the fleet, as of the controller's last recompute. An
+// empty Rows slice is a valid "returned everything" state (it clears the gate),
+// so the writer always publishes it rather than deleting the key.
+type OpenCheckoutsStatePayload struct {
+	UserCode string            `json:"user_code"`
+	Rows     []OpenCheckoutRow `json:"rows"`
+}
+
+// CheckoutFleet is the kiosk-local in-memory replica of the
+// open_checkouts_state bucket. Mirror of Fleet, but with plain latest-wins
+// semantics (no occurred_at monotonic compare): every controller recompute
+// reflects the full current ledger, so even a redelivered or out-of-order
+// trigger writes current truth, and the next event self-heals. Reads are
+// nil-safe so standalone deployments pass a nil *CheckoutFleet and degrade to
+// local-only open-checkout state by construction.
+type CheckoutFleet struct {
+	mu sync.RWMutex
+	m  map[string]OpenCheckoutsStatePayload
+}
+
+func NewCheckoutFleet() *CheckoutFleet {
+	return &CheckoutFleet{m: make(map[string]OpenCheckoutsStatePayload)}
+}
+
+// Get returns the replica entry for a user code. Nil-safe; the bool reports
+// whether an entry exists (a present-but-empty entry means "nothing out").
+func (f *CheckoutFleet) Get(userCode string) (OpenCheckoutsStatePayload, bool) {
+	if f == nil {
+		return OpenCheckoutsStatePayload{}, false
+	}
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	e, ok := f.m[userCode]
+	return e, ok
+}
+
+// Upsert applies an entry (latest-wins). Nil-safe.
+func (f *CheckoutFleet) Upsert(e OpenCheckoutsStatePayload) {
+	if f == nil || e.UserCode == "" {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.m[e.UserCode] = e
+}
+
+// Delete removes a user's replica entry (KV key deletion).
+func (f *CheckoutFleet) Delete(userCode string) {
+	if f == nil {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.m, userCode)
+}
+
+// RowsForOtherKiosks returns the user's outstanding rows whose KioskCode is not
+// selfKioskCode — the cross-kiosk slice the clock-out gate adds to this kiosk's
+// own local open_checkouts. Partitioning by kiosk_code keeps the local and
+// replica views disjoint, so the merge never double-counts a row this kiosk
+// already holds locally (and which has also propagated into the replica).
+func (f *CheckoutFleet) RowsForOtherKiosks(userCode, selfKioskCode string) []OpenCheckoutRow {
+	e, ok := f.Get(userCode)
+	if !ok {
+		return nil
+	}
+	out := make([]OpenCheckoutRow, 0, len(e.Rows))
+	for _, r := range e.Rows {
+		if r.KioskCode != selfKioskCode {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 // State is the merged clocked-in view for one user.
 type State struct {
 	ClockedIn  bool      `json:"clocked_in"`

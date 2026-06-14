@@ -40,9 +40,14 @@ machine-readable `error` field. `already_clocked_in` / `not_clocked_in` mean
 the merged state already disagrees with the requested direction (often the
 worker punched at another kiosk and this kiosk's replica is fresher); the
 panel refreshes so the button matches. `open_checkouts` means
-`block_clock_out_with_open_checkouts` is on and the worker still holds tools
-at this kiosk — the body lists them. An admin punch with `force=true` is the
-override.
+`block_clock_out_with_open_checkouts` is on and the worker still holds tools —
+in managed mode this is fleet-wide (tools out at any kiosk, each tagged with
+the building to return it to), so the phone terminal blocks too. The body
+lists them; the worker can re-check (after returning) or **clock out anyway**
+to acknowledge and proceed. An admin punch with `force=true` is the override.
+If the gate seems *not* to fire when it should: the replica is eventually
+consistent and fail-open, so a brand-new checkout (or a controller/KV outage)
+can leave it briefly permissive — it self-heals on the next projection.
 
 ## A worker can't sign in to the virtual timeclock terminal
 

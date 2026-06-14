@@ -164,13 +164,17 @@ async function loadStatus() {
   }
 }
 
-async function punch(direction: 'in' | 'out') {
+async function punch(direction: 'in' | 'out', acknowledge = false) {
   if (!status.value || punching.value) return
   punching.value = true
   punchError.value = ''
   blockedRows.value = []
   try {
-    const res = await api.post<PunchResult>('/api/self/timeclock/punch', { direction })
+    const res = await api.post<PunchResult>('/api/self/timeclock/punch', {
+      direction,
+      // "Clock out anyway" — acknowledges the open tools and bypasses the gate.
+      ...(acknowledge ? { acknowledge: true } : {}),
+    })
     lastPunch.value = res
     status.value = { ...status.value, clocked_in: res.clocked_in, since: res.occurred_at }
     void loadSummary()
@@ -437,15 +441,20 @@ const todayIntervals = computed(() =>
               v-if="blockedRows.length > 0"
               class="w-full rounded-xl bg-slate-800/60 border border-slate-700/60 divide-y divide-slate-800 text-left"
             >
-              <li v-for="row in blockedRows" :key="row.id" class="px-4 py-2.5">
+              <li v-for="row in blockedRows" :key="row.id || `${row.item_code}-${row.kiosk_code}`" class="px-4 py-2.5">
                 <div class="text-slate-100 truncate">{{ row.item_name }}</div>
                 <div class="text-xs text-slate-500 font-mono">
                   {{ row.item_instance_code || row.item_code }}<span v-if="row.instance_serial"> · SN {{ row.instance_serial }}</span>
                 </div>
+                <div v-if="row.kiosk_code" class="text-xs text-amber-400/90 mt-0.5">
+                  Return at {{ row.kiosk_code }}
+                </div>
               </li>
             </ul>
 
+            <!-- Normal punch button, hidden once a clock-out is blocked. -->
             <button
+              v-if="blockedRows.length === 0"
               type="button"
               class="w-full py-6 rounded-2xl text-white text-2xl font-semibold transition-transform active:scale-95 disabled:bg-slate-700 disabled:text-slate-500"
               :class="status.clocked_in ? 'bg-amber-700/90 hover:bg-amber-700' : 'bg-emerald-700/90 hover:bg-emerald-700'"
@@ -455,6 +464,28 @@ const todayIntervals = computed(() =>
               <template v-if="punching">Punching…</template>
               <template v-else>{{ status.clocked_in ? 'Clock out' : 'Clock in' }}</template>
             </button>
+
+            <!-- Blocked: re-check (a fresh return may not have propagated yet)
+                 or clock out anyway with acknowledgment. -->
+            <div v-else class="w-full flex flex-col gap-2">
+              <button
+                type="button"
+                class="w-full py-4 rounded-2xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-lg transition-transform active:scale-95 disabled:opacity-60"
+                :disabled="punching || loadingStatus"
+                @click="loadStatus"
+              >
+                I've returned these — re-check
+              </button>
+              <button
+                type="button"
+                class="w-full py-4 rounded-2xl bg-amber-800/80 hover:bg-amber-800 text-amber-100 text-lg transition-transform active:scale-95 disabled:opacity-60"
+                :disabled="punching"
+                @click="punch('out', true)"
+              >
+                <template v-if="punching">Punching…</template>
+                <template v-else>Clock out anyway</template>
+              </button>
+            </div>
           </template>
 
           <p v-else-if="punchError" class="rounded-lg bg-red-900/40 border border-red-700/60 text-red-200 text-sm px-4 py-2">

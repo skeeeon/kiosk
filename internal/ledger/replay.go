@@ -93,6 +93,16 @@ func ReplayOpenRows(app core.App, kioskCodeFilter string) ([]OpenRow, error) {
 		linesByTx[txID] = append(linesByTx[txID], l)
 	}
 
+	return replay(txs, linesByTx), nil
+}
+
+// replay is the shared reconstruction loop: walk the supplied transactions
+// (which MUST already be ordered chronologically by completed_at) and their
+// lines, adding qty rows per checkout and subtracting per return/admin_close.
+// Both ReplayOpenRows (kiosk/whole-ledger) and ReplayOpenRowsForUser
+// (single-user slice) build the txs + linesByTx inputs their own way and then
+// delegate here so the open/close arithmetic lives in exactly one place.
+func replay(txs []*core.Record, linesByTx map[string][]*core.Record) []OpenRow {
 	var open []OpenRow
 	for _, tx := range txs {
 		txUser := tx.GetString("user")
@@ -135,7 +145,87 @@ func ReplayOpenRows(app core.App, kioskCodeFilter string) ([]OpenRow, error) {
 			}
 		}
 	}
-	return open, nil
+	return open
+}
+
+// ReplayOpenRowsForUser reconstructs ONE user's open_checkouts rows from the
+// ledger without scanning every kiosk's transactions. It loads only the
+// transactions that can affect this user's open set:
+//
+//   - transactions the user performed (their own checkouts and self-returns), and
+//   - transactions whose return/admin_close lines name this user as the
+//     original checkout holder — a foreman returning the user's tool, or an
+//     admin force-close, which live in SOMEONE ELSE'S transaction.
+//
+// The union is required for correctness: a foreman's return of the user's tool
+// carries original_checkout_user=user but transaction.user=foreman, so a
+// transaction.user=user scope alone would never close it and the row would
+// stay open forever. Both sets are replayed together in chronological order
+// (the shared replay() helper) and the result is filtered to this user's rows.
+//
+// The load is bounded to one worker's history — this is the per-user path the
+// fleet-wide clock-out gate calls, deliberately avoiding the whole-table scan
+// ReplayOpenRows warns about (replayWarnRows) at fleet scale.
+func ReplayOpenRowsForUser(app core.App, userID string) ([]OpenRow, error) {
+	if userID == "" {
+		return nil, nil
+	}
+
+	txIDs := map[string]struct{}{}
+
+	// (1) the user's own completed transactions.
+	ownTxs, err := app.FindRecordsByFilter("transactions",
+		"status = 'completed' && user = {:u}", "", 0, 0, dbx.Params{"u": userID})
+	if err != nil {
+		return nil, fmt.Errorf("load user transactions: %w", err)
+	}
+	for _, t := range ownTxs {
+		txIDs[t.Id] = struct{}{}
+	}
+
+	// (2) transactions whose returns/closes target this user as the holder.
+	closingLines, err := app.FindRecordsByFilter("transaction_lines",
+		"original_checkout_user = {:u} && (action = 'return' || action = 'admin_close')",
+		"", 0, 0, dbx.Params{"u": userID})
+	if err != nil {
+		return nil, fmt.Errorf("load closing lines: %w", err)
+	}
+	for _, l := range closingLines {
+		if t := l.GetString("transaction"); t != "" {
+			txIDs[t] = struct{}{}
+		}
+	}
+	if len(txIDs) == 0 {
+		return nil, nil
+	}
+
+	// Load the union in chronological order, plus all their lines, replay, and
+	// keep only this user's open rows.
+	txExpr, txParams := orIDExpr("id", txIDs)
+	txs, err := app.FindRecordsByFilter("transactions",
+		"status = 'completed' && ("+txExpr+")", "completed_at", 0, 0, txParams)
+	if err != nil {
+		return nil, fmt.Errorf("load union transactions: %w", err)
+	}
+	lineExpr, lineParams := orIDExpr("transaction", txIDs)
+	lines, err := app.FindRecordsByFilter("transaction_lines", lineExpr, "id", 0, 0, lineParams)
+	if err != nil {
+		return nil, fmt.Errorf("load union lines: %w", err)
+	}
+	linesByTx := make(map[string][]*core.Record, len(txs))
+	for _, l := range lines {
+		txID := l.GetString("transaction")
+		linesByTx[txID] = append(linesByTx[txID], l)
+	}
+
+	all := replay(txs, linesByTx)
+	out := make([]OpenRow, 0, len(all))
+	for _, r := range all {
+		if r.User == userID {
+			out = append(out, r)
+		}
+	}
+	return out, nil
 }
 
 // OpenCheckoutDTO is the hydrated wire shape returned by the reports
@@ -260,18 +350,7 @@ func bulkFetchByIDs(app core.App, collection string, ids map[string]struct{}) (m
 	if len(ids) == 0 {
 		return out, nil
 	}
-	var expr string
-	params := dbx.Params{}
-	i := 0
-	for id := range ids {
-		key := "i" + strconv.Itoa(i)
-		if expr != "" {
-			expr += " || "
-		}
-		expr += "id = {:" + key + "}"
-		params[key] = id
-		i++
-	}
+	expr, params := orIDExpr("id", ids)
 	rows, err := app.FindRecordsByFilter(collection, expr, "", 0, 0, params)
 	if err != nil {
 		return nil, err
@@ -280,6 +359,26 @@ func bulkFetchByIDs(app core.App, collection string, ids map[string]struct{}) (m
 		out[r.Id] = r
 	}
 	return out, nil
+}
+
+// orIDExpr builds a `field = {:k} || field = {:k} ...` filter over a set of
+// ids plus its dbx.Params. Used to load a bounded id set in one query. Callers
+// guarantee a non-empty set (an empty set yields an empty expression, which
+// FindRecordsByFilter rejects).
+func orIDExpr(field string, ids map[string]struct{}) (string, dbx.Params) {
+	var expr string
+	params := dbx.Params{}
+	i := 0
+	for id := range ids {
+		key := "x" + strconv.Itoa(i)
+		if expr != "" {
+			expr += " || "
+		}
+		expr += field + " = {:" + key + "}"
+		params[key] = id
+		i++
+	}
+	return expr, params
 }
 
 // removeRows removes up to qty rows mirroring commit.candidateOpenRows:

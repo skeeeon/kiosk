@@ -230,13 +230,23 @@ subjects are in place to make them additive rather than rewrites.
 - **Tighten PB collection rules in managed mode.** UI gating is the
   v1 story; a follow-up could lock the collection rules themselves
   so a determined admin poking PB directly can't drift the catalog.
-- **Fleet-wide clock-out block.** Today `block_clock_out_with_open_checkouts`
-  is per-kiosk: a tool out at kiosk A doesn't block a clock-out at kiosk B
-  (or on the virtual terminal, where nothing is checked out locally). The
-  controller already computes fleet-wide open checkouts on demand
-  (`ledger.ReplayOpenRows`), so a follow-up could consult it at punch time —
-  at the cost of a WAN dependency on the punch path and a degraded-mode
-  decision (block vs. allow when the controller is unreachable). Deferred
-  until a deployment actually needs it.
+- **Cross-building returns.** A serialized unit lives in its checkout
+  building's DB, so today a tool is returned where it was checked out. The
+  fleet-wide clock-out gate (below, now shipped) points a worker at the right
+  building; letting them physically return it at a *different* building is a
+  separate, harder problem (the instance row would have to move) and stays
+  deferred.
+
 Each of these can be evaluated on demand. None should be built until
 there is a concrete user asking for it.
+
+**Shipped since.** The **fleet-wide clock-out block** is no longer deferred:
+in managed mode `block_clock_out_with_open_checkouts` merges this kiosk's
+local checkouts with a controller-written per-user replica
+(`open_checkouts_state` KV, fed by `ledger.ReplayOpenRowsForUser`), so a
+clock-out at any surface — including the phone terminal, which holds no local
+checkouts — sees and names tools out anywhere in the fleet. It avoids a WAN
+dependency on the punch path (the replica is broadcast along the existing
+controller→fleet KV channel, not queried synchronously) and is **fail-open**:
+a stale/unavailable replica allows the clock-out rather than stranding the
+worker. Workers acknowledge ("clock out anyway") rather than being hard-blocked.

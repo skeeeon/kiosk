@@ -177,6 +177,10 @@ export interface OpenCheckoutDetail {
   instance_serial?: string
   qty: number
   checked_out_at: string
+  // The building/kiosk where this unit is out — the "return it here" hint on
+  // the clock-out gate. Empty for plain local scan rows; populated when the
+  // clock-out gate merges this kiosk's rows with the fleet replica.
+  kiosk_code?: string
 }
 
 // Payload returned by GET /api/kiosk/cart/foreman-return/options. Workers

@@ -70,9 +70,12 @@ type PunchInput struct {
 	// manual interventions); ignored-if-empty for live punches.
 	Reason string
 
-	// Force lets an admin/controller_admin clock-out bypass the
-	// open-checkouts block — the "worker drove home with a tool" escape
-	// hatch. Rejected for self/foreman.
+	// Force bypasses the open-checkouts clock-out block. For admins it's the
+	// "worker drove home with a tool" override; for self/foreman it's the
+	// worker's "clock out anyway" acknowledgment past the fleet-wide block.
+	// It grants nothing else — force is consulted ONLY by that block, so
+	// allowing it for any source can't escalate alternation or backdating.
+	// source + force together let reports tell the two intents apart.
 	Force bool
 
 	// CommandID is the idempotency key for command-bus punches (unique when
@@ -108,7 +111,7 @@ const futureSkew = time.Minute
 // construction. It does NOT publish the timeclock.punch event; callers do
 // that post-commit (Perform/Publish split, stock_adjust precedent) and skip
 // it on Replayed results.
-func PerformPunch(app core.App, fleet *Fleet, rules Rules, id kioskctx.Identity, in PunchInput) (*PunchResult, error) {
+func PerformPunch(app core.App, fleet *Fleet, checkoutFleet *CheckoutFleet, rules Rules, id kioskctx.Identity, in PunchInput) (*PunchResult, error) {
 	in.TargetUserCode = strings.TrimSpace(in.TargetUserCode)
 	in.Reason = strings.TrimSpace(in.Reason)
 	if in.TargetUserCode == "" {
@@ -143,14 +146,13 @@ func PerformPunch(app core.App, fleet *Fleet, rules Rules, id kioskctx.Identity,
 	if adminSource && in.Reason == "" {
 		return nil, fmt.Errorf("reason is required for %s punches", in.Source)
 	}
-	if !adminSource {
-		if !in.OccurredAt.IsZero() {
-			return nil, fmt.Errorf("only admin punches may set occurred_at; %s punches are stamped now", in.Source)
-		}
-		if in.Force {
-			return nil, fmt.Errorf("only admin punches may force past the open-checkouts block")
-		}
+	if !adminSource && !in.OccurredAt.IsZero() {
+		return nil, fmt.Errorf("only admin punches may set occurred_at; %s punches are stamped now", in.Source)
 	}
+	// in.Force is intentionally NOT gated on source: it bypasses only the
+	// open-checkouts block below (alternation/backdating remain admin-only), so
+	// a self/foreman force is exactly the worker's "clock out anyway"
+	// acknowledgment and grants nothing more.
 	now := time.Now().UTC()
 	occurredAt := in.OccurredAt.UTC()
 	if in.OccurredAt.IsZero() {
@@ -225,17 +227,22 @@ func PerformPunch(app core.App, fleet *Fleet, rules Rules, id kioskctx.Identity,
 			}
 		}
 
-		// Open-checkouts block — local-scoped by design (v1): tools out at
-		// another kiosk don't block a clock-out here. Applies to admin
-		// punches too unless Force.
-		if in.Direction == DirectionOut && rules.BlockClockOutWithOpenCheckouts && !(adminSource && in.Force) {
+		// Open-checkouts block. Local open_checkouts cover THIS kiosk; the
+		// CheckoutFleet replica adds the worker's outstanding rows at OTHER
+		// kiosks (partitioned by kiosk_code so the two views are disjoint and
+		// never double-count). A nil/empty replica — standalone, or KV
+		// unavailable — leaves only the local count, which is fail-open for the
+		// cross-kiosk portion by construction. in.Force (admin override or
+		// self/foreman acknowledgment) skips the whole block.
+		if in.Direction == DirectionOut && rules.BlockClockOutWithOpenCheckouts && !in.Force {
 			rows, err := tx.FindRecordsByFilter("open_checkouts",
 				"user = {:u}", "", 0, 0, dbx.Params{"u": target.Id})
 			if err != nil {
 				return fmt.Errorf("count open checkouts: %w", err)
 			}
-			if len(rows) > 0 {
-				return &OpenCheckoutsError{Count: len(rows)}
+			fleetRows := checkoutFleet.RowsForOtherKiosks(in.TargetUserCode, id.KioskCode)
+			if total := len(rows) + len(fleetRows); total > 0 {
+				return &OpenCheckoutsError{Count: total}
 			}
 		}
 

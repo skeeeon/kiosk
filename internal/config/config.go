@@ -210,16 +210,23 @@ type RFIDAntennaConfig struct {
 //     are ALWAYS allowed — a worker holding a tool can hand it back
 //     regardless of punch state.
 //   - BlockClockOutWithOpenCheckouts makes the punch funnel reject a
-//     clock-out while the worker has open checkouts at THIS kiosk
-//     (local-scoped by design). Admin punches with force=true bypass it.
+//     clock-out while the worker has open checkouts. The funnel merges THIS
+//     kiosk's local open_checkouts with the fleet-wide replica (the
+//     controller-written open_checkouts_state bucket, partitioned by
+//     kiosk_code), so in managed mode the gate sees tools out at OTHER kiosks
+//     too. Without a controller (standalone) or with KV unavailable it
+//     degrades to local-only — fail-open for the cross-kiosk portion. Admin
+//     force=true bypasses it; a self/foreman force=true is the worker's
+//     "clock out anyway" acknowledgment (same column, told apart by source).
 //   - TimeclockOnly turns the device into a dedicated punch station: the
 //     SPA replaces the checkout splash with a persistent punch panel and
 //     badge scans go straight to it — no carts, no checkout. Backend
 //     surface is unchanged (the kiosk box is the trust boundary); this is
-//     a presentation mode. Requires Enabled. Note that
-//     BlockClockOutWithOpenCheckouts is a no-op here: open_checkouts is
-//     local-scoped and a punch-only station never writes it, so a worker
-//     with tools out at ANOTHER kiosk can still clock out at this one.
+//     a presentation mode. Requires Enabled. A punch-only station never
+//     writes its own open_checkouts, so BlockClockOutWithOpenCheckouts has
+//     nothing LOCAL to block on — but in managed mode it still blocks on the
+//     fleet replica (tools the worker has out at other kiosks). Standalone,
+//     it's a no-op (no replica).
 //   - Virtual marks the dedicated cmd/timeclock binary: a publicly-hosted,
 //     per-user-authenticated self-service punch terminal (workers clock in/
 //     out from their phones). Unlike every other kiosk the trust boundary is

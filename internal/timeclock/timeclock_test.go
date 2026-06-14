@@ -177,7 +177,7 @@ func TestPerformPunch_AlternationLive(t *testing.T) {
 	app := setupApp(t)
 	s := seedFixtures(t, app)
 
-	res, err := timeclock.PerformPunch(app, nil, timeclock.Rules{}, testIdentity, selfPunch("EMP-2", "in"))
+	res, err := timeclock.PerformPunch(app, nil, nil, timeclock.Rules{}, testIdentity, selfPunch("EMP-2", "in"))
 	if err != nil {
 		t.Fatalf("clock in: %v", err)
 	}
@@ -185,11 +185,11 @@ func TestPerformPunch_AlternationLive(t *testing.T) {
 		t.Fatalf("clock in result: %+v", res)
 	}
 
-	if _, err := timeclock.PerformPunch(app, nil, timeclock.Rules{}, testIdentity, selfPunch("EMP-2", "in")); !errors.Is(err, timeclock.ErrAlreadyClockedIn) {
+	if _, err := timeclock.PerformPunch(app, nil, nil, timeclock.Rules{}, testIdentity, selfPunch("EMP-2", "in")); !errors.Is(err, timeclock.ErrAlreadyClockedIn) {
 		t.Fatalf("double clock-in: got %v, want ErrAlreadyClockedIn", err)
 	}
 
-	res, err = timeclock.PerformPunch(app, nil, timeclock.Rules{}, testIdentity, selfPunch("EMP-2", "out"))
+	res, err = timeclock.PerformPunch(app, nil, nil, timeclock.Rules{}, testIdentity, selfPunch("EMP-2", "out"))
 	if err != nil {
 		t.Fatalf("clock out: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestPerformPunch_AlternationLive(t *testing.T) {
 		t.Fatalf("expected clocked out, got %+v", res)
 	}
 
-	if _, err := timeclock.PerformPunch(app, nil, timeclock.Rules{}, testIdentity, selfPunch("EMP-2", "out")); !errors.Is(err, timeclock.ErrNotClockedIn) {
+	if _, err := timeclock.PerformPunch(app, nil, nil, timeclock.Rules{}, testIdentity, selfPunch("EMP-2", "out")); !errors.Is(err, timeclock.ErrNotClockedIn) {
 		t.Fatalf("double clock-out: got %v, want ErrNotClockedIn", err)
 	}
 	if n := countPunches(t, app, s.WorkerID); n != 2 {
@@ -210,22 +210,22 @@ func TestPerformPunch_LiveRules(t *testing.T) {
 	seedFixtures(t, app)
 
 	// Unknown user.
-	if _, err := timeclock.PerformPunch(app, nil, timeclock.Rules{}, testIdentity, selfPunch("NOPE", "in")); !errors.Is(err, timeclock.ErrUserNotFound) {
+	if _, err := timeclock.PerformPunch(app, nil, nil, timeclock.Rules{}, testIdentity, selfPunch("NOPE", "in")); !errors.Is(err, timeclock.ErrUserNotFound) {
 		t.Fatalf("unknown user: got %v, want ErrUserNotFound", err)
 	}
 	// Inactive worker can't live-punch.
-	if _, err := timeclock.PerformPunch(app, nil, timeclock.Rules{}, testIdentity, selfPunch("EMP-4", "in")); !errors.Is(err, timeclock.ErrUserInactive) {
+	if _, err := timeclock.PerformPunch(app, nil, nil, timeclock.Rules{}, testIdentity, selfPunch("EMP-4", "in")); !errors.Is(err, timeclock.ErrUserInactive) {
 		t.Fatalf("inactive: got %v, want ErrUserInactive", err)
 	}
 	// Live punches can't backdate or force.
 	in := selfPunch("EMP-2", "in")
 	in.OccurredAt = time.Now().Add(-time.Hour)
-	if _, err := timeclock.PerformPunch(app, nil, timeclock.Rules{}, testIdentity, in); err == nil {
+	if _, err := timeclock.PerformPunch(app, nil, nil, timeclock.Rules{}, testIdentity, in); err == nil {
 		t.Fatal("backdated self punch should fail")
 	}
 	in = selfPunch("EMP-2", "out")
 	in.Force = true
-	if _, err := timeclock.PerformPunch(app, nil, timeclock.Rules{}, testIdentity, in); err == nil {
+	if _, err := timeclock.PerformPunch(app, nil, nil, timeclock.Rules{}, testIdentity, in); err == nil {
 		t.Fatal("forced self punch should fail")
 	}
 }
@@ -246,15 +246,15 @@ func TestPerformPunch_AdminBackdateAndRules(t *testing.T) {
 	}
 
 	// Reason required.
-	if _, err := timeclock.PerformPunch(app, nil, timeclock.Rules{}, testIdentity, admin("EMP-2", "in", "", time.Time{})); err == nil {
+	if _, err := timeclock.PerformPunch(app, nil, nil, timeclock.Rules{}, testIdentity, admin("EMP-2", "in", "", time.Time{})); err == nil {
 		t.Fatal("admin punch without reason should fail")
 	}
 	// Future occurred_at rejected.
-	if _, err := timeclock.PerformPunch(app, nil, timeclock.Rules{}, testIdentity, admin("EMP-2", "in", "fix", time.Now().Add(time.Hour))); err == nil {
+	if _, err := timeclock.PerformPunch(app, nil, nil, timeclock.Rules{}, testIdentity, admin("EMP-2", "in", "fix", time.Now().Add(time.Hour))); err == nil {
 		t.Fatal("future punch should fail")
 	}
 	// Backdated corrective punch bypasses alternation (out with no prior in).
-	res, err := timeclock.PerformPunch(app, nil, timeclock.Rules{}, testIdentity, admin("EMP-2", "out", "forgot to clock out", time.Now().Add(-2*time.Hour)))
+	res, err := timeclock.PerformPunch(app, nil, nil, timeclock.Rules{}, testIdentity, admin("EMP-2", "out", "forgot to clock out", time.Now().Add(-2*time.Hour)))
 	if err != nil {
 		t.Fatalf("backdated admin out: %v", err)
 	}
@@ -262,16 +262,16 @@ func TestPerformPunch_AdminBackdateAndRules(t *testing.T) {
 		t.Fatalf("merged state after backdated out should be clocked out: %+v", res)
 	}
 	// Admin may punch an inactive worker (correcting the record).
-	if _, err := timeclock.PerformPunch(app, nil, timeclock.Rules{}, testIdentity, admin("EMP-4", "in", "missed punch", time.Now().Add(-3*time.Hour))); err != nil {
+	if _, err := timeclock.PerformPunch(app, nil, nil, timeclock.Rules{}, testIdentity, admin("EMP-4", "in", "missed punch", time.Now().Add(-3*time.Hour))); err != nil {
 		t.Fatalf("admin punch for inactive worker: %v", err)
 	}
 
 	// A backdated correction OLDER than the latest punch must not flip the
 	// merged current state.
-	if _, err := timeclock.PerformPunch(app, nil, timeclock.Rules{}, testIdentity, selfPunch("EMP-2", "in")); err != nil {
+	if _, err := timeclock.PerformPunch(app, nil, nil, timeclock.Rules{}, testIdentity, selfPunch("EMP-2", "in")); err != nil {
 		t.Fatalf("live clock in: %v", err)
 	}
-	res, err = timeclock.PerformPunch(app, nil, timeclock.Rules{}, testIdentity, admin("EMP-2", "out", "yesterday's missed out", time.Now().Add(-90*time.Minute)))
+	res, err = timeclock.PerformPunch(app, nil, nil, timeclock.Rules{}, testIdentity, admin("EMP-2", "out", "yesterday's missed out", time.Now().Add(-90*time.Minute)))
 	if err != nil {
 		t.Fatalf("older corrective punch: %v", err)
 	}
@@ -294,15 +294,15 @@ func TestPerformPunch_ForemanGate(t *testing.T) {
 	}
 
 	// Worker acting as foreman → rejected.
-	if _, err := timeclock.PerformPunch(app, nil, timeclock.Rules{}, testIdentity, foreman(s.WorkerID, "EMP-1")); !errors.Is(err, timeclock.ErrForemanGate) {
+	if _, err := timeclock.PerformPunch(app, nil, nil, timeclock.Rules{}, testIdentity, foreman(s.WorkerID, "EMP-1")); !errors.Is(err, timeclock.ErrForemanGate) {
 		t.Fatalf("worker-as-foreman: got %v, want ErrForemanGate", err)
 	}
 	// Foreman punching outside their group → rejected.
-	if _, err := timeclock.PerformPunch(app, nil, timeclock.Rules{}, testIdentity, foreman(s.ForemanID, "EMP-3")); !errors.Is(err, timeclock.ErrForemanGate) {
+	if _, err := timeclock.PerformPunch(app, nil, nil, timeclock.Rules{}, testIdentity, foreman(s.ForemanID, "EMP-3")); !errors.Is(err, timeclock.ErrForemanGate) {
 		t.Fatalf("cross-group: got %v, want ErrForemanGate", err)
 	}
 	// Foreman punching a crew member → ok, recorder stamped.
-	res, err := timeclock.PerformPunch(app, nil, timeclock.Rules{}, testIdentity, foreman(s.ForemanID, "EMP-2"))
+	res, err := timeclock.PerformPunch(app, nil, nil, timeclock.Rules{}, testIdentity, foreman(s.ForemanID, "EMP-2"))
 	if err != nil {
 		t.Fatalf("foreman punch: %v", err)
 	}
@@ -320,7 +320,7 @@ func TestPerformPunch_ForemanGate(t *testing.T) {
 	in := foreman(s.ForemanID, "EMP-2")
 	in.Direction = "out"
 	in.OccurredAt = time.Now().Add(-time.Hour)
-	if _, err := timeclock.PerformPunch(app, nil, timeclock.Rules{}, testIdentity, in); err == nil {
+	if _, err := timeclock.PerformPunch(app, nil, nil, timeclock.Rules{}, testIdentity, in); err == nil {
 		t.Fatal("backdated foreman punch should fail")
 	}
 }
@@ -330,13 +330,13 @@ func TestPerformPunch_OpenCheckoutsBlockAndForce(t *testing.T) {
 	s := seedFixtures(t, app)
 	rules := timeclock.Rules{BlockClockOutWithOpenCheckouts: true}
 
-	if _, err := timeclock.PerformPunch(app, nil, rules, testIdentity, selfPunch("EMP-2", "in")); err != nil {
+	if _, err := timeclock.PerformPunch(app, nil, nil, rules, testIdentity, selfPunch("EMP-2", "in")); err != nil {
 		t.Fatalf("clock in: %v", err)
 	}
 	seedOpenCheckout(t, app, s.WorkerID, s.ItemID)
 
 	// Self clock-out blocked, count carried.
-	_, err := timeclock.PerformPunch(app, nil, rules, testIdentity, selfPunch("EMP-2", "out"))
+	_, err := timeclock.PerformPunch(app, nil, nil, rules, testIdentity, selfPunch("EMP-2", "out"))
 	if !errors.Is(err, timeclock.ErrOpenCheckouts) {
 		t.Fatalf("blocked clock-out: got %v, want ErrOpenCheckouts", err)
 	}
@@ -353,13 +353,13 @@ func TestPerformPunch_OpenCheckoutsBlockAndForce(t *testing.T) {
 		ActorAdminID:   s.AdminID,
 		Reason:         "left site",
 	}
-	if _, err := timeclock.PerformPunch(app, nil, rules, testIdentity, adminOut); !errors.Is(err, timeclock.ErrOpenCheckouts) {
+	if _, err := timeclock.PerformPunch(app, nil, nil, rules, testIdentity, adminOut); !errors.Is(err, timeclock.ErrOpenCheckouts) {
 		t.Fatalf("admin non-force: got %v, want ErrOpenCheckouts", err)
 	}
 
 	// Admin force is the escape hatch.
 	adminOut.Force = true
-	res, err := timeclock.PerformPunch(app, nil, rules, testIdentity, adminOut)
+	res, err := timeclock.PerformPunch(app, nil, nil, rules, testIdentity, adminOut)
 	if err != nil {
 		t.Fatalf("forced clock-out: %v", err)
 	}
@@ -369,6 +369,70 @@ func TestPerformPunch_OpenCheckoutsBlockAndForce(t *testing.T) {
 	rec, _ := app.FindRecordById(timeclock.Collection, res.PunchID)
 	if !rec.GetBool("force") {
 		t.Fatal("force flag not persisted")
+	}
+}
+
+// A worker with NO local open checkouts but tools out at ANOTHER kiosk (per the
+// fleet replica) is blocked here, and a self-acknowledgment (Force) clears it.
+func TestPerformPunch_FleetOpenCheckoutsBlockAndAcknowledge(t *testing.T) {
+	app := setupApp(t)
+	seedFixtures(t, app)
+	rules := timeclock.Rules{BlockClockOutWithOpenCheckouts: true}
+
+	if _, err := timeclock.PerformPunch(app, nil, nil, rules, testIdentity, selfPunch("EMP-2", "in")); err != nil {
+		t.Fatalf("clock in: %v", err)
+	}
+
+	fleet := timeclock.NewCheckoutFleet()
+	fleet.Upsert(timeclock.OpenCheckoutsStatePayload{
+		UserCode: "EMP-2",
+		Rows:     []timeclock.OpenCheckoutRow{{ItemCode: "DRILL", ItemName: "Drill", KioskCode: "KIOSK-B"}},
+	})
+
+	_, err := timeclock.PerformPunch(app, nil, fleet, rules, testIdentity, selfPunch("EMP-2", "out"))
+	var oc *timeclock.OpenCheckoutsError
+	if !errors.As(err, &oc) || oc.Count != 1 {
+		t.Fatalf("fleet row at another kiosk must block: got %v", err)
+	}
+
+	// Self "clock out anyway" — Force on a self punch acknowledges the open
+	// tools, clears the block, and is recorded as source=self force=true.
+	ack := selfPunch("EMP-2", "out")
+	ack.Force = true
+	res, err := timeclock.PerformPunch(app, nil, fleet, rules, testIdentity, ack)
+	if err != nil {
+		t.Fatalf("acknowledged clock-out: %v", err)
+	}
+	if res.ClockedIn {
+		t.Fatalf("expected clocked out after acknowledge: %+v", res)
+	}
+	rec, _ := app.FindRecordById(timeclock.Collection, res.PunchID)
+	if !rec.GetBool("force") || rec.GetString("source") != timeclock.SourceSelf {
+		t.Fatalf("acknowledgment should persist as source=self force=true, got source=%q force=%v",
+			rec.GetString("source"), rec.GetBool("force"))
+	}
+}
+
+// Replica rows tagged with THIS kiosk's own code must not block: the local
+// open_checkouts table is authoritative for this kiosk, so a self-tagged
+// replica row (an echo of a local checkout) would otherwise double-count.
+func TestPerformPunch_FleetSelfKioskRowsDoNotDoubleBlock(t *testing.T) {
+	app := setupApp(t)
+	seedFixtures(t, app)
+	rules := timeclock.Rules{BlockClockOutWithOpenCheckouts: true}
+
+	if _, err := timeclock.PerformPunch(app, nil, nil, rules, testIdentity, selfPunch("EMP-2", "in")); err != nil {
+		t.Fatalf("clock in: %v", err)
+	}
+
+	fleet := timeclock.NewCheckoutFleet()
+	fleet.Upsert(timeclock.OpenCheckoutsStatePayload{
+		UserCode: "EMP-2",
+		Rows:     []timeclock.OpenCheckoutRow{{ItemCode: "DRILL", KioskCode: testIdentity.KioskCode}},
+	})
+
+	if _, err := timeclock.PerformPunch(app, nil, fleet, rules, testIdentity, selfPunch("EMP-2", "out")); err != nil {
+		t.Fatalf("self-tagged replica row must not block: %v", err)
 	}
 }
 
@@ -384,14 +448,14 @@ func TestPerformPunch_CommandIDIdempotency(t *testing.T) {
 		Reason:            "remote punch",
 		CommandID:         "cmd-123",
 	}
-	first, err := timeclock.PerformPunch(app, nil, timeclock.Rules{}, testIdentity, in)
+	first, err := timeclock.PerformPunch(app, nil, nil, timeclock.Rules{}, testIdentity, in)
 	if err != nil {
 		t.Fatalf("first punch: %v", err)
 	}
 	if first.Replayed {
 		t.Fatal("first punch must not be a replay")
 	}
-	second, err := timeclock.PerformPunch(app, nil, timeclock.Rules{}, testIdentity, in)
+	second, err := timeclock.PerformPunch(app, nil, nil, timeclock.Rules{}, testIdentity, in)
 	if err != nil {
 		t.Fatalf("replayed punch: %v", err)
 	}
@@ -416,7 +480,7 @@ func TestCurrentState_FleetMergeRule(t *testing.T) {
 		Reason:         "seed",
 		OccurredAt:     time.Now().Add(-time.Hour),
 	}
-	if _, err := timeclock.PerformPunch(app, nil, timeclock.Rules{}, testIdentity, adminOut); err != nil {
+	if _, err := timeclock.PerformPunch(app, nil, nil, timeclock.Rules{}, testIdentity, adminOut); err != nil {
 		t.Fatalf("seed punch: %v", err)
 	}
 
@@ -437,7 +501,7 @@ func TestCurrentState_FleetMergeRule(t *testing.T) {
 	}
 
 	// With the fleet saying "in", a live clock-out HERE passes alternation.
-	res, err := timeclock.PerformPunch(app, fleet, timeclock.Rules{}, testIdentity, selfPunch("EMP-2", "out"))
+	res, err := timeclock.PerformPunch(app, fleet, nil, timeclock.Rules{}, testIdentity, selfPunch("EMP-2", "out"))
 	if err != nil {
 		t.Fatalf("cross-kiosk clock-out: %v", err)
 	}
@@ -465,7 +529,7 @@ func TestCurrentState_OwnPunchEchoStaysLocal(t *testing.T) {
 	s := seedFixtures(t, app)
 	fleet := timeclock.NewFleet()
 
-	res, err := timeclock.PerformPunch(app, fleet, timeclock.Rules{}, testIdentity, selfPunch("EMP-2", "in"))
+	res, err := timeclock.PerformPunch(app, fleet, nil, timeclock.Rules{}, testIdentity, selfPunch("EMP-2", "in"))
 	if err != nil {
 		t.Fatalf("clock in: %v", err)
 	}

@@ -14,12 +14,13 @@
 // It supports the SAME three operating modes as cmd/kiosk, degrading exactly
 // the same way:
 //   - standalone:        local punch ledger only; workers provisioned locally
-//                        (admin SPA / superuser / CSV); clocked-in state local.
+//     (admin SPA / superuser / CSV); clocked-in state local.
 //   - standalone + NATS: also publishes timeclock.punch events for an external
-//                        consumer; still local workers + local state.
+//     consumer; still local workers + local state.
 //   - controller-managed: workers (with email, for auth) sync from the
-//                        catalog_users watcher and clocked-in state merges
-//                        fleet-wide via the punch_state replica.
+//     catalog_users watcher and clocked-in state merges
+//     fleet-wide via the punch_state replica.
+//
 // Only timeclock.virtual=true (which implies timeclock.enabled) is required.
 package main
 
@@ -118,9 +119,11 @@ func main() {
 	events.SetPublisher(pub)
 
 	var (
-		catalogWatcher *catalog.Watcher
-		punchWatcher   *timeclock.Watcher
-		punchFleet     *timeclock.Fleet
+		catalogWatcher  *catalog.Watcher
+		punchWatcher    *timeclock.Watcher
+		punchFleet      *timeclock.Fleet
+		checkoutWatcher *timeclock.CheckoutWatcher
+		checkoutFleet   *timeclock.CheckoutFleet
 	)
 	watcherCtx, watcherCancel := context.WithCancel(context.Background())
 	heartbeatCtx, heartbeatCancel := context.WithCancel(context.Background())
@@ -141,6 +144,8 @@ func main() {
 				cfg.Kiosk.Code)
 			punchFleet = timeclock.NewFleet()
 			punchWatcher = timeclock.NewWatcher(js, punchFleet)
+			checkoutFleet = timeclock.NewCheckoutFleet()
+			checkoutWatcher = timeclock.NewCheckoutWatcher(js, checkoutFleet)
 			app.OnServe().BindFunc(func(e *core.ServeEvent) error {
 				if err := catalogWatcher.Start(watcherCtx); err != nil {
 					log.Printf("catalog watcher: %v — workers may not sync until it recovers", err)
@@ -149,6 +154,10 @@ func main() {
 				if err := punchWatcher.Start(watcherCtx); err != nil {
 					log.Printf("punch watcher: %v — clocked-in state degrades to local-only", err)
 					punchWatcher = nil
+				}
+				if err := checkoutWatcher.Start(watcherCtx); err != nil {
+					log.Printf("checkout watcher: %v — clock-out gate degrades to local-only open checkouts", err)
+					checkoutWatcher = nil
 				}
 				return e.Next()
 			})
@@ -173,6 +182,9 @@ func main() {
 	// nil in the unmanaged modes — the timeclock merge rule is nil-safe and
 	// degrades to local-only clocked-in state.
 	h.PunchFleet = punchFleet
+	// nil in the unmanaged modes — the clock-out gate is nil-safe and degrades
+	// to local-only open checkouts (and the virtual terminal has none locally).
+	h.CheckoutFleet = checkoutFleet
 
 	// Drain in-flight notification goroutines before PB tears the DB down — a
 	// deliver() waking after the DB closes would panic. Same bounded best-effort
@@ -219,6 +231,9 @@ func main() {
 		}
 		if punchWatcher != nil {
 			punchWatcher.Stop()
+		}
+		if checkoutWatcher != nil {
+			checkoutWatcher.Stop()
 		}
 		watcherCancel()
 		heartbeatCancel()

@@ -533,15 +533,27 @@ returns-only carts pass by construction; `CartCommit` maps the wrapped
 `timeclock.ErrNotClockedIn` to a 409 `{error:"not_clocked_in"}` the SPA
 turns into a one-tap "clock in now?" — keep that carve-out when touching
 commit error handling). `block_clock_out_with_open_checkouts` rejects
-clock-outs while the worker has open checkouts at THIS kiosk
-(local-scoped in v1, deliberately no fleet-wide WAN check at punch time).
+clock-outs while the worker has open checkouts. The funnel merges THIS
+kiosk's local `open_checkouts` with the fleet-wide replica (the
+controller-written `open_checkouts_state` KV bucket, hydrated into a
+`timeclock.CheckoutFleet` via `timeclock.CheckoutWatcher` — sibling of the
+punch-state replica), partitioned by `kiosk_code` so the two views are
+disjoint and never double-count. So a clock-out at any surface sees tools out
+at OTHER kiosks; the error carries the per-row `kiosk_code` ("return it at
+that building"). It's eventually consistent and fail-open: a nil/empty replica
+(standalone, KV down) blocks on local rows only. Admin `force=true` overrides;
+a **self/foreman `force=true`** is the worker's "clock out anyway"
+acknowledgment (same column, told apart by `source` — see
+`PerformPunch`/`PunchInput.Force`). The funnel only counts; the HTTP layer
+hydrates the merged display list via `Handlers.mergedOpenCheckoutsForUser`.
 **Timeclock-only mode** (`timeclock.timeclock_only`, requires `enabled`)
 turns the device into a dedicated punch station: the SPA replaces the
 checkout splash with a persistent `TimeclockPanel` (`standalone` prop)
 and routes badge scans straight to it; item scans toast. Presentation
-only — no backend changes, carts simply never start. The
-open-checkouts clock-out block is a no-op there (local-scoped,
-nothing local to block on).
+only — no backend changes, carts simply never start. A punch-only station
+writes no local `open_checkouts`, so the clock-out block has nothing LOCAL to
+block on — but in managed mode it still blocks on the fleet replica (tools out
+at other kiosks); standalone, it's a no-op (no replica).
 **Cross-kiosk punches work in managed mode**: the controller projects
 each punch into its own `time_punches` and broadcasts per-user state into
 the `punch_state` KV bucket (key = `user_code`, like `catalog_users`;
@@ -595,9 +607,12 @@ persistent `pbWorker` client + `useWorkerAuthStore`, with `lib/api.ts`
 attaching the worker token for `/api/self/*` by URL prefix). It supports the
 SAME three modes as `cmd/kiosk` (standalone / standalone+NATS /
 controller-managed) with identical best-effort wiring — in unmanaged modes
-workers are provisioned locally and `PunchFleet` is nil (local-only state);
-managed mode adds the catalog-synced workers + `punch_state` replica. The
-fleet-wide clock-out block is still a deferred fast-follow.
+workers are provisioned locally and `PunchFleet`/`CheckoutFleet` are nil
+(local-only state); managed mode adds the catalog-synced workers + the
+`punch_state` and `open_checkouts_state` replicas. The fleet-wide clock-out
+gate (above) is what makes a phone clock-out — which has no local
+`open_checkouts` at all — able to see and block on a worker's tools out across
+the fleet.
 
 **Per-kiosk catalog membership.** Controller-side `kiosk_items` is the
 source of truth for "which SKUs does kiosk X stock." A row exists →
@@ -647,7 +662,16 @@ the same row.
   drift from a kiosk's. Serialized returns pair via `source_item_instance_id`
   on the projected line; the matching mirrors commit exactly —
   target-user-only on returns, **no** cross-user borrowing
-  (`ledger.removeRows`). `integrity.rebuild` reaches the controller
+  (`ledger.removeRows`). After a successful line projection (and the
+  admin_close line), the aggregator also recomputes the affected user's
+  fleet-wide open set — `ledger.ReplayOpenRowsForUser` (a per-user replay
+  over the union of the user's own transactions plus any transaction whose
+  return/close names them as `original_checkout_user`, so a foreman's
+  cross-user return still closes the holder's row) — and writes it to the
+  `open_checkouts_state` KV bucket keyed by `user_code`
+  (`refreshOpenCheckoutsState`, always writing incl. the empty case so a
+  return clears the gate). That bucket is the cross-kiosk clock-out gate's
+  replica; advisory + best-effort, same posture as `punch_state`. `integrity.rebuild` reaches the controller
   ack-and-log only — there is nothing materialized to rebuild. The two
   managed-mode notification subjects `receipt.transaction` and
   `alert.lowstock` ride the same durable consumer but are dispatched in

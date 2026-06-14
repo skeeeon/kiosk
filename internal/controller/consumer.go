@@ -140,6 +140,13 @@ type Aggregator struct {
 	// rule + the next punch self-heal.
 	punchKV jetstream.KeyValue
 
+	// checkoutKV is the open_checkouts_state bucket the aggregator recomputes
+	// per-user after projecting a checkout/return/admin_close line. Feeds the
+	// cross-kiosk clock-out gate at managed kiosks + the virtual terminal.
+	// Provisioned in Start; nil until then (refreshOpenCheckoutsState
+	// nil-checks). Advisory, same posture as punchKV.
+	checkoutKV jetstream.KeyValue
+
 	cancelCtx context.CancelFunc
 	consumeCC jetstream.ConsumeContext
 }
@@ -192,6 +199,17 @@ func (a *Aggregator) Start(parent context.Context) error {
 		slog.Warn("controller.aggregator.punch_state_bucket_failed", "error", kvErr)
 	} else {
 		a.punchKV = kv
+	}
+
+	// open_checkouts_state bucket — same best-effort posture as punch_state.
+	if kv, kvErr := a.js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
+		Bucket:      timeclock.OpenCheckoutsStateBucket,
+		Description: "Per-user fleet-wide open-checkout summary, broadcast-keyed by user_code. Written by the controller aggregator, watched by managed kiosks for the cross-kiosk clock-out gate.",
+		History:     1,
+	}); kvErr != nil {
+		slog.Warn("controller.aggregator.open_checkouts_state_bucket_failed", "error", kvErr)
+	} else {
+		a.checkoutKV = kv
 	}
 
 	cc, err := cons.Consume(func(msg jetstream.Msg) {
@@ -335,7 +353,7 @@ func (a *Aggregator) handle(ctx context.Context, msg jetstream.Msg) {
 		}
 		a.handleTransactionComplete(msg, payload)
 	case strings.Contains(subject, ".item."):
-		a.handleItemAction(msg, payload)
+		a.handleItemAction(ctx, msg, payload)
 	case strings.HasSuffix(subject, ".inventory.adjust"):
 		a.handleInventoryAdjust(msg, payload)
 	case strings.HasSuffix(subject, ".integrity.rebuild"):
@@ -365,7 +383,7 @@ func (a *Aggregator) handle(ctx context.Context, msg jetstream.Msg) {
 			"source", payload.Source,
 			"admin_id", payload.AdminID,
 			"controller_admin_id", payload.ControllerAdminID)
-		a.handleCheckoutAdminClose(msg, payload)
+		a.handleCheckoutAdminClose(ctx, msg, payload)
 	case strings.HasSuffix(subject, ".instance.lifecycle"):
 		a.handleInstanceLifecycle(msg, payload)
 	case strings.HasSuffix(subject, ".timeclock.punch"):
@@ -636,7 +654,7 @@ func (a *Aggregator) ProjectTransaction(p EventPayload) projectOutcome {
 	return projectAck
 }
 
-func (a *Aggregator) handleItemAction(msg jetstream.Msg, p EventPayload) {
+func (a *Aggregator) handleItemAction(ctx context.Context, msg jetstream.Msg, p EventPayload) {
 	// Item actions only project the ledger line. "What's currently out" is
 	// derived on demand by replaying transaction_lines (ledger.ReplayOpenRows),
 	// so there's no separate open_checkouts row to maintain here — the line IS
@@ -644,6 +662,10 @@ func (a *Aggregator) handleItemAction(msg jetstream.Msg, p EventPayload) {
 	// redelivery is a no-op.
 	switch a.ProjectLine(p) {
 	case projectAck:
+		// The line changed (or could have changed) the affected user's open
+		// set — refresh the fleet open-checkouts replica that feeds the
+		// cross-kiosk clock-out gate. Best-effort; never blocks the ack.
+		a.refreshOpenCheckoutsForLine(ctx, p)
 		_ = msg.Ack()
 	case projectRetry:
 		// Usually "parent transaction.complete not here yet" — delay so it has
@@ -654,9 +676,12 @@ func (a *Aggregator) handleItemAction(msg jetstream.Msg, p EventPayload) {
 
 // handleCheckoutAdminClose dispatches a checkout.admin_close event. The audit
 // log lives in the parent handle(); this projects the close into the ledger.
-func (a *Aggregator) handleCheckoutAdminClose(msg jetstream.Msg, p EventPayload) {
+func (a *Aggregator) handleCheckoutAdminClose(ctx context.Context, msg jetstream.Msg, p EventPayload) {
 	switch a.ProjectAdminCloseToLedger(p) {
 	case projectAck:
+		// An admin close removes the holder's open row — refresh their fleet
+		// replica too (p.UserCode is the holder for admin_close).
+		a.refreshOpenCheckoutsForLine(ctx, p)
 		_ = msg.Ack()
 	case projectRetry:
 		_ = msg.NakWithDelay(2 * time.Second)

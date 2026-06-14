@@ -36,6 +36,33 @@ func (h *Handlers) punchRules() timeclock.Rules {
 	}
 }
 
+// mergedOpenCheckoutsForUser is the display list for the clock-out gate: this
+// kiosk's local open_checkouts (stamped with the local kiosk code) plus the
+// CheckoutFleet replica's rows for OTHER kiosks, partitioned by kiosk_code so
+// the two views never double-count. It mirrors exactly the merge the punch
+// funnel blocks on, so the SPA's "return it at <building>" list matches the
+// gate. A nil/empty replica (standalone, or KV down) yields just the local
+// rows — fail-open for the cross-kiosk portion.
+func (h *Handlers) mergedOpenCheckoutsForUser(userID, userCode string) []scan.OpenCheckoutDetail {
+	selfKiosk := kioskctx.Get().KioskCode
+	local := h.openCheckoutsForUser(userID)
+	out := make([]scan.OpenCheckoutDetail, 0, len(local))
+	for _, d := range local {
+		d.KioskCode = selfKiosk
+		out = append(out, d)
+	}
+	for _, r := range h.CheckoutFleet.RowsForOtherKiosks(userCode, selfKiosk) {
+		out = append(out, scan.OpenCheckoutDetail{
+			ItemCode:       r.ItemCode,
+			ItemName:       r.ItemName,
+			InstanceSerial: r.Serial,
+			Qty:            1,
+			KioskCode:      r.KioskCode,
+		})
+	}
+	return out
+}
+
 // TimeclockStatus returns the merged clocked-in state for one user plus the
 // context the SPA timeclock screen renders: last-punch origin, the user's
 // open checkouts (shown when a clock-out would be blocked), and whether the
@@ -69,7 +96,7 @@ func (h *Handlers) TimeclockStatus(re *core.RequestEvent) error {
 		"clocked_in":      state.ClockedIn,
 		"since":           state.OccurredAt,
 		"origin":          state.Origin,
-		"open_checkouts":  h.openCheckoutsForUser(user.Id),
+		"open_checkouts":  h.mergedOpenCheckoutsForUser(user.Id, userCode),
 		"block_clock_out": h.Cfg.Timeclock.BlockClockOutWithOpenCheckouts,
 		"today_seconds":   h.todayWorkedSeconds(userCode),
 	})
@@ -121,6 +148,10 @@ func (h *Handlers) TimeclockPunch(re *core.RequestEvent) error {
 		UserCode       string `json:"user_code"`
 		TargetUserCode string `json:"target_user_code"`
 		Direction      string `json:"direction"`
+		// Acknowledge is the worker/foreman "clock out anyway" past the
+		// open-checkouts block. Maps to the funnel's Force (which for a
+		// non-admin source bypasses ONLY that block — see PunchInput.Force).
+		Acknowledge bool `json:"acknowledge"`
 	}
 	if err := re.BindBody(&body); err != nil {
 		return re.BadRequestError("invalid request body", err)
@@ -133,6 +164,7 @@ func (h *Handlers) TimeclockPunch(re *core.RequestEvent) error {
 		TargetUserCode: body.UserCode,
 		Direction:      body.Direction,
 		Source:         timeclock.SourceSelf,
+		Force:          body.Acknowledge,
 	}
 	recordedByUserCode := ""
 	if body.TargetUserCode != "" && body.TargetUserCode != body.UserCode {
@@ -151,7 +183,7 @@ func (h *Handlers) TimeclockPunch(re *core.RequestEvent) error {
 		recordedByUserCode = body.UserCode
 	}
 
-	res, err := timeclock.PerformPunch(h.App, h.PunchFleet, h.punchRules(), kioskctx.Get(), in)
+	res, err := timeclock.PerformPunch(h.App, h.PunchFleet, h.CheckoutFleet, h.punchRules(), kioskctx.Get(), in)
 	if err != nil {
 		return h.punchError(re, err, in.TargetUserCode)
 	}
@@ -264,7 +296,7 @@ func (h *Handlers) TimeclockAdminPunch(re *core.RequestEvent) error {
 		}
 		in.OccurredAt = t
 	}
-	res, err := timeclock.PerformPunch(h.App, h.PunchFleet, h.punchRules(), kioskctx.Get(), in)
+	res, err := timeclock.PerformPunch(h.App, h.PunchFleet, h.CheckoutFleet, h.punchRules(), kioskctx.Get(), in)
 	if err != nil {
 		return h.punchError(re, err, in.TargetUserCode)
 	}
@@ -296,12 +328,13 @@ func (h *Handlers) punchError(re *core.RequestEvent, err error, targetUserCode s
 			"message": "Not clocked in.",
 		})
 	case errors.As(err, &oc):
-		// Hydrate the blocking rows for the SPA. The funnel only counted;
-		// the user re-resolve here is best-effort display data.
+		// Hydrate the blocking rows for the SPA — local + fleet, the same merge
+		// the funnel blocked on. The funnel only counted; the re-resolve here is
+		// best-effort display data.
 		var details []scan.OpenCheckoutDetail
 		if u, uerr := h.App.FindFirstRecordByFilter("users", "code = {:c}",
 			dbx.Params{"c": targetUserCode}); uerr == nil {
-			details = h.openCheckoutsForUser(u.Id)
+			details = h.mergedOpenCheckoutsForUser(u.Id, targetUserCode)
 		}
 		return re.JSON(http.StatusConflict, map[string]any{
 			"error":          "open_checkouts",

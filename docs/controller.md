@@ -41,6 +41,16 @@ of truth for catalog plus a unified transaction ledger.
   phone punch shows up fleet-wide and vice-versa. Kiosks remain the only
   punch writers; a controller-admin punch is recorded *at* the target kiosk
   via the `timeclock.punch` command.
+- **Fleet-wide clock-out gate.** A second per-user replica rides the same
+  channel: after projecting a checkout/return/admin-close line the aggregator
+  recomputes that worker's fleet-wide open checkouts (`ReplayOpenRowsForUser`)
+  and writes them to the **`open_checkouts_state` KV bucket** (keyed by
+  `user_code`). Managed kiosks and the phone terminal watch it, so a clock-out
+  anywhere can block on — and name the building for — tools the worker has out
+  at *other* kiosks. It's advisory and **fail-open**: a stale or unreachable
+  replica allows the clock-out rather than stranding the worker, who can also
+  "clock out anyway" to acknowledge and proceed. This is what makes the gate
+  meaningful on the phone terminal, which holds no local checkouts at all.
 - **Kiosks registry.** Three ways a kiosk gets a row in the
   controller's `kiosks` collection: (1) **pre-registered** by an admin
   via the "New kiosk" button on AdminKiosksView — required if you want

@@ -39,6 +39,12 @@ type OpenCheckoutDetail struct {
 	InstanceSerial   string `json:"instance_serial,omitempty"`
 	Qty              int    `json:"qty"`
 	CheckedOutAt     string `json:"checked_out_at"`
+	// KioskCode is the building/kiosk where this unit is out — the "return it
+	// here" hint on the clock-out gate. Empty for local kiosk rows from the
+	// plain scan path (one DB = one kiosk); populated for fleet-replica rows
+	// and stamped with the local kiosk's code when the clock-out gate merges
+	// the two views.
+	KioskCode string `json:"kiosk_code,omitempty"`
 }
 
 type Item struct {

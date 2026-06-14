@@ -96,7 +96,7 @@ func TestCommit_TimeclockInterlock(t *testing.T) {
 	t.Run("clocked in locally passes", func(t *testing.T) {
 		app := setupApp(t)
 		s := seedFixtures(t, app)
-		if _, err := timeclock.PerformPunch(app, nil, timeclock.Rules{}, testIdentity, timeclock.PunchInput{
+		if _, err := timeclock.PerformPunch(app, nil, nil, timeclock.Rules{}, testIdentity, timeclock.PunchInput{
 			TargetUserCode: "EMP-1",
 			Direction:      "in",
 			Source:         timeclock.SourceSelf,

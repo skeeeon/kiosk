@@ -43,6 +43,11 @@ type Handlers struct {
 	// when timeclock is disabled — every consumer is nil-safe via the
 	// timeclock merge rule.
 	PunchFleet *timeclock.Fleet
+	// CheckoutFleet is the managed-mode replica of each worker's fleet-wide
+	// open checkouts (see internal/timeclock.CheckoutFleet), feeding the
+	// cross-kiosk clock-out gate. Nil on standalone kiosks or when KV is
+	// unavailable — every consumer is nil-safe and degrades to local-only.
+	CheckoutFleet *timeclock.CheckoutFleet
 }
 
 func New(app core.App, cfg *config.Config, carts *cart.Store, notifier *notifications.Notifier) *Handlers {
