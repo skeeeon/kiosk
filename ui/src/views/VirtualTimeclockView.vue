@@ -298,7 +298,14 @@ const todayIntervals = computed(() =>
 </script>
 
 <template>
-  <div class="min-h-full flex flex-col items-center justify-center px-4 py-8 bg-slate-950">
+  <!-- Scroll contract — same idiom as CheckoutView's scroll regions: App.vue's
+       h-dvh + overflow-hidden shell hands this root a bounded `flex-1 min-h-0`
+       slot, so THIS element owns the scrollport (overflow-y-auto). Content is
+       top-aligned under the branding header (items-center for horizontal, no
+       justify-center) so the punch card + timesheet summary stack scrolls when
+       it's taller than the phone instead of spilling unreachably under the
+       shell's overflow-hidden. -->
+  <div class="flex-1 min-h-0 overflow-y-auto flex flex-col items-center px-4 py-8 bg-slate-950">
     <div class="w-full max-w-md">
       <!-- Branding header -->
       <div class="flex flex-col items-center gap-3 mb-6 text-center">
