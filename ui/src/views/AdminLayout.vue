@@ -97,9 +97,12 @@ const navItems = computed<NavItem[]>(() => [
   { name: 'admin-items', label: 'Items', section: 'catalog', visible: () => !isTimeclockVirtual.value },
   { name: 'admin-users', label: 'Workers', section: 'catalog' },
   { name: 'admin-groups', label: 'Groups', section: 'catalog' },
+  // Transactions is the raw ledger; the Reports tabs are specialized views
+  // over it, so it leads the Operations group. Hidden on the timeclock
+  // terminal — it has no checkout transactions and doesn't register the
+  // transactions CSV endpoint.
+  { name: 'admin-transactions', label: 'Transactions', section: 'ops', visible: () => !isTimeclockVirtual.value },
   { name: 'admin-reports', label: 'Reports', section: 'ops' },
-  // Controller-only — an operational ledger drill-down, grouped with Reports.
-  { name: 'admin-transactions', label: 'Transactions', section: 'ops', visible: () => isController.value },
   { name: 'admin-metrics', label: 'Metrics', section: 'ops', visible: () => !isController.value && !isTimeclockVirtual.value },
   { name: 'admin-notifications', label: 'Notifications', section: 'ops' },
   { name: 'admin-catalog-sync', label: 'Catalog sync', section: 'ops', visible: () => isController.value },

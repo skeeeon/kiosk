@@ -8,9 +8,6 @@ import { useUrlQuerySync } from '../composables/useUrlQuerySync'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import CheckoutCloseDialog from '../components/CheckoutCloseDialog.vue'
 import DataTable, { type ColumnDef } from '../components/DataTable.vue'
-import TransactionDetailDialog, {
-  type TxSummary,
-} from '../components/TransactionDetailDialog.vue'
 import TimeclockPunchDialog from '../components/TimeclockPunchDialog.vue'
 import type {
   ClockedInRow,
@@ -28,7 +25,7 @@ const timeclockEnabled = computed(() => !!identity.value?.timeclock_enabled)
 // Timeclock (see the identity watch below).
 const isTimeclockVirtual = computed(() => identity.value?.timeclock_virtual ?? false)
 
-type Tab = 'currently-out' | 'low-stock' | 'group-activity' | 'recent' | 'audit' | 'lifecycle' | 'notifications' | 'timeclock'
+type Tab = 'currently-out' | 'low-stock' | 'group-activity' | 'audit' | 'lifecycle' | 'notifications' | 'timeclock'
 const tab = ref<Tab>('currently-out')
 const toast = useToast()
 
@@ -163,13 +160,6 @@ interface GroupActivityRow {
 const openRows = ref<OpenRow[]>([])
 const openSearch = ref('')
 const overdueOnly = ref(false)
-const txRows = ref<TxRow[]>([])
-const txPage = ref(1)
-const txPerPage = ref(50)
-const txTotal = ref(0)
-const txFrom = ref('')
-const txTo = ref('')
-const txUserFilter = ref('')
 const lowStockRows = ref<LowStockRow[]>([])
 const fleetLowStockRows = ref<FleetLowStockRow[]>([])
 const fleetLowStockErrors = ref<{ kiosk_code: string; error: string }[]>([])
@@ -258,9 +248,6 @@ async function onCheckoutClosed() {
   loadCurrentTab()
 }
 
-const selectedTx = ref<TxSummary | null>(null)
-const detailOpen = ref(false)
-
 async function loadCurrentlyOut() {
   loading.value = true
   error.value = null
@@ -274,34 +261,6 @@ async function loadCurrentlyOut() {
     openRows.value.sort((a, b) =>
       a.checked_out_at.localeCompare(b.checked_out_at),
     )
-  } catch (e) {
-    error.value = (e as Error).message
-  } finally {
-    loading.value = false
-  }
-}
-
-async function loadTransactions(page = 1) {
-  loading.value = true
-  error.value = null
-  try {
-    const filterParts = ['status = "completed"']
-    if (kioskFilter.value) {
-      filterParts.push(pb.filter('kiosk_code = {:k}', { k: kioskFilter.value }))
-    }
-    if (txFrom.value) filterParts.push(`completed_at >= "${txFrom.value} 00:00:00.000Z"`)
-    if (txTo.value) filterParts.push(`completed_at <= "${txTo.value} 23:59:59.999Z"`)
-    if (txUserFilter.value.trim()) {
-      filterParts.push(pb.filter('user.code = {:uc}', { uc: txUserFilter.value.trim() }))
-    }
-    const res = await pb.collection('transactions').getList<TxRow>(page, txPerPage.value, {
-      filter: filterParts.join(' && '),
-      sort: '-completed_at',
-      expand: 'user',
-    })
-    txRows.value = res.items
-    txPage.value = res.page
-    txTotal.value = res.totalItems
   } catch (e) {
     error.value = (e as Error).message
   } finally {
@@ -663,18 +622,6 @@ async function onRebuild() {
   }
 }
 
-// exportCsv downloads the Recent-transactions tab honoring its on-screen
-// filters. transactions.csv wants RFC3339 boundaries, so the YYYY-MM-DD date
-// inputs are widened to full-day start/end (UTC) — matching AdminTransactionsView.
-function exportCsv() {
-  return exportReport('/api/kiosk/transactions.csv', {
-    from: txFrom.value ? `${txFrom.value}T00:00:00Z` : '',
-    to: txTo.value ? `${txTo.value}T23:59:59Z` : '',
-    kiosk_code: kioskFilter.value,
-    user_code: txUserFilter.value.trim(),
-  })
-}
-
 // exportReport is the generic CSV downloader for the reports tabs. Each
 // tab's button builds the query string from its own filter state so the
 // downloaded rows match what the table is showing on screen.
@@ -817,7 +764,6 @@ function loadCurrentTab() {
     else loadLowStock()
   }
   else if (tab.value === 'group-activity') loadGroupActivity()
-  else if (tab.value === 'recent') loadTransactions(1)
   else if (tab.value === 'audit') loadAudit(1)
   else if (tab.value === 'lifecycle') loadLifecycle(1)
   else if (tab.value === 'notifications') loadNotificationsSummary()
@@ -833,7 +779,7 @@ loadKiosks()
 // an unfiltered URL stays clean. Called BEFORE the loader watches below so a
 // deep-linked filter is already hydrated when the first load fires.
 const VALID_TABS = [
-  'currently-out', 'low-stock', 'group-activity', 'recent',
+  'currently-out', 'low-stock', 'group-activity',
   'audit', 'lifecycle', 'notifications', 'timeclock',
 ]
 const parseBool = (v: string) => v === '1' || v === 'true'
@@ -849,10 +795,6 @@ useUrlQuerySync({
   // Group activity
   ga_from: { ref: groupActivityFrom, default: defaultFromDate() },
   ga_to: { ref: groupActivityTo, default: defaultToDate() },
-  // Recent transactions
-  tx_from: { ref: txFrom, default: '' },
-  tx_to: { ref: txTo, default: '' },
-  tx_user: { ref: txUserFilter, default: '' },
   // Adjustment audit
   au_from: { ref: auditFrom, default: defaultFromDate() },
   au_to: { ref: auditTo, default: defaultToDate() },
@@ -889,10 +831,6 @@ watch(
 
 watch(tab, loadCurrentTab, { immediate: true })
 watch(kioskFilter, loadCurrentTab)
-// Recent-transactions filters are server-side (the tab is paginated), so a
-// change re-queries from page 1. Inputs only render on the Recent tab, so this
-// can't fire spuriously from another tab.
-watch([txFrom, txTo, txUserFilter], () => loadTransactions(1))
 
 function formatRelative(iso: string): string {
   const ms = Date.now() - new Date(iso).getTime()
@@ -970,27 +908,6 @@ const rowsOverThreshold = computed(() =>
   filteredOpen.value.filter((r) => daysOut(r.checked_out_at) >= highlightThresholdDays.value).length,
 )
 
-function openTxDetail(t: TxRow) {
-  selectedTx.value = {
-    id: t.id,
-    completedAt: t.completed_at,
-    userName: t.expand?.user?.name ?? '(unknown)',
-    userCode: t.expand?.user?.code ?? '',
-    kioskCode: t.kiosk_code,
-    locationCode: t.location_code,
-  }
-  detailOpen.value = true
-}
-
-const txColumns: ColumnDef[] = [
-  { key: 'completed', label: 'Completed' },
-  { key: 'who', label: 'Who' },
-  { key: 'kiosk', label: 'Kiosk' },
-  { key: 'location', label: 'Location' },
-  { key: 'lines', label: 'Lines', align: 'right' },
-  { key: 'status', label: 'Status' },
-]
-
 const auditColumns: ColumnDef[] = [
   { key: 'when', label: 'When' },
   { key: 'kiosk', label: 'Kiosk' },
@@ -1061,18 +978,6 @@ const lifecycleColumns = computed<ColumnDef[]>(() => {
         @click="tab = 'group-activity'"
       >
         Group activity
-      </button>
-      <!-- Hidden on the controller: the richer, URL-synced /admin/transactions
-           view is the fleet's transactions surface there. Kiosks have no such
-           nav, so this tab stays their way to browse transactions. -->
-      <button
-        v-if="!isTimeclockVirtual && !isController"
-        type="button"
-        class="px-4 py-2 border-b-2 transition-colors whitespace-nowrap shrink-0"
-        :class="tabClasses('recent')"
-        @click="tab = 'recent'"
-      >
-        Recent transactions
       </button>
       <button
         v-if="isController"
@@ -1432,80 +1337,6 @@ const lifecycleColumns = computed<ColumnDef[]>(() => {
           </tbody>
         </table>
       </div>
-    </div>
-
-    <!-- Recent transactions -->
-    <div v-else-if="tab === 'recent'" class="flex flex-col gap-3">
-      <div class="flex items-end gap-3 text-sm flex-wrap">
-        <label class="flex flex-col gap-1">
-          <span class="text-slate-400 text-xs">From</span>
-          <input
-            v-model="txFrom"
-            type="date"
-            class="rounded-lg bg-slate-900 border border-slate-700 px-2 py-1 text-slate-100"
-          />
-        </label>
-        <label class="flex flex-col gap-1">
-          <span class="text-slate-400 text-xs">To</span>
-          <input
-            v-model="txTo"
-            type="date"
-            class="rounded-lg bg-slate-900 border border-slate-700 px-2 py-1 text-slate-100"
-          />
-        </label>
-        <label class="flex flex-col gap-1">
-          <span class="text-slate-400 text-xs">Worker code</span>
-          <input
-            v-model="txUserFilter"
-            type="search"
-            placeholder="All workers"
-            class="rounded-lg bg-slate-900 border border-slate-700 px-2 py-1 text-slate-100 font-mono"
-          />
-        </label>
-        <button
-          type="button"
-          class="ml-auto px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm"
-          @click="exportCsv"
-        >
-          Export CSV
-        </button>
-      </div>
-      <DataTable
-        :columns="txColumns"
-        :rows="txRows"
-        :row-key="(t) => t.id"
-        :loading="loading"
-        empty-text="No transactions yet."
-        row-clickable
-        :page="txPage"
-        :per-page="txPerPage"
-        :total="txTotal"
-        @row-click="openTxDetail"
-        @update:page="(p) => loadTransactions(p)"
-        @update:per-page="(n) => { txPerPage = n; loadTransactions(1) }"
-      >
-        <template #cell-completed="{ row }">
-          <span class="text-slate-300">{{ formatDateTime(row.completed_at) }}</span>
-        </template>
-        <template #cell-who="{ row }">
-          <div>{{ row.expand?.user?.name }}</div>
-          <div class="text-xs text-slate-500 font-mono">{{ row.expand?.user?.code }}</div>
-        </template>
-        <template #cell-kiosk="{ row }">
-          <span class="font-mono text-slate-400">{{ row.kiosk_code }}</span>
-        </template>
-        <template #cell-location="{ row }">
-          <span class="text-slate-400">{{ row.location_code }}</span>
-        </template>
-        <template #cell-lines="{ row }">
-          <span class="tabular-nums text-slate-300">{{ row.lines_count }}</span>
-        </template>
-        <template #cell-status="{ row }">
-          <span class="inline-block px-2 py-0.5 rounded text-xs bg-emerald-900/60 text-emerald-200">
-            {{ row.status }}
-          </span>
-        </template>
-      </DataTable>
     </div>
 
     <!-- Adjustment audit (controller-only) -->
@@ -2043,12 +1874,6 @@ const lifecycleColumns = computed<ColumnDef[]>(() => {
       destructive
       @update:open="rebuildOpen = $event"
       @confirm="onRebuild"
-    />
-
-    <TransactionDetailDialog
-      :open="detailOpen"
-      :transaction="selectedTx"
-      @update:open="detailOpen = $event"
     />
 
     <CheckoutCloseDialog

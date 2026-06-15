@@ -45,6 +45,10 @@ export const router = createRouter({
         { path: 'groups', name: 'admin-groups', component: AdminGroupsView },
         { path: 'import', name: 'admin-import', component: AdminImportView },
         { path: 'reports', name: 'admin-reports', component: AdminReportsView },
+        // The transactions ledger is available on every binary that has one
+        // (kiosk + controller); the nav link is hidden on the timeclock
+        // terminal. The route is always registered so deep-links resolve.
+        { path: 'transactions', name: 'admin-transactions', component: AdminTransactionsView },
         { path: 'metrics', name: 'admin-metrics', component: AdminMetricsView },
         { path: 'notifications', name: 'admin-notifications', component: AdminNotificationsView },
         { path: 'notifications/scheduled', name: 'admin-notifications-scheduled', component: AdminScheduledReportsView },
@@ -55,7 +59,6 @@ export const router = createRouter({
         // queries hit empty / nonexistent data.
         { path: 'kiosks', name: 'admin-kiosks', component: AdminKiosksView },
         { path: 'kiosks/:code', name: 'admin-kiosk-detail', component: AdminKioskDetailView, props: true },
-        { path: 'transactions', name: 'admin-transactions', component: AdminTransactionsView },
         { path: 'catalog-sync', name: 'admin-catalog-sync', component: AdminCatalogSyncView },
       ],
     },

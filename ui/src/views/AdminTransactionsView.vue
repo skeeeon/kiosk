@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { pb } from '../lib/pb'
 import { download } from '../lib/api'
 import { useToast } from '../composables/useToast'
+import { useKioskIdentity } from '../composables/useKioskIdentity'
 import TransactionDetailDialog, {
   type TxSummary,
 } from '../components/TransactionDetailDialog.vue'
@@ -11,6 +12,11 @@ import { useUrlQuerySync } from '../composables/useUrlQuerySync'
 import type { KioskRecord } from '../types'
 
 const toast = useToast()
+// Kiosk scoping is only meaningful on the controller, where the ledger spans
+// the fleet. On a single kiosk the kiosk filter + column are redundant (one
+// code), so both are hidden there.
+const { identity } = useKioskIdentity()
+const isController = computed(() => identity.value?.role === 'controller')
 
 interface TxRow {
   id: string
@@ -33,17 +39,21 @@ const total = ref(0)
 const loading = ref(false)
 const error = ref<string | null>(null)
 
-const columns: ColumnDef[] = [
-  { key: 'completed', label: 'Completed' },
-  { key: 'kiosk', label: 'Kiosk' },
-  { key: 'worker', label: 'Worker' },
-  { key: 'lines', label: 'Lines', align: 'right' },
-]
+const columns = computed<ColumnDef[]>(() => {
+  const cols: ColumnDef[] = [{ key: 'completed', label: 'Completed' }]
+  if (isController.value) cols.push({ key: 'kiosk', label: 'Kiosk' })
+  cols.push(
+    { key: 'worker', label: 'Worker' },
+    { key: 'lines', label: 'Lines', align: 'right' },
+  )
+  return cols
+})
 
 // Filters
-const kioskFilter = ref('') // empty = all kiosks
+const kioskFilter = ref('') // empty = all kiosks (controller only)
 const fromFilter = ref('')  // <input type="date"> values; converted to RFC3339 on query
 const toFilter = ref('')
+const userFilter = ref('')  // exact worker code match
 
 const selectedTx = ref<TxSummary | null>(null)
 const detailOpen = ref(false)
@@ -53,6 +63,7 @@ useUrlQuerySync({
   kiosk: { ref: kioskFilter, default: '' },
   from: { ref: fromFilter, default: '' },
   to: { ref: toFilter, default: '' },
+  user: { ref: userFilter, default: '' },
 })
 
 async function loadKiosks() {
@@ -86,6 +97,9 @@ async function loadTransactions(toPage = 1) {
     if (toFilter.value) {
       filters.push(`completed_at <= "${dateBoundary(toFilter.value, true)}"`)
     }
+    if (userFilter.value.trim()) {
+      filters.push(pb.filter('user.code = {:uc}', { uc: userFilter.value.trim() }))
+    }
     const res = await pb.collection('transactions').getList<TxRow>(toPage, perPage.value, {
       filter: filters.join(' && '),
       sort: '-completed_at',
@@ -106,7 +120,7 @@ onMounted(async () => {
   await loadTransactions(1)
 })
 
-watch([kioskFilter, fromFilter, toFilter], () => {
+watch([kioskFilter, fromFilter, toFilter, userFilter], () => {
   void loadTransactions(1)
 })
 
@@ -127,6 +141,8 @@ async function exportCsv() {
     const params = new URLSearchParams()
     if (fromFilter.value) params.set('from', dateBoundary(fromFilter.value, false))
     if (toFilter.value) params.set('to', dateBoundary(toFilter.value, true))
+    if (userFilter.value.trim()) params.set('user_code', userFilter.value.trim())
+    if (isController.value && kioskFilter.value) params.set('kiosk_code', kioskFilter.value)
     const qs = params.toString()
     await download(`/api/kiosk/transactions.csv${qs ? `?${qs}` : ''}`)
   } catch (e) {
@@ -155,7 +171,7 @@ const filteredCountLabel = computed(() => {
     </header>
 
     <div class="flex flex-wrap gap-3 mb-4 items-end">
-      <label class="flex flex-col gap-1">
+      <label v-if="isController" class="flex flex-col gap-1">
         <span class="text-xs text-slate-400">Kiosk</span>
         <select
           v-model="kioskFilter"
@@ -181,6 +197,15 @@ const filteredCountLabel = computed(() => {
           v-model="toFilter"
           type="date"
           class="rounded-lg bg-slate-900 border border-slate-800 px-3 py-2 text-slate-100"
+        />
+      </label>
+      <label class="flex flex-col gap-1">
+        <span class="text-xs text-slate-400">Worker code</span>
+        <input
+          v-model="userFilter"
+          type="search"
+          placeholder="All workers"
+          class="rounded-lg bg-slate-900 border border-slate-800 px-3 py-2 text-slate-100 font-mono"
         />
       </label>
       <span class="ml-auto text-sm text-slate-400">{{ filteredCountLabel }}</span>
