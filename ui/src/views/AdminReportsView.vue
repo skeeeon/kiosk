@@ -25,7 +25,7 @@ const timeclockEnabled = computed(() => !!identity.value?.timeclock_enabled)
 // Timeclock (see the identity watch below).
 const isTimeclockVirtual = computed(() => identity.value?.timeclock_virtual ?? false)
 
-type Tab = 'currently-out' | 'low-stock' | 'group-activity' | 'audit' | 'lifecycle' | 'notifications' | 'timeclock'
+type Tab = 'currently-out' | 'low-stock' | 'group-activity' | 'audit' | 'lifecycle' | 'notifications' | 'on-clock' | 'timesheets'
 const tab = ref<Tab>('currently-out')
 const toast = useToast()
 
@@ -698,13 +698,40 @@ const tcFrom = ref(defaultFromDate())
 const tcTo = ref(defaultToDate())
 const tcUserFilter = ref('')
 const tcJobFilter = ref('')
+// Timesheets view mode — the historical report shares one filter bar and
+// switches between the three granularities (day totals / per-shift intervals /
+// raw punches). All three come from the same /history payload.
+const tsView = ref<'totals' | 'shifts' | 'punches'>('totals')
+const tsViews = [
+  { key: 'totals', label: 'Daily totals' },
+  { key: 'shifts', label: 'Shifts' },
+  { key: 'punches', label: 'Punches' },
+] as const
 const tcPunchDialogOpen = ref(false)
 
 function timeclockBase(): string {
   return isController.value ? '/api/controller/timeclock' : '/api/kiosk/timeclock'
 }
 
-async function loadTimeclock() {
+// loadClockedIn drives the live "On the clock" tab — a roster snapshot, no
+// date scope (a worker is clocked in or not, independent of the report window).
+async function loadClockedIn() {
+  loading.value = true
+  error.value = null
+  try {
+    const now = await api.get<{ rows: ClockedInRow[] }>(`${timeclockBase()}/now`)
+    tcNowRows.value = now.rows ?? []
+  } catch (e) {
+    error.value = (e as Error).message
+  } finally {
+    loading.value = false
+  }
+}
+
+// loadTimesheets drives the historical Timesheets tab. One /history fetch
+// feeds all three views (totals / shifts / punches); switching tsView is
+// purely client-side.
+async function loadTimesheets() {
   loading.value = true
   error.value = null
   try {
@@ -714,12 +741,7 @@ async function loadTimeclock() {
     if (tcUserFilter.value.trim()) qs.set('user_code', tcUserFilter.value.trim())
     if (tcJobFilter.value.trim()) qs.set('job_code', tcJobFilter.value.trim())
     if (isController.value && kioskFilter.value) qs.set('kiosk_code', kioskFilter.value)
-    const [now, history] = await Promise.all([
-      api.get<{ rows: ClockedInRow[] }>(`${timeclockBase()}/now`),
-      api.get<TimeclockHistoryResponse>(`${timeclockBase()}/history?${qs.toString()}`),
-    ])
-    tcNowRows.value = now.rows ?? []
-    tcHistory.value = history
+    tcHistory.value = await api.get<TimeclockHistoryResponse>(`${timeclockBase()}/history?${qs.toString()}`)
   } catch (e) {
     error.value = (e as Error).message
   } finally {
@@ -744,7 +766,9 @@ function onPunchRecorded(res: PunchResult) {
   toast.success(
     `Recorded clock-${res.direction} for ${res.user_name || res.user_code}${res.replayed ? ' (already applied)' : ''}`,
   )
-  void loadTimeclock()
+  // Reload whichever timeclock tab is active — recording a punch moves both
+  // the live roster and the historical ledger.
+  void loadCurrentTab()
 }
 
 function formatDuration(seconds: number): string {
@@ -767,7 +791,8 @@ function loadCurrentTab() {
   else if (tab.value === 'audit') loadAudit(1)
   else if (tab.value === 'lifecycle') loadLifecycle(1)
   else if (tab.value === 'notifications') loadNotificationsSummary()
-  else if (tab.value === 'timeclock') loadTimeclock()
+  else if (tab.value === 'on-clock') loadClockedIn()
+  else if (tab.value === 'timesheets') loadTimesheets()
 }
 
 loadKiosks()
@@ -780,7 +805,7 @@ loadKiosks()
 // deep-linked filter is already hydrated when the first load fires.
 const VALID_TABS = [
   'currently-out', 'low-stock', 'group-activity',
-  'audit', 'lifecycle', 'notifications', 'timeclock',
+  'audit', 'lifecycle', 'notifications', 'on-clock', 'timesheets',
 ]
 const parseBool = (v: string) => v === '1' || v === 'true'
 useUrlQuerySync({
@@ -808,11 +833,12 @@ useUrlQuerySync({
   lc_item: { ref: lifecycleItemFilter, default: '' },
   // Notifications
   nt_days: { ref: notificationsLookback, default: 7, parse: (v) => Number(v) || 7 },
-  // Timeclock
+  // Timesheets
   tc_from: { ref: tcFrom, default: defaultFromDate() },
   tc_to: { ref: tcTo, default: defaultToDate() },
   tc_user: { ref: tcUserFilter, default: '' },
   tc_job: { ref: tcJobFilter, default: '' },
+  ts_view: { ref: tsView, default: 'totals', parse: (v) => (['totals', 'shifts', 'punches'].includes(v) ? v : 'totals') },
 })
 
 // On the virtual timeclock terminal the checkout-oriented tabs are hidden, so
@@ -824,7 +850,7 @@ useUrlQuerySync({
 watch(
   identity,
   (id) => {
-    if (id?.timeclock_virtual && tab.value === 'currently-out') tab.value = 'timeclock'
+    if (id?.timeclock_virtual && tab.value === 'currently-out') tab.value = 'on-clock'
   },
   { immediate: true },
 )
@@ -1010,10 +1036,19 @@ const lifecycleColumns = computed<ColumnDef[]>(() => {
         v-if="timeclockEnabled"
         type="button"
         class="px-4 py-2 border-b-2 transition-colors whitespace-nowrap shrink-0"
-        :class="tabClasses('timeclock')"
-        @click="tab = 'timeclock'"
+        :class="tabClasses('on-clock')"
+        @click="tab = 'on-clock'"
       >
-        Timeclock
+        On the clock
+      </button>
+      <button
+        v-if="timeclockEnabled"
+        type="button"
+        class="px-4 py-2 border-b-2 transition-colors whitespace-nowrap shrink-0"
+        :class="tabClasses('timesheets')"
+        @click="tab = 'timesheets'"
+      >
+        Timesheets
       </button>
     </nav>
 
@@ -1691,64 +1726,21 @@ const lifecycleColumns = computed<ColumnDef[]>(() => {
       </div>
     </div>
 
-    <!-- Timeclock -->
-    <div v-else-if="tab === 'timeclock'" class="flex flex-col gap-3">
-      <div class="flex items-end gap-3 text-sm flex-wrap">
-        <label class="flex flex-col gap-1">
-          <span class="text-slate-400 text-xs">From</span>
-          <input
-            v-model="tcFrom"
-            type="date"
-            class="rounded-lg bg-slate-900 border border-slate-700 px-2 py-1 text-slate-100"
-            @change="loadTimeclock"
-          />
-        </label>
-        <label class="flex flex-col gap-1">
-          <span class="text-slate-400 text-xs">To</span>
-          <input
-            v-model="tcTo"
-            type="date"
-            class="rounded-lg bg-slate-900 border border-slate-700 px-2 py-1 text-slate-100"
-            @change="loadTimeclock"
-          />
-        </label>
-        <label class="flex flex-col gap-1">
-          <span class="text-slate-400 text-xs">Worker code</span>
-          <input
-            v-model="tcUserFilter"
-            type="search"
-            placeholder="All workers"
-            class="rounded-lg bg-slate-900 border border-slate-700 px-2 py-1 text-slate-100 font-mono"
-            @change="loadTimeclock"
-          />
-        </label>
-        <label class="flex flex-col gap-1">
-          <span class="text-slate-400 text-xs">Job code</span>
-          <input
-            v-model="tcJobFilter"
-            type="search"
-            placeholder="All jobs"
-            class="rounded-lg bg-slate-900 border border-slate-700 px-2 py-1 text-slate-100 font-mono"
-            @change="loadTimeclock"
-          />
-        </label>
+    <!-- On the clock (live roster — no date scope) -->
+    <div v-else-if="tab === 'on-clock'" class="flex flex-col gap-3">
+      <div class="flex items-center gap-3 flex-wrap">
+        <p class="text-sm text-slate-400">
+          A live snapshot of who is clocked in right now — independent of any date range.
+        </p>
         <button
           type="button"
-          class="ml-auto px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200"
+          class="ml-auto px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm"
           @click="tcPunchDialogOpen = true"
         >
           Record punch…
         </button>
-        <button
-          type="button"
-          class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200"
-          @click="exportTimeclock"
-        >
-          Export CSV
-        </button>
       </div>
 
-      <!-- Clocked in now -->
       <div class="rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden">
         <div class="px-4 py-3 bg-slate-950/70 text-slate-400 text-xs uppercase tracking-wider">
           Clocked in now — {{ tcNowRows.length }}
@@ -1771,9 +1763,90 @@ const lifecycleColumns = computed<ColumnDef[]>(() => {
           </tbody>
         </table>
       </div>
+    </div>
+
+    <!-- Timesheets (historical — totals / shifts / punches share one filter) -->
+    <div v-else-if="tab === 'timesheets'" class="flex flex-col gap-3">
+      <div class="flex items-end gap-3 text-sm flex-wrap">
+        <label class="flex flex-col gap-1">
+          <span class="text-slate-400 text-xs">From</span>
+          <input
+            v-model="tcFrom"
+            type="date"
+            class="rounded-lg bg-slate-900 border border-slate-700 px-2 py-1 text-slate-100"
+            @change="loadTimesheets"
+          />
+        </label>
+        <label class="flex flex-col gap-1">
+          <span class="text-slate-400 text-xs">To</span>
+          <input
+            v-model="tcTo"
+            type="date"
+            class="rounded-lg bg-slate-900 border border-slate-700 px-2 py-1 text-slate-100"
+            @change="loadTimesheets"
+          />
+        </label>
+        <label class="flex flex-col gap-1">
+          <span class="text-slate-400 text-xs">Worker code</span>
+          <input
+            v-model="tcUserFilter"
+            type="search"
+            placeholder="All workers"
+            class="rounded-lg bg-slate-900 border border-slate-700 px-2 py-1 text-slate-100 font-mono"
+            @change="loadTimesheets"
+          />
+        </label>
+        <label class="flex flex-col gap-1">
+          <span class="text-slate-400 text-xs">Job code</span>
+          <input
+            v-model="tcJobFilter"
+            type="search"
+            placeholder="All jobs"
+            class="rounded-lg bg-slate-900 border border-slate-700 px-2 py-1 text-slate-100 font-mono"
+            @change="loadTimesheets"
+          />
+        </label>
+        <button
+          type="button"
+          class="ml-auto px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200"
+          @click="tcPunchDialogOpen = true"
+        >
+          Record punch…
+        </button>
+        <button
+          type="button"
+          class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200"
+          @click="exportTimeclock"
+        >
+          Export CSV
+        </button>
+      </div>
+
+      <!-- View toggle: same /history payload, three granularities -->
+      <div class="flex gap-1 text-sm">
+        <button
+          v-for="v in tsViews"
+          :key="v.key"
+          type="button"
+          class="px-3 py-1.5 rounded-lg border transition-colors"
+          :class="tsView === v.key
+            ? 'bg-slate-800 border-slate-600 text-slate-100'
+            : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'"
+          @click="tsView = v.key"
+        >
+          {{ v.label }}
+        </button>
+      </div>
+
+      <p
+        v-if="(tcHistory?.uncorrelated?.length ?? 0) > 0"
+        class="rounded-lg bg-amber-950/40 border border-amber-800/60 text-amber-200 text-sm px-4 py-2"
+      >
+        {{ tcHistory!.uncorrelated.length }} unpaired punch(es) in this window — switch to Punches to review.
+      </p>
 
       <!-- Daily totals (display pairing — the CSV is the payroll record) -->
-      <div class="rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden">
+      <div v-if="tsView === 'totals'" class="rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden">
         <div class="px-4 py-3 bg-slate-950/70 text-slate-400 text-xs uppercase tracking-wider">
           Daily totals
         </div>
@@ -1786,7 +1859,10 @@ const lifecycleColumns = computed<ColumnDef[]>(() => {
             </tr>
           </thead>
           <tbody class="divide-y divide-slate-800">
-            <tr v-if="!tcHistory || tcHistory.day_totals.length === 0">
+            <tr v-if="loading">
+              <td colspan="3" class="text-center text-slate-500 py-6">Loading…</td>
+            </tr>
+            <tr v-else-if="!tcHistory || tcHistory.day_totals.length === 0">
               <td colspan="3" class="text-center text-slate-500 py-6">No punches in this window.</td>
             </tr>
             <tr v-for="t in tcHistory?.day_totals ?? []" :key="`${t.user_id}-${t.date}`" class="hover:bg-slate-800/40">
@@ -1801,16 +1877,51 @@ const lifecycleColumns = computed<ColumnDef[]>(() => {
             </tr>
           </tbody>
         </table>
-        <p
-          v-if="(tcHistory?.uncorrelated?.length ?? 0) > 0"
-          class="px-4 py-2.5 text-xs text-amber-300 border-t border-slate-800"
-        >
-          {{ tcHistory!.uncorrelated.length }} unpaired punch(es) in this window — review the raw punches below.
-        </p>
       </div>
 
-      <!-- Raw punches -->
-      <div class="rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden">
+      <!-- Shifts (per-interval pairing — previously computed but unshown) -->
+      <div v-else-if="tsView === 'shifts'" class="rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden">
+        <div class="px-4 py-3 bg-slate-950/70 text-slate-400 text-xs uppercase tracking-wider">
+          Shifts — {{ tcHistory?.intervals.length ?? 0 }}
+        </div>
+        <table class="w-full text-left text-sm">
+          <thead class="bg-slate-950/40 text-slate-400">
+            <tr>
+              <th class="px-4 py-2.5 font-medium">Worker</th>
+              <th class="px-4 py-2.5 font-medium">In</th>
+              <th class="px-4 py-2.5 font-medium">Out</th>
+              <th class="px-4 py-2.5 font-medium">Job</th>
+              <th class="px-4 py-2.5 font-medium text-right">Duration</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-800">
+            <tr v-if="loading">
+              <td colspan="5" class="text-center text-slate-500 py-6">Loading…</td>
+            </tr>
+            <tr v-else-if="!tcHistory || tcHistory.intervals.length === 0">
+              <td colspan="5" class="text-center text-slate-500 py-6">No shifts in this window.</td>
+            </tr>
+            <tr v-for="(s, i) in tcHistory?.intervals ?? []" :key="`${s.user_id}-${s.in}-${i}`" class="hover:bg-slate-800/40">
+              <td class="px-4 py-2.5 text-slate-100">
+                {{ s.user_name }} <span class="text-slate-500 font-mono text-xs">{{ s.user_code }}</span>
+              </td>
+              <td class="px-4 py-2.5 tabular-nums text-slate-300" :title="s.in">{{ formatDateTime(s.in) }}</td>
+              <td class="px-4 py-2.5 tabular-nums text-slate-300">
+                <span v-if="s.out" :title="s.out">{{ formatDateTime(s.out) }}</span>
+                <span v-else class="text-emerald-400">still in</span>
+              </td>
+              <td class="px-4 py-2.5 font-mono text-slate-400">{{ s.job_code || '—' }}</td>
+              <td class="px-4 py-2.5 text-right tabular-nums text-slate-200">
+                {{ formatDuration(s.seconds) }}
+                <span v-if="s.open" class="ml-1 text-xs text-emerald-400">(running)</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Raw punches (forensic audit) -->
+      <div v-else class="rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden">
         <div class="px-4 py-3 bg-slate-950/70 text-slate-400 text-xs uppercase tracking-wider">
           Punches — {{ tcHistory?.punches.length ?? 0 }}
         </div>
@@ -1827,7 +1938,10 @@ const lifecycleColumns = computed<ColumnDef[]>(() => {
             </tr>
           </thead>
           <tbody class="divide-y divide-slate-800">
-            <tr v-if="!tcHistory || tcHistory.punches.length === 0">
+            <tr v-if="loading">
+              <td :colspan="isController ? 7 : 6" class="text-center text-slate-500 py-6">Loading…</td>
+            </tr>
+            <tr v-else-if="!tcHistory || tcHistory.punches.length === 0">
               <td :colspan="isController ? 7 : 6" class="text-center text-slate-500 py-6">
                 No punches in this window.
               </td>
