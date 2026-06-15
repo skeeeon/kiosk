@@ -315,6 +315,7 @@ type AdjustmentAuditOptions struct {
 	To        string
 	KioskCode string
 	Source    string // "local" | "controller" | "" (no filter)
+	Item      string // contains-match against item_code / item_name; "" = all
 }
 
 // WriteAdjustmentAuditCSV streams the controller's inventory_audit
@@ -338,6 +339,10 @@ func WriteAdjustmentAuditCSV(app core.App, w io.Writer, opts AdjustmentAuditOpti
 	if opts.Source != "" {
 		parts = append(parts, "source = {:s}")
 		params["s"] = opts.Source
+	}
+	if opts.Item != "" {
+		parts = append(parts, "(item_code ~ {:item} || item_name ~ {:item})")
+		params["item"] = opts.Item
 	}
 
 	rows, err := app.FindRecordsByFilter("inventory_audit", joinAnd(parts), "-created", 0, 0, params)

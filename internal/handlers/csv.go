@@ -135,8 +135,10 @@ func (h *Handlers) TransactionsExportCSV(re *core.RequestEvent) error {
 		"attachment; filename=\"transactions-%s.csv\"", time.Now().UTC().Format("20060102-150405"),
 	))
 	return exports.WriteTransactionsCSV(h.App, w, exports.TransactionsOptions{
-		From: from,
-		To:   to,
+		From:      from,
+		To:        to,
+		KioskCode: re.Request.URL.Query().Get("kiosk_code"),
+		UserCode:  re.Request.URL.Query().Get("user_code"),
 		// IncludeSourceKiosk left false — on a standalone kiosk those fields
 		// are always blank.
 	})

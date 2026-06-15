@@ -4,6 +4,7 @@ import { pb } from '../lib/pb'
 import { api, download } from '../lib/api'
 import { useToast } from '../composables/useToast'
 import { useKioskIdentity } from '../composables/useKioskIdentity'
+import { useUrlQuerySync } from '../composables/useUrlQuerySync'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import CheckoutCloseDialog from '../components/CheckoutCloseDialog.vue'
 import DataTable, { type ColumnDef } from '../components/DataTable.vue'
@@ -161,18 +162,25 @@ interface GroupActivityRow {
 
 const openRows = ref<OpenRow[]>([])
 const openSearch = ref('')
+const overdueOnly = ref(false)
 const txRows = ref<TxRow[]>([])
 const txPage = ref(1)
 const txPerPage = ref(50)
 const txTotal = ref(0)
+const txFrom = ref('')
+const txTo = ref('')
+const txUserFilter = ref('')
 const lowStockRows = ref<LowStockRow[]>([])
 const fleetLowStockRows = ref<FleetLowStockRow[]>([])
 const fleetLowStockErrors = ref<{ kiosk_code: string; error: string }[]>([])
+const lowStockSearch = ref('')
+const lowStockCriticalOnly = ref(false)
 const auditRows = ref<AdjustmentAuditRow[]>([])
 const auditPage = ref(1)
 const auditPerPage = ref(50)
 const auditTotal = ref(0)
 const auditSourceFilter = ref<'' | 'local' | 'controller'>('')
+const auditItemFilter = ref('')
 const auditFrom = ref<string>(defaultFromDate())
 const auditTo = ref<string>(defaultToDate())
 const lifecycleRows = ref<LifecycleAuditRow[]>([])
@@ -181,6 +189,7 @@ const lifecyclePerPage = ref(50)
 const lifecycleTotal = ref(0)
 const lifecycleActionFilter = ref<'' | 'create' | 'to_maintenance' | 'return_to_service' | 'retire' | 'unretire'>('')
 const lifecycleSourceFilter = ref<'' | 'local' | 'controller'>('')
+const lifecycleItemFilter = ref('')
 const lifecycleFrom = ref<string>(defaultFromDate())
 const lifecycleTo = ref<string>(defaultToDate())
 const notificationsLookback = ref<number>(7)
@@ -279,6 +288,11 @@ async function loadTransactions(page = 1) {
     const filterParts = ['status = "completed"']
     if (kioskFilter.value) {
       filterParts.push(pb.filter('kiosk_code = {:k}', { k: kioskFilter.value }))
+    }
+    if (txFrom.value) filterParts.push(`completed_at >= "${txFrom.value} 00:00:00.000Z"`)
+    if (txTo.value) filterParts.push(`completed_at <= "${txTo.value} 23:59:59.999Z"`)
+    if (txUserFilter.value.trim()) {
+      filterParts.push(pb.filter('user.code = {:uc}', { uc: txUserFilter.value.trim() }))
     }
     const res = await pb.collection('transactions').getList<TxRow>(page, txPerPage.value, {
       filter: filterParts.join(' && '),
@@ -423,6 +437,9 @@ async function loadAudit(page = 1) {
     if (auditSourceFilter.value) {
       parts.push(`source = "${auditSourceFilter.value}"`)
     }
+    if (auditItemFilter.value.trim()) {
+      parts.push(pb.filter('(item_code ~ {:q} || item_name ~ {:q})', { q: auditItemFilter.value.trim() }))
+    }
     if (auditFrom.value) parts.push(`created >= "${auditFrom.value} 00:00:00.000Z"`)
     if (auditTo.value) parts.push(`created <= "${auditTo.value} 23:59:59.999Z"`)
     const res = await pb.collection('inventory_audit').getList<AdjustmentAuditRow>(page, auditPerPage.value, {
@@ -464,6 +481,10 @@ async function loadLifecycle(page = 1) {
       if (kioskFilter.value) {
         parts.push(pb.filter('kiosk_code = {:k}', { k: kioskFilter.value }))
       }
+      // Controller projection has denormalized item/instance columns.
+      if (lifecycleItemFilter.value.trim()) {
+        parts.push(pb.filter('(item_code ~ {:q} || item_name ~ {:q} || instance_code ~ {:q})', { q: lifecycleItemFilter.value.trim() }))
+      }
       const res = await pb.collection('instance_lifecycle_audit').getList<LifecycleAuditRow>(page, lifecyclePerPage.value, {
         filter: parts.join(' && '),
         sort: '-created',
@@ -491,6 +512,11 @@ async function loadLifecycle(page = 1) {
           item?: { code: string; name: string }
           item_instance?: { code: string }
         }
+      }
+      // Kiosk-local audit keeps item / item_instance as FKs — match through
+      // the relation (the controller twin matches denormalized columns).
+      if (lifecycleItemFilter.value.trim()) {
+        parts.push(pb.filter('(item.code ~ {:q} || item.name ~ {:q} || item_instance.code ~ {:q})', { q: lifecycleItemFilter.value.trim() }))
       }
       const res = await pb.collection('instance_audit').getList<KioskInstanceAuditRow>(page, lifecyclePerPage.value, {
         filter: parts.join(' && '),
@@ -637,12 +663,16 @@ async function onRebuild() {
   }
 }
 
-async function exportCsv() {
-  try {
-    await download('/api/kiosk/transactions.csv')
-  } catch (e) {
-    toast.error(`Export failed: ${(e as Error).message}`)
-  }
+// exportCsv downloads the Recent-transactions tab honoring its on-screen
+// filters. transactions.csv wants RFC3339 boundaries, so the YYYY-MM-DD date
+// inputs are widened to full-day start/end (UTC) — matching AdminTransactionsView.
+function exportCsv() {
+  return exportReport('/api/kiosk/transactions.csv', {
+    from: txFrom.value ? `${txFrom.value}T00:00:00Z` : '',
+    to: txTo.value ? `${txTo.value}T23:59:59Z` : '',
+    kiosk_code: kioskFilter.value,
+    user_code: txUserFilter.value.trim(),
+  })
 }
 
 // exportReport is the generic CSV downloader for the reports tabs. Each
@@ -691,6 +721,7 @@ function exportAudit() {
     to: auditTo.value,
     kiosk_code: kioskFilter.value,
     source: auditSourceFilter.value,
+    q: auditItemFilter.value.trim(),
   })
 }
 
@@ -700,6 +731,7 @@ function exportLifecycle() {
     to: lifecycleTo.value,
     action: lifecycleActionFilter.value,
     source: lifecycleSourceFilter.value,
+    q: lifecycleItemFilter.value.trim(),
     kiosk_code: isController.value ? kioskFilter.value : '',
   })
 }
@@ -718,6 +750,7 @@ const tcHistory = ref<TimeclockHistoryResponse | null>(null)
 const tcFrom = ref(defaultFromDate())
 const tcTo = ref(defaultToDate())
 const tcUserFilter = ref('')
+const tcJobFilter = ref('')
 const tcPunchDialogOpen = ref(false)
 
 function timeclockBase(): string {
@@ -732,6 +765,7 @@ async function loadTimeclock() {
     if (tcFrom.value) qs.set('from', tcFrom.value)
     if (tcTo.value) qs.set('to', tcTo.value)
     if (tcUserFilter.value.trim()) qs.set('user_code', tcUserFilter.value.trim())
+    if (tcJobFilter.value.trim()) qs.set('job_code', tcJobFilter.value.trim())
     if (isController.value && kioskFilter.value) qs.set('kiosk_code', kioskFilter.value)
     const [now, history] = await Promise.all([
       api.get<{ rows: ClockedInRow[] }>(`${timeclockBase()}/now`),
@@ -754,6 +788,7 @@ function exportTimeclock() {
     from: tcFrom.value,
     to: tcTo.value,
     user_code: tcUserFilter.value.trim(),
+    job_code: tcJobFilter.value.trim(),
     kiosk_code: isController.value ? kioskFilter.value : '',
   })
 }
@@ -791,6 +826,53 @@ function loadCurrentTab() {
 
 loadKiosks()
 
+// Persist the active tab + each tab's filters in the URL so a filtered report
+// is refresh-safe and shareable (paste a teammate the exact lifecycle of a
+// serial, a worker's timeclock week, a kiosk-scoped low-stock view…). Keys are
+// namespaced per tab; useUrlQuerySync omits any key sitting at its default, so
+// an unfiltered URL stays clean. Called BEFORE the loader watches below so a
+// deep-linked filter is already hydrated when the first load fires.
+const VALID_TABS = [
+  'currently-out', 'low-stock', 'group-activity', 'recent',
+  'audit', 'lifecycle', 'notifications', 'timeclock',
+]
+const parseBool = (v: string) => v === '1' || v === 'true'
+useUrlQuerySync({
+  tab: { ref: tab, default: 'currently-out', parse: (v) => (VALID_TABS.includes(v) ? (v as Tab) : 'currently-out') },
+  kiosk: { ref: kioskFilter, default: '' },
+  // Currently out
+  oc_q: { ref: openSearch, default: '' },
+  oc_overdue: { ref: overdueOnly, default: false, parse: parseBool },
+  // Low stock
+  ls_q: { ref: lowStockSearch, default: '' },
+  ls_crit: { ref: lowStockCriticalOnly, default: false, parse: parseBool },
+  // Group activity
+  ga_from: { ref: groupActivityFrom, default: defaultFromDate() },
+  ga_to: { ref: groupActivityTo, default: defaultToDate() },
+  // Recent transactions
+  tx_from: { ref: txFrom, default: '' },
+  tx_to: { ref: txTo, default: '' },
+  tx_user: { ref: txUserFilter, default: '' },
+  // Adjustment audit
+  au_from: { ref: auditFrom, default: defaultFromDate() },
+  au_to: { ref: auditTo, default: defaultToDate() },
+  au_src: { ref: auditSourceFilter, default: '' },
+  au_item: { ref: auditItemFilter, default: '' },
+  // Instance lifecycle
+  lc_from: { ref: lifecycleFrom, default: defaultFromDate() },
+  lc_to: { ref: lifecycleTo, default: defaultToDate() },
+  lc_action: { ref: lifecycleActionFilter, default: '' },
+  lc_src: { ref: lifecycleSourceFilter, default: '' },
+  lc_item: { ref: lifecycleItemFilter, default: '' },
+  // Notifications
+  nt_days: { ref: notificationsLookback, default: 7, parse: (v) => Number(v) || 7 },
+  // Timeclock
+  tc_from: { ref: tcFrom, default: defaultFromDate() },
+  tc_to: { ref: tcTo, default: defaultToDate() },
+  tc_user: { ref: tcUserFilter, default: '' },
+  tc_job: { ref: tcJobFilter, default: '' },
+})
+
 // On the virtual timeclock terminal the checkout-oriented tabs are hidden, so
 // land on (and stay on) Timeclock. Registered BEFORE the tab watcher so its
 // immediate run flips the default before the first load fires — no transient
@@ -807,6 +889,10 @@ watch(
 
 watch(tab, loadCurrentTab, { immediate: true })
 watch(kioskFilter, loadCurrentTab)
+// Recent-transactions filters are server-side (the tab is paginated), so a
+// change re-queries from page 1. Inputs only render on the Recent tab, so this
+// can't fire spuriously from another tab.
+watch([txFrom, txTo, txUserFilter], () => loadTransactions(1))
 
 function formatRelative(iso: string): string {
   const ms = Date.now() - new Date(iso).getTime()
@@ -830,17 +916,49 @@ function tabClasses(target: Tab) {
 
 const filteredOpen = computed(() => {
   const q = openSearch.value.trim().toLowerCase()
-  if (!q) return openRows.value
-  return openRows.value.filter((r) => {
-    const item = r.expand?.item
-    const user = r.expand?.user
-    return (
-      (item?.code?.toLowerCase().includes(q) ?? false) ||
-      (item?.name?.toLowerCase().includes(q) ?? false) ||
-      (user?.code?.toLowerCase().includes(q) ?? false) ||
-      (user?.name?.toLowerCase().includes(q) ?? false) ||
-      (r.serial?.toLowerCase().includes(q) ?? false)
-    )
+  let rows = openRows.value
+  if (q) {
+    rows = rows.filter((r) => {
+      const item = r.expand?.item
+      const user = r.expand?.user
+      return (
+        (item?.code?.toLowerCase().includes(q) ?? false) ||
+        (item?.name?.toLowerCase().includes(q) ?? false) ||
+        (user?.code?.toLowerCase().includes(q) ?? false) ||
+        (user?.name?.toLowerCase().includes(q) ?? false) ||
+        (r.serial?.toLowerCase().includes(q) ?? false)
+      )
+    })
+  }
+  if (overdueOnly.value) {
+    rows = rows.filter((r) => daysOut(r.checked_out_at) >= highlightThresholdDays.value)
+  }
+  return rows
+})
+
+// Low-stock display filters. Both variants load the full set, so search +
+// "out of stock only" are cheap client-side narrowing (kiosk: items+opens;
+// controller: the fleet fan-out). Search matches item code or name; critical
+// means nothing available to hand out.
+const filteredLowStockRows = computed(() => {
+  const q = lowStockSearch.value.trim().toLowerCase()
+  return lowStockRows.value.filter((r) => {
+    if (q && !r.item.code.toLowerCase().includes(q) && !r.item.name.toLowerCase().includes(q)) {
+      return false
+    }
+    if (lowStockCriticalOnly.value && r.available > 0) return false
+    return true
+  })
+})
+
+const filteredFleetLowStockRows = computed(() => {
+  const q = lowStockSearch.value.trim().toLowerCase()
+  return fleetLowStockRows.value.filter((r) => {
+    if (q && !r.item_code.toLowerCase().includes(q) && !r.item_name.toLowerCase().includes(q)) {
+      return false
+    }
+    if (lowStockCriticalOnly.value && r.available > 0) return false
+    return true
   })
 })
 
@@ -944,8 +1062,11 @@ const lifecycleColumns = computed<ColumnDef[]>(() => {
       >
         Group activity
       </button>
+      <!-- Hidden on the controller: the richer, URL-synced /admin/transactions
+           view is the fleet's transactions surface there. Kiosks have no such
+           nav, so this tab stays their way to browse transactions. -->
       <button
-        v-if="!isTimeclockVirtual"
+        v-if="!isTimeclockVirtual && !isController"
         type="button"
         class="px-4 py-2 border-b-2 transition-colors whitespace-nowrap shrink-0"
         :class="tabClasses('recent')"
@@ -1014,6 +1135,10 @@ const lifecycleColumns = computed<ColumnDef[]>(() => {
             class="w-20 rounded-lg bg-slate-900 border border-slate-700 px-2 py-1 text-slate-100 tabular-nums"
           />
           days
+        </label>
+        <label class="flex items-center gap-2 text-sm text-slate-300">
+          <input v-model="overdueOnly" type="checkbox" class="accent-brand-primary" />
+          Overdue only
         </label>
         <button
           type="button"
@@ -1093,10 +1218,20 @@ const lifecycleColumns = computed<ColumnDef[]>(() => {
 
     <!-- Low stock (fleet-wide, snapshot fan-out) -->
     <div v-else-if="tab === 'low-stock' && isController" class="flex flex-col gap-3">
-      <div class="flex justify-end">
+      <div class="flex flex-wrap items-center gap-3">
+        <input
+          v-model="lowStockSearch"
+          type="search"
+          placeholder="Search by item code or name"
+          class="flex-1 min-w-[16rem] max-w-md rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-slate-100"
+        />
+        <label class="flex items-center gap-2 text-sm text-slate-300">
+          <input v-model="lowStockCriticalOnly" type="checkbox" class="accent-brand-primary" />
+          Out of stock only
+        </label>
         <button
           type="button"
-          class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm"
+          class="ml-auto px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm"
           @click="exportLowStock"
         >
           Export CSV
@@ -1127,12 +1262,14 @@ const lifecycleColumns = computed<ColumnDef[]>(() => {
             <tr v-if="loading">
               <td colspan="6" class="text-center text-slate-500 py-8">Loading…</td>
             </tr>
-            <tr v-else-if="fleetLowStockRows.length === 0">
+            <tr v-else-if="filteredFleetLowStockRows.length === 0">
               <td colspan="6" class="text-center text-slate-500 py-8">
-                Nothing is low across the fleet. Set a reorder threshold on items to enable alerts.
+                {{ lowStockSearch || lowStockCriticalOnly
+                  ? 'No items match the current filters.'
+                  : 'Nothing is low across the fleet. Set a reorder threshold on items to enable alerts.' }}
               </td>
             </tr>
-            <tr v-for="r in fleetLowStockRows" :key="`${r.kiosk_code}::${r.item_code}`" class="hover:bg-slate-800/40">
+            <tr v-for="r in filteredFleetLowStockRows" :key="`${r.kiosk_code}::${r.item_code}`" class="hover:bg-slate-800/40">
               <td class="px-4 py-3 font-mono text-slate-300">{{ r.kiosk_code }}</td>
               <td class="px-4 py-3">
                 <div class="font-medium">{{ r.item_name }}</div>
@@ -1155,10 +1292,20 @@ const lifecycleColumns = computed<ColumnDef[]>(() => {
 
     <!-- Low stock (standalone kiosk, computed locally) -->
     <div v-else-if="tab === 'low-stock'" class="flex flex-col gap-3">
-      <div class="flex justify-end">
+      <div class="flex flex-wrap items-center gap-3">
+        <input
+          v-model="lowStockSearch"
+          type="search"
+          placeholder="Search by item code or name"
+          class="flex-1 min-w-[16rem] max-w-md rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-slate-100"
+        />
+        <label class="flex items-center gap-2 text-sm text-slate-300">
+          <input v-model="lowStockCriticalOnly" type="checkbox" class="accent-brand-primary" />
+          Out of stock only
+        </label>
         <button
           type="button"
-          class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm"
+          class="ml-auto px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm"
           @click="exportLowStock"
         >
           Export CSV
@@ -1180,12 +1327,14 @@ const lifecycleColumns = computed<ColumnDef[]>(() => {
           <tr v-if="loading">
             <td colspan="6" class="text-center text-slate-500 py-8">Loading…</td>
           </tr>
-          <tr v-else-if="lowStockRows.length === 0">
+          <tr v-else-if="filteredLowStockRows.length === 0">
             <td colspan="6" class="text-center text-slate-500 py-8">
-              Nothing is low. Set a reorder threshold on items to enable alerts.
+              {{ lowStockSearch || lowStockCriticalOnly
+                ? 'No items match the current filters.'
+                : 'Nothing is low. Set a reorder threshold on items to enable alerts.' }}
             </td>
           </tr>
-          <tr v-for="r in lowStockRows" :key="r.item.id" class="hover:bg-slate-800/40">
+          <tr v-for="r in filteredLowStockRows" :key="r.item.id" class="hover:bg-slate-800/40">
             <td class="px-4 py-3">
               <div class="font-medium">{{ r.item.name }}</div>
               <div class="text-xs text-slate-500 font-mono">{{ r.item.code }}</div>
@@ -1287,10 +1436,35 @@ const lifecycleColumns = computed<ColumnDef[]>(() => {
 
     <!-- Recent transactions -->
     <div v-else-if="tab === 'recent'" class="flex flex-col gap-3">
-      <div class="flex justify-end">
+      <div class="flex items-end gap-3 text-sm flex-wrap">
+        <label class="flex flex-col gap-1">
+          <span class="text-slate-400 text-xs">From</span>
+          <input
+            v-model="txFrom"
+            type="date"
+            class="rounded-lg bg-slate-900 border border-slate-700 px-2 py-1 text-slate-100"
+          />
+        </label>
+        <label class="flex flex-col gap-1">
+          <span class="text-slate-400 text-xs">To</span>
+          <input
+            v-model="txTo"
+            type="date"
+            class="rounded-lg bg-slate-900 border border-slate-700 px-2 py-1 text-slate-100"
+          />
+        </label>
+        <label class="flex flex-col gap-1">
+          <span class="text-slate-400 text-xs">Worker code</span>
+          <input
+            v-model="txUserFilter"
+            type="search"
+            placeholder="All workers"
+            class="rounded-lg bg-slate-900 border border-slate-700 px-2 py-1 text-slate-100 font-mono"
+          />
+        </label>
         <button
           type="button"
-          class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm"
+          class="ml-auto px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm"
           @click="exportCsv"
         >
           Export CSV
@@ -1363,6 +1537,16 @@ const lifecycleColumns = computed<ColumnDef[]>(() => {
             <option value="local">Local (at kiosk)</option>
             <option value="controller">Controller (remote)</option>
           </select>
+        </label>
+        <label class="flex flex-col gap-1">
+          <span class="text-slate-400 text-xs">Item</span>
+          <input
+            v-model="auditItemFilter"
+            type="search"
+            placeholder="Code or name"
+            class="rounded-lg bg-slate-900 border border-slate-700 px-2 py-1 text-slate-100"
+            @keyup.enter="loadAudit(1)"
+          />
         </label>
         <button
           type="button"
@@ -1477,6 +1661,16 @@ const lifecycleColumns = computed<ColumnDef[]>(() => {
             <option value="local">Local (at kiosk)</option>
             <option value="controller">Controller (remote)</option>
           </select>
+        </label>
+        <label class="flex flex-col gap-1">
+          <span class="text-slate-400 text-xs">Item / instance</span>
+          <input
+            v-model="lifecycleItemFilter"
+            type="search"
+            placeholder="Item or serial"
+            class="rounded-lg bg-slate-900 border border-slate-700 px-2 py-1 text-slate-100"
+            @keyup.enter="loadLifecycle(1)"
+          />
         </label>
         <button
           type="button"
@@ -1693,6 +1887,16 @@ const lifecycleColumns = computed<ColumnDef[]>(() => {
             v-model="tcUserFilter"
             type="search"
             placeholder="All workers"
+            class="rounded-lg bg-slate-900 border border-slate-700 px-2 py-1 text-slate-100 font-mono"
+            @change="loadTimeclock"
+          />
+        </label>
+        <label class="flex flex-col gap-1">
+          <span class="text-slate-400 text-xs">Job code</span>
+          <input
+            v-model="tcJobFilter"
+            type="search"
+            placeholder="All jobs"
             class="rounded-lg bg-slate-900 border border-slate-700 px-2 py-1 text-slate-100 font-mono"
             @change="loadTimeclock"
           />

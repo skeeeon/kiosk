@@ -62,6 +62,8 @@ func writeRow(cw *csv.Writer, fields []string) error {
 type TransactionsOptions struct {
 	From               string // RFC3339 — pre-validated by the caller
 	To                 string
+	KioskCode          string // exact match on kiosk_code; "" = all kiosks
+	UserCode           string // exact match on the user relation's code; "" = all workers
 	IncludeSourceKiosk bool
 }
 
@@ -126,6 +128,17 @@ func WriteTransactionsCSV(app core.App, w io.Writer, opts TransactionsOptions) e
 	if opts.To != "" {
 		filter += " && completed_at <= {:to}"
 		params["to"] = opts.To
+	}
+	if opts.KioskCode != "" {
+		filter += " && kiosk_code = {:k}"
+		params["k"] = opts.KioskCode
+	}
+	if opts.UserCode != "" {
+		// Indirect filter on the user relation — transactions carry the worker
+		// as an FK, not a denormalized code (the controller resolves it on
+		// projection, so this matches there too once the FK lands).
+		filter += " && user.code = {:uc}"
+		params["uc"] = opts.UserCode
 	}
 
 	txs, err := app.FindRecordsByFilter("transactions", filter, "-completed_at", 0, 0, params)

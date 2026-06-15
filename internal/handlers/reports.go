@@ -131,8 +131,8 @@ func (h *Handlers) ReportLifecycleAuditCSV(re *core.RequestEvent) error {
 	}
 	action := re.Request.URL.Query().Get("action")
 	source := re.Request.URL.Query().Get("source")
-	if action != "" && action != "create" && action != "decommission" && action != "reactivate" && action != "delete" {
-		return re.BadRequestError("action must be create | decommission | reactivate | delete", nil)
+	if action != "" && !isLifecycleAction(action) {
+		return re.BadRequestError("action must be create | to_maintenance | return_to_service | retire | unretire", nil)
 	}
 	if source != "" && source != "local" && source != "controller" {
 		return re.BadRequestError("source must be 'local' or 'controller'", nil)
@@ -155,6 +155,13 @@ func (h *Handlers) ReportLifecycleAuditCSV(re *core.RequestEvent) error {
 	if source != "" {
 		parts = append(parts, "source = {:s}")
 		params["s"] = source
+	}
+	// Item / instance search. The kiosk-local instance_audit keeps item +
+	// item_instance as FKs (not denormalized), so we match through the
+	// relation; the controller's projection has flat columns (see its twin).
+	if q := re.Request.URL.Query().Get("q"); q != "" {
+		parts = append(parts, "(item.code ~ {:q} || item.name ~ {:q} || item_instance.code ~ {:q})")
+		params["q"] = q
 	}
 	filter := ""
 	for i, p := range parts {
@@ -246,6 +253,18 @@ func (h *Handlers) ReportNotificationsCSV(re *core.RequestEvent) error {
 		time.Now().UTC().Format("20060102-150405"),
 	))
 	return exports.WriteNotificationsLogCSV(h.App, w, exports.NotificationsLogOptions{LookbackDays: days})
+}
+
+// isLifecycleAction reports whether v is one of the instance-status verbs the
+// lifecycle audit records (mirrors the SPA's Action dropdown). The controller's
+// reports.go has a twin — the two packages stay decoupled by design, same
+// reasoning as the duplicated requireAdmin / parseYMDRange.
+func isLifecycleAction(v string) bool {
+	switch v {
+	case "create", "to_maintenance", "return_to_service", "retire", "unretire":
+		return true
+	}
+	return false
 }
 
 // parseLookbackDays validates ?lookback_days. Empty means default; values

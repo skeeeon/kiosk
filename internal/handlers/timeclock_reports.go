@@ -51,9 +51,11 @@ func (h *Handlers) TimeclockHistory(re *core.RequestEvent) error {
 		return err
 	}
 	punches, pairRows, err := exports.LoadTimeclockPunches(h.App, exports.TimeclockQueryOptions{
-		From:     from,
-		To:       to,
-		UserCode: re.Request.URL.Query().Get("user_code"),
+		From:      from,
+		To:        to,
+		UserCode:  re.Request.URL.Query().Get("user_code"),
+		KioskCode: re.Request.URL.Query().Get("kiosk_code"),
+		JobCode:   re.Request.URL.Query().Get("job_code"),
 	})
 	if err != nil {
 		return re.InternalServerError("load punches", err)
@@ -110,9 +112,11 @@ func (h *Handlers) ReportTimeclockCSV(re *core.RequestEvent) error {
 		return err
 	}
 	punches, _, err := exports.LoadTimeclockPunches(h.App, exports.TimeclockQueryOptions{
-		From:     from,
-		To:       to,
-		UserCode: re.Request.URL.Query().Get("user_code"),
+		From:      from,
+		To:        to,
+		UserCode:  re.Request.URL.Query().Get("user_code"),
+		KioskCode: re.Request.URL.Query().Get("kiosk_code"),
+		JobCode:   re.Request.URL.Query().Get("job_code"),
 	})
 	if err != nil {
 		return re.InternalServerError("load punches", err)

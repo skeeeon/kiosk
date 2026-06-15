@@ -27,6 +27,7 @@ type TimeclockQueryOptions struct {
 	To        string
 	UserCode  string
 	KioskCode string // controller-side fleet filter; empty on a kiosk
+	JobCode   string // optional job / work-order attribution filter (exact)
 }
 
 // PunchExportRow is one flattened punch — the raw-punch contract the CSV
@@ -78,6 +79,10 @@ func LoadTimeclockPunches(app core.App, opts TimeclockQueryOptions) ([]PunchExpo
 	if opts.KioskCode != "" {
 		add("kiosk_code = {:kc}")
 		params["kc"] = opts.KioskCode
+	}
+	if opts.JobCode != "" {
+		add("job_code = {:jc}")
+		params["jc"] = opts.JobCode
 	}
 
 	recs, err := app.FindRecordsByFilter(timeclock.Collection, filter, "occurred_at,created", 0, 0, params)

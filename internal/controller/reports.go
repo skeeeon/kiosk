@@ -145,6 +145,7 @@ func (h *Handlers) ReportAdjustmentAuditCSV(re *core.RequestEvent) error {
 		To:        to,
 		KioskCode: re.Request.URL.Query().Get("kiosk_code"),
 		Source:    source,
+		Item:      re.Request.URL.Query().Get("q"),
 	})
 }
 
@@ -163,8 +164,8 @@ func (h *Handlers) ReportLifecycleAuditCSV(re *core.RequestEvent) error {
 	}
 	action := re.Request.URL.Query().Get("action")
 	source := re.Request.URL.Query().Get("source")
-	if action != "" && action != "create" && action != "decommission" && action != "reactivate" && action != "delete" {
-		return re.BadRequestError("action must be create | decommission | reactivate | delete", nil)
+	if action != "" && !isLifecycleAction(action) {
+		return re.BadRequestError("action must be create | to_maintenance | return_to_service | retire | unretire", nil)
 	}
 	if source != "" && source != "local" && source != "controller" {
 		return re.BadRequestError("source must be 'local' or 'controller'", nil)
@@ -191,6 +192,12 @@ func (h *Handlers) ReportLifecycleAuditCSV(re *core.RequestEvent) error {
 	if kc := re.Request.URL.Query().Get("kiosk_code"); kc != "" {
 		parts = append(parts, "kiosk_code = {:k}")
 		params["k"] = kc
+	}
+	// Item / instance search against the projection's denormalized columns
+	// (the kiosk twin matches through FK relations instead).
+	if q := re.Request.URL.Query().Get("q"); q != "" {
+		parts = append(parts, "(item_code ~ {:q} || item_name ~ {:q} || instance_code ~ {:q})")
+		params["q"] = q
 	}
 	filter := ""
 	for i, p := range parts {
@@ -250,6 +257,17 @@ func (h *Handlers) ReportNotificationsCSV(re *core.RequestEvent) error {
 		time.Now().UTC().Format("20060102-150405"),
 	))
 	return exports.WriteNotificationsLogCSV(h.App, w, exports.NotificationsLogOptions{LookbackDays: days})
+}
+
+// isLifecycleAction mirrors handlers.isLifecycleAction — the instance-status
+// verbs the lifecycle audit records. Duplicated to keep the controller package
+// free of the kiosk-side handlers dependency (same reasoning as requireAdmin).
+func isLifecycleAction(v string) bool {
+	switch v {
+	case "create", "to_maintenance", "return_to_service", "retire", "unretire":
+		return true
+	}
+	return false
 }
 
 // parseLookbackDays mirrors handlers.parseLookbackDays.
