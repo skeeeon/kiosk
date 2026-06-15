@@ -47,6 +47,7 @@ type PunchExportRow struct {
 	KioskCode    string    `json:"kiosk_code"`
 	LocationCode string    `json:"location_code,omitempty"`
 	CommandID    string    `json:"command_id,omitempty"`
+	JobCode      string    `json:"job_code,omitempty"`
 }
 
 // LoadTimeclockPunches reads time_punches under the given filters, returning
@@ -147,6 +148,7 @@ func LoadTimeclockPunches(app core.App, opts TimeclockQueryOptions) ([]PunchExpo
 			KioskCode:    r.GetString("kiosk_code"),
 			LocationCode: r.GetString("location_code"),
 			CommandID:    r.GetString("command_id"),
+			JobCode:      r.GetString("job_code"),
 		})
 		pairRows = append(pairRows, timeclock.PunchRow{
 			ID:         r.Id,
@@ -156,6 +158,7 @@ func LoadTimeclockPunches(app core.App, opts TimeclockQueryOptions) ([]PunchExpo
 			Direction:  r.GetString("direction"),
 			OccurredAt: r.GetDateTime("occurred_at").Time(),
 			Created:    r.GetDateTime("created").Time(),
+			JobCode:    r.GetString("job_code"),
 		})
 	}
 	return rows, pairRows, nil
@@ -172,6 +175,7 @@ func WriteTimeclockCSV(w io.Writer, rows []PunchExportRow) error {
 		"occurred_at", "user_code", "user_name", "direction",
 		"source", "recorded_by", "reason", "force",
 		"kiosk_code", "location_code", "recorded_at", "punch_id",
+		"job_code",
 	}); err != nil {
 		return err
 	}
@@ -183,6 +187,7 @@ func WriteTimeclockCSV(w io.Writer, rows []PunchExportRow) error {
 			r.KioskCode, r.LocationCode,
 			r.RecordedAt.UTC().Format(time.RFC3339),
 			r.PunchID,
+			r.JobCode,
 		}); err != nil {
 			return err
 		}

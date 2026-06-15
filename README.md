@@ -90,10 +90,14 @@ it via config. See [docs/controller.md](docs/controller.md).
   worker — and a worker can acknowledge ("clock out anyway") to proceed
   rather than being hard-blocked. Standalone kiosks keep a local-only
   ledger and block on local tools only.
-  Reporting shows paired intervals and daily totals for humans, but the
-  **raw-punch CSV export is the payroll contract** — no rounding,
-  overtime, or pay-period logic lives in the kiosk; downstream systems
-  interpret. A scheduled timeclock digest emails daily totals.
+  Workers can tag a clock-in with an optional **job / work-order number**
+  (free text — no job list to maintain); it rides the punch, shows on the
+  paired interval, and gets its own column in the export so hours can be
+  pivoted by job downstream. Reporting shows paired intervals and daily
+  totals for humans, but the **raw-punch CSV export is the payroll
+  contract** — no rounding, overtime, or pay-period logic lives in the
+  kiosk; downstream systems interpret. A scheduled timeclock digest emails
+  daily totals.
   `timeclock_only: true` turns a device into a **dedicated punch
   station**: the checkout splash is replaced by a persistent punch panel
   and badge scans go straight to it — no carts, no checkout. The natural

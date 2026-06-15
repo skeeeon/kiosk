@@ -81,6 +81,11 @@ type PunchInput struct {
 	// CommandID is the idempotency key for command-bus punches (unique when
 	// non-empty). Empty for local HTTP punches.
 	CommandID string
+
+	// JobCode is an optional free-text job / work-order number tagging the
+	// hours. Meaningful on a clock-in (pairing carries it onto the interval);
+	// stored on whatever punch supplies it, never validated.
+	JobCode string
 }
 
 // PunchResult is what the funnel returns and what the HTTP/command layers
@@ -114,6 +119,7 @@ const futureSkew = time.Minute
 func PerformPunch(app core.App, fleet *Fleet, checkoutFleet *CheckoutFleet, rules Rules, id kioskctx.Identity, in PunchInput) (*PunchResult, error) {
 	in.TargetUserCode = strings.TrimSpace(in.TargetUserCode)
 	in.Reason = strings.TrimSpace(in.Reason)
+	in.JobCode = strings.TrimSpace(in.JobCode)
 	if in.TargetUserCode == "" {
 		return nil, fmt.Errorf("target user code is required")
 	}
@@ -269,6 +275,9 @@ func PerformPunch(app core.App, fleet *Fleet, checkoutFleet *CheckoutFleet, rule
 		}
 		if in.Force {
 			rec.Set("force", true)
+		}
+		if in.JobCode != "" {
+			rec.Set("job_code", in.JobCode)
 		}
 		rec.Set("kiosk_code", id.KioskCode)
 		rec.Set("location_code", id.LocationCode)

@@ -359,7 +359,8 @@ enabled on the kiosk.
   "direction": "in" | "out",
   "reason": "forgot to clock out",
   "occurred_at": "RFC3339 (optional; empty = now)",
-  "force": false
+  "force": false,
+  "job_code": "optional job / work-order tag"
 }
 ```
 
@@ -662,6 +663,7 @@ re-publish.
   "reason": "...",
   "force": false,
   "command_id": "...",
+  "job_code": "optional job / work-order tag (supplied on a clock-in)",
   "recorded_at": "RFC3339 — when the row was written"
 }
 ```

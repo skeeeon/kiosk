@@ -152,6 +152,8 @@ func (h *Handlers) TimeclockPunch(re *core.RequestEvent) error {
 		// open-checkouts block. Maps to the funnel's Force (which for a
 		// non-admin source bypasses ONLY that block — see PunchInput.Force).
 		Acknowledge bool `json:"acknowledge"`
+		// JobCode optionally tags the hours with a job / work-order number.
+		JobCode string `json:"job_code"`
 	}
 	if err := re.BindBody(&body); err != nil {
 		return re.BadRequestError("invalid request body", err)
@@ -165,6 +167,7 @@ func (h *Handlers) TimeclockPunch(re *core.RequestEvent) error {
 		Direction:      body.Direction,
 		Source:         timeclock.SourceSelf,
 		Force:          body.Acknowledge,
+		JobCode:        body.JobCode,
 	}
 	recordedByUserCode := ""
 	if body.TargetUserCode != "" && body.TargetUserCode != body.UserCode {
@@ -277,6 +280,7 @@ func (h *Handlers) TimeclockAdminPunch(re *core.RequestEvent) error {
 		Reason     string `json:"reason"`
 		OccurredAt string `json:"occurred_at"`
 		Force      bool   `json:"force"`
+		JobCode    string `json:"job_code"`
 	}
 	if err := re.BindBody(&body); err != nil {
 		return re.BadRequestError("invalid request body", err)
@@ -288,6 +292,7 @@ func (h *Handlers) TimeclockAdminPunch(re *core.RequestEvent) error {
 		ActorAdminID:   re.Auth.Id,
 		Reason:         body.Reason,
 		Force:          body.Force,
+		JobCode:        body.JobCode,
 	}
 	if body.OccurredAt != "" {
 		t, err := time.Parse(time.RFC3339, body.OccurredAt)
@@ -371,6 +376,7 @@ func PublishPunchEvent(res *timeclock.PunchResult, in timeclock.PunchInput, reco
 		Reason:             in.Reason,
 		Force:              in.Force,
 		CommandID:          in.CommandID,
+		JobCode:            in.JobCode,
 		RecordedAt:         res.RecordedAt,
 	}))
 }

@@ -117,6 +117,37 @@ func TestPair_SameTimestampTieBreakOnCreated(t *testing.T) {
 	}
 }
 
+func TestPair_JobCodeCarriesFromInPunch(t *testing.T) {
+	in := ts(t, "2026-06-11T07:00:00Z")
+	out := ts(t, "2026-06-11T15:00:00Z")
+	openIn := ts(t, "2026-06-11T16:00:00Z")
+	res := timeclock.Pair([]timeclock.PunchRow{
+		// Closed interval: the job rides the "in"; the "out" carries none.
+		{ID: "in-1", UserID: "bob", UserCode: "bob", Direction: "in", OccurredAt: in, Created: in, JobCode: "WO-1234"},
+		{ID: "out-1", UserID: "bob", UserCode: "bob", Direction: "out", OccurredAt: out, Created: out},
+		// Trailing open interval with its own job.
+		{ID: "in-2", UserID: "bob", UserCode: "bob", Direction: "in", OccurredAt: openIn, Created: openIn, JobCode: "WO-5678"},
+	}, time.UTC)
+
+	if len(res.Intervals) != 2 {
+		t.Fatalf("expected 2 intervals: %+v", res.Intervals)
+	}
+	var closed, open timeclock.Interval
+	for _, iv := range res.Intervals {
+		if iv.Open {
+			open = iv
+		} else {
+			closed = iv
+		}
+	}
+	if closed.JobCode != "WO-1234" {
+		t.Fatalf("closed interval job: got %q want WO-1234", closed.JobCode)
+	}
+	if open.JobCode != "WO-5678" {
+		t.Fatalf("open interval job: got %q want WO-5678", open.JobCode)
+	}
+}
+
 func TestPair_MultiUserIsolation(t *testing.T) {
 	res := timeclock.Pair([]timeclock.PunchRow{
 		punch("a-in", "alice", "in", ts(t, "2026-06-11T07:00:00Z"), ts(t, "2026-06-11T07:00:00Z")),

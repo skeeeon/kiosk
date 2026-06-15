@@ -92,6 +92,8 @@ func (h *Handlers) SelfTimeclockPunch(re *core.RequestEvent) error {
 		// open-checkouts block (maps to the funnel's Force, which for a self
 		// punch bypasses ONLY that block).
 		Acknowledge bool `json:"acknowledge"`
+		// JobCode optionally tags the hours with a job / work-order number.
+		JobCode string `json:"job_code"`
 	}
 	if err := re.BindBody(&body); err != nil {
 		return re.BadRequestError("invalid request body", err)
@@ -103,6 +105,7 @@ func (h *Handlers) SelfTimeclockPunch(re *core.RequestEvent) error {
 		Direction:      body.Direction,
 		Source:         timeclock.SourceSelf,
 		Force:          body.Acknowledge,
+		JobCode:        body.JobCode,
 	}
 	res, err := timeclock.PerformPunch(h.App, h.PunchFleet, h.CheckoutFleet, h.punchRules(), kioskctx.Get(), in)
 	if err != nil {

@@ -115,6 +115,7 @@ export interface TimePunchRow {
   force?: boolean
   kiosk_code: string
   location_code?: string
+  job_code?: string
 }
 
 export interface PunchInterval {
@@ -125,6 +126,7 @@ export interface PunchInterval {
   out?: string
   open?: boolean
   seconds: number
+  job_code?: string
 }
 
 export interface PunchDayTotal {

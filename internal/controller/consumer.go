@@ -116,6 +116,7 @@ type EventPayload struct {
 	OccurredAt         time.Time `json:"occurred_at,omitempty"`
 	RecordedByUserCode string    `json:"recorded_by_user_code,omitempty"`
 	Force              bool      `json:"force,omitempty"`
+	JobCode            string    `json:"job_code,omitempty"`
 	RecordedAt         time.Time `json:"recorded_at,omitempty"`
 }
 

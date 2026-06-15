@@ -44,6 +44,9 @@ const errorMsg = ref('')
 const blockedRows = ref<OpenCheckoutDetail[]>([])
 const lastPunch = ref<PunchResult | null>(null)
 const crewOpen = ref(false)
+// Optional job/work-order tag, supplied on clock-in. Not autofocused — a
+// focused input would swallow the window-level badge scan (see useScan).
+const jobCode = ref('')
 
 // Live wall clock in the header. A ticking clock is timeclock idiom — it
 // tells the worker the kiosk is alive and what time their punch records.
@@ -158,6 +161,7 @@ async function loadStatus(code: string) {
   errorMsg.value = ''
   blockedRows.value = []
   lastPunch.value = null
+  jobCode.value = ''
   armClose(IDLE_CLOSE_MS)
   try {
     status.value = await api.get<PunchStatus>(
@@ -198,8 +202,11 @@ async function punch(direction: 'in' | 'out', acknowledge = false) {
       // "Clock out anyway" — acknowledges the open tools and bypasses the
       // gate (recorded on the punch as a self/foreman acknowledgment).
       ...(acknowledge ? { acknowledge: true } : {}),
+      // Job tag is only meaningful on a clock-in; pairing reads it off the "in".
+      ...(direction === 'in' && jobCode.value.trim() ? { job_code: jobCode.value.trim() } : {}),
     })
     lastPunch.value = res
+    if (direction === 'in') jobCode.value = ''
     status.value = { ...status.value, clocked_in: res.clocked_in, since: res.occurred_at }
     void refreshTodaySeconds(status.value.user_code)
     armClose(SUCCESS_CLOSE_MS, true)
@@ -339,6 +346,16 @@ function formatClock(iso?: string): string {
               </div>
             </li>
           </ul>
+
+          <!-- Optional job / work-order tag, offered only when clocking in.
+               Not autofocused — keeps the window-level badge scan alive. -->
+          <input
+            v-if="blockedRows.length === 0 && !status.clocked_in"
+            v-model="jobCode"
+            type="text"
+            placeholder="Job # (optional)"
+            class="w-full max-w-md px-5 py-4 rounded-xl bg-slate-800 border border-slate-700 text-slate-100 text-xl text-center placeholder-slate-500 focus:outline-none focus:border-slate-500"
+          />
 
           <!-- Normal punch button, hidden once a clock-out is blocked — the
                acknowledge/refresh pair below takes over. -->

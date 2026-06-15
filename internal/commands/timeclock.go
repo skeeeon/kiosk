@@ -31,6 +31,7 @@ type timeclockPunchRequest struct {
 	Reason            string `json:"reason"`
 	OccurredAt        string `json:"occurred_at,omitempty"` // RFC3339; empty = now
 	Force             bool   `json:"force,omitempty"`
+	JobCode           string `json:"job_code,omitempty"`
 }
 
 func (d *Dispatcher) handleTimeclockPunch(_ context.Context, payload []byte) Reply {
@@ -61,6 +62,7 @@ func (d *Dispatcher) handleTimeclockPunch(_ context.Context, payload []byte) Rep
 		Reason:            req.Reason,
 		Force:             req.Force,
 		CommandID:         req.CommandID,
+		JobCode:           req.JobCode,
 	}
 	if req.OccurredAt != "" {
 		t, err := time.Parse(time.RFC3339, req.OccurredAt)

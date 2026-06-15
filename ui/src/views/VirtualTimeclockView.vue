@@ -116,6 +116,8 @@ const punching = ref(false)
 const punchError = ref('')
 const blockedRows = ref<OpenCheckoutDetail[]>([])
 const lastPunch = ref<PunchResult | null>(null)
+// Optional job/work-order tag, supplied on clock-in. Cleared after a punch.
+const jobCode = ref('')
 
 // ---------- timesheet summary ----------
 // A glanceable "Today / This week" total plus today's punch pairs, fetched
@@ -174,8 +176,11 @@ async function punch(direction: 'in' | 'out', acknowledge = false) {
       direction,
       // "Clock out anyway" — acknowledges the open tools and bypasses the gate.
       ...(acknowledge ? { acknowledge: true } : {}),
+      // Job tag is only meaningful on a clock-in; pairing reads it off the "in".
+      ...(direction === 'in' && jobCode.value.trim() ? { job_code: jobCode.value.trim() } : {}),
     })
     lastPunch.value = res
+    if (direction === 'in') jobCode.value = ''
     status.value = { ...status.value, clocked_in: res.clocked_in, since: res.occurred_at }
     void loadSummary()
   } catch (e) {
@@ -452,6 +457,15 @@ const todayIntervals = computed(() =>
               </li>
             </ul>
 
+            <!-- Optional job / work-order tag, offered only when clocking in. -->
+            <input
+              v-if="blockedRows.length === 0 && !status.clocked_in"
+              v-model="jobCode"
+              type="text"
+              placeholder="Job # (optional)"
+              class="w-full px-4 py-3 rounded-xl bg-slate-800 border border-slate-700 text-slate-100 placeholder-slate-500 text-center focus:outline-none focus:border-slate-500"
+            />
+
             <!-- Normal punch button, hidden once a clock-out is blocked. -->
             <button
               v-if="blockedRows.length === 0"
@@ -542,6 +556,10 @@ const todayIntervals = computed(() =>
                 <span class="text-slate-600 px-0.5">→</span>
                 <span v-if="iv.open" class="text-emerald-400">in progress</span>
                 <template v-else>{{ formatTime(iv.out) }}</template>
+                <span
+                  v-if="iv.job_code"
+                  class="ml-1.5 px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-xs font-mono text-slate-400"
+                >{{ iv.job_code }}</span>
               </span>
               <span class="text-slate-400 tabular-nums">
                 {{ formatDuration(iv.open ? liveSeconds : iv.seconds) }}

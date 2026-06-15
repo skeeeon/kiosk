@@ -201,7 +201,11 @@ Three invariants:
    idempotent replays). The payload's `punch_id` (kiosk-side
    `time_punches.id`) is the controller projection's idempotency anchor
    (`source_punch_id`) — same strategy as `inventory.adjust`'s
-   `adjustment_id`.
+   `adjustment_id`. The payload also carries an optional `job_code` (free-text
+   job / work-order tag, supplied on a clock-in) — an optional attribution
+   column on the punch ledger (same shape as `transactions.door_id`), threaded
+   through every punch path and projected onto the controller's `time_punches`;
+   display pairing carries it from the "in" punch onto the interval.
    `<prefix>.<kiosk_code>.event.scan.rfid.observed` fires after every
    LLRP inventory cycle in either RFID mode and carries the full
    deduplicated EPC array (the read-window observability stream —

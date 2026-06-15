@@ -1785,6 +1785,7 @@ const lifecycleColumns = computed<ColumnDef[]>(() => {
               <th class="px-4 py-2.5 font-medium">Time</th>
               <th class="px-4 py-2.5 font-medium">Worker</th>
               <th class="px-4 py-2.5 font-medium">Direction</th>
+              <th class="px-4 py-2.5 font-medium">Job</th>
               <th class="px-4 py-2.5 font-medium">Source</th>
               <th v-if="isController" class="px-4 py-2.5 font-medium">Kiosk</th>
               <th class="px-4 py-2.5 font-medium">Reason</th>
@@ -1792,7 +1793,7 @@ const lifecycleColumns = computed<ColumnDef[]>(() => {
           </thead>
           <tbody class="divide-y divide-slate-800">
             <tr v-if="!tcHistory || tcHistory.punches.length === 0">
-              <td :colspan="isController ? 6 : 5" class="text-center text-slate-500 py-6">
+              <td :colspan="isController ? 7 : 6" class="text-center text-slate-500 py-6">
                 No punches in this window.
               </td>
             </tr>
@@ -1809,6 +1810,7 @@ const lifecycleColumns = computed<ColumnDef[]>(() => {
                 </span>
                 <span v-if="p.force" class="ml-1 text-xs text-red-300">forced</span>
               </td>
+              <td class="px-4 py-2.5 font-mono text-slate-400">{{ p.job_code || '—' }}</td>
               <td class="px-4 py-2.5 text-slate-400">
                 {{ p.source }}<span v-if="p.recorded_by" class="text-slate-500"> · {{ p.recorded_by }}</span>
               </td>
