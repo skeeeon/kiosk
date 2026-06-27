@@ -161,3 +161,14 @@ rfid:
     #   host: "10.0.0.51"
     #   port: 5084
     #   enclosure_id: "cabinet-a" # required when mode=enclosure_diff
+
+# location tunes the custody-vs-location reconciliation report
+# (docs/location-sightings-plan.md, L4). Observability only — never enforces.
+location:
+  # Flag a checked-out unit that hasn't been seen by any gateway in this long.
+  # Omit / 0 disables the stale flag.
+  stale_after: 72h
+  # Zone labels that count as "still in storage" (cabinet/counter) — a
+  # checked-out unit last seen in one of these is flagged "not taken". Defaults
+  # to this node's RFID reader zones when omitted, so you usually don't set it.
+  # custody_zones: ["Main Crib", "Cabinet A area"]

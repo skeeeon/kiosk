@@ -366,6 +366,7 @@ func main() {
 		e.Router.POST("/api/kiosk/cart/read-trigger", h.ReadTrigger)
 		e.Router.GET("/api/kiosk/integrity", h.Integrity)
 		e.Router.POST("/api/kiosk/integrity/rebuild", h.RebuildOpenCheckouts)
+		e.Router.GET("/api/kiosk/reconciliation", h.Reconciliation)
 		e.Router.GET("/api/kiosk/metrics", h.Metrics)
 		e.Router.GET("/api/kiosk/reports/open-checkouts", h.ReportOpenCheckouts)
 		e.Router.GET("/api/kiosk/reports/open-checkouts.csv", h.ReportOpenCheckoutsCSV)

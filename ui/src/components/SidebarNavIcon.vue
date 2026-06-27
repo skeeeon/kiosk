@@ -63,5 +63,12 @@ defineProps<{ name: string }>()
       v-else-if="name === 'admin-admins'"
       d="M10 1.5 3.5 4v5.5C3.5 13.6 6.3 17 10 18c3.7-1 6.5-4.4 6.5-8.5V4L10 1.5Zm3.4 6.6-4 5a.75.75 0 0 1-1.1.07l-2-2a.75.75 0 1 1 1.06-1.06l1.4 1.4 3.46-4.34a.75.75 0 1 1 1.18.93Z"
     />
+    <!-- Reconciliation: map pin -->
+    <path
+      v-else-if="name === 'admin-reconciliation'"
+      fill-rule="evenodd"
+      d="M10 2a5 5 0 0 0-5 5c0 3.5 5 9 5 9s5-5.5 5-9a5 5 0 0 0-5-5Zm0 7a2 2 0 1 1 0-4 2 2 0 0 1 0 4Z"
+      clip-rule="evenodd"
+    />
   </svg>
 </template>

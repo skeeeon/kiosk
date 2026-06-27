@@ -264,6 +264,7 @@ func main() {
 		// Fleet liveness + remote admin endpoints. The heartbeats endpoint is
 		// the SPA's source of truth for the online/stale/offline badge; the
 		// inventory endpoints proxy controller→kiosk commands over NATS.
+		e.Router.GET("/api/controller/reconciliation", h.Reconciliation)
 		e.Router.GET("/api/controller/kiosks/heartbeats", h.HeartbeatsEndpoint(hbRegistry))
 		e.Router.GET("/api/controller/kiosks/{code}/inventory", h.InventorySnapshot(nc, hbRegistry))
 		e.Router.GET("/api/controller/kiosks/{code}/metrics", h.Metrics(nc, hbRegistry))

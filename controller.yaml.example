@@ -39,6 +39,15 @@ branding:
 timeclock:
   enabled: false
 
+# location tunes the fleet-wide custody-vs-location reconciliation report
+# (docs/location-sightings-plan.md, L4). Observability only.
+location:
+  stale_after: 72h
+  # The controller has no RFID reader zones to default from, so set the custody
+  # zones explicitly here to enable the "not taken" flag. The stale and
+  # unaccounted flags work without it.
+  # custody_zones: ["Main Crib", "Building B Cabinet"]
+
 # NATS is REQUIRED for the controller — without a broker connection the
 # controller has nothing to aggregate.
 nats:
