@@ -131,18 +131,23 @@ empty — unchanged.
 - Enclosure_diff accept now stamps `terminal_id` (the accepting door's screen).
 - At N=1, no param needed (implicit).
 
-### Phase 4 — `enclosure_diff` partition  *(additive — the capability)*
+### Phase 4 — `enclosure_diff` partition  *(additive — the capability)* — **DONE (backend)**
 
-- `item_instances.enclosure_id` (nullable; explicit admin-assigned membership — mirror
-  `kiosk_items`, **no auto-flow**). Null = counter/crib stock.
-- Config: `enclosures:` map `enclosure_id → {readers:[…], terminals:[…]}` (the readers that
-  union-feed the diff + the per-door terminals).
-- `handlers.expectedInstanceStates(enclosureID)` gains `&& enclosure_id = {:enc}`; an
-  enclosure read **unions** across that enclosure's readers, then diffs once. `rfid.Diff`
-  **untouched**.
-- **Controller parity:** `enclosure_id` added to `instance.*` edit command +
-  `KioskInstancesPanel` assignment UI (rides existing plumbing). Enclosure *definitions*
-  surface via `config.snapshot`.
+- `item_instances.enclosure_id` (migration 1802000000; nullable, indexed). Explicit
+  admin-assigned membership, no auto-flow. Empty = counter/crib stock or a single-cabinet
+  node.
+- No separate `enclosures:` config — a reader's `enclosure_id` (Phase 2) already links it to
+  its cabinet, and `ReaderForEnclosure` matches on it.
+- `handlers.expectedInstanceStates(enclosureID)` partitions the expected-present set by
+  `enclosure_id` **only when `enclosureCount() > 1`** — a single-cabinet node (and any
+  not-yet-assigned instance) keeps the whole-inventory set, so existing deployments need no
+  backfill. `rfid.Diff` **untouched**. Covered by `TestPerformReadTrigger_PartitionsByEnclosure`.
+- **"Two doors" = two antennas on one reader** (already supported per-reader), so
+  multi-reader-per-enclosure **union is deferred** — only needed when a cabinet needs >1
+  physical reader (rare). One reader per enclosure is the shipped model.
+- **Deferred to the parity step:** the assignment UI — `enclosure_id` through the instance
+  create/edit command + `ItemInstancesPanel` / `KioskInstancesPanel`. Until then it's
+  assignable via the PB superuser UI / CSV.
 - Edge (note, don't solve): a tool returned to the wrong cabinet shows as unresolved in the
   wrong enclosure and missing in its home — same class of issue the single-enclosure model
   already has at the node boundary.

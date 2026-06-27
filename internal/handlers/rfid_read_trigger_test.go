@@ -375,3 +375,96 @@ func TestPerformReadTrigger_ReaderError(t *testing.T) {
 		t.Errorf("error should wrap the underlying message; got %q", err.Error())
 	}
 }
+
+// TestPerformReadTrigger_PartitionsByEnclosure: on a node with more than one
+// enclosure, a read of cabinet A expects only instances assigned
+// enclosure_id="A". An instance living in cabinet B must not be synthesized as
+// a checkout when it (correctly) isn't seen at A.
+func TestPerformReadTrigger_PartitionsByEnclosure(t *testing.T) {
+	app := setupApp(t)
+
+	users, _ := app.FindCollectionByNameOrId("users")
+	worker := core.NewRecord(users)
+	worker.Set("code", "W-200")
+	worker.Set("name", "Worker Two Hundred")
+	worker.Set("role", "worker")
+	worker.Set("active", true)
+	worker.Set("email", "w200@example.com")
+	worker.Set("password", "passwordpassword")
+	worker.Set("passwordConfirm", "passwordpassword")
+	if err := app.Save(worker); err != nil {
+		t.Fatalf("save worker: %v", err)
+	}
+
+	items, _ := app.FindCollectionByNameOrId("items")
+	item := core.NewRecord(items)
+	item.Set("code", "WRENCH")
+	item.Set("name", "Pipe Wrench")
+	item.Set("type", "tool")
+	item.Set("tracking_mode", "serialized")
+	item.Set("active", true)
+	item.Set("quantity_on_hand", 2)
+	if err := app.Save(item); err != nil {
+		t.Fatalf("save item: %v", err)
+	}
+
+	const epcA = "300833b2ddd9014035050010"
+	const epcB = "300833b2ddd9014035050011"
+	instances, _ := app.FindCollectionByNameOrId("item_instances")
+	instA := core.NewRecord(instances)
+	instA.Set("item", item.Id)
+	instA.Set("code", "WRENCH-A")
+	instA.Set("serial", "SN-A")
+	instA.Set("rfid_epc", epcA)
+	instA.Set("status", "in_service")
+	instA.Set("enclosure_id", "A")
+	if err := app.Save(instA); err != nil {
+		t.Fatalf("save instance A: %v", err)
+	}
+	instB := core.NewRecord(instances)
+	instB.Set("item", item.Id)
+	instB.Set("code", "WRENCH-B")
+	instB.Set("serial", "SN-B")
+	instB.Set("rfid_epc", epcB)
+	instB.Set("status", "in_service")
+	instB.Set("enclosure_id", "B")
+	if err := app.Save(instB); err != nil {
+		t.Fatalf("save instance B: %v", err)
+	}
+
+	cfg := &config.Config{
+		RFID: config.RFIDConfig{Enabled: true, ReadWindow: config.Duration(50 * time.Millisecond)},
+	}
+	store := cart.NewStore(5 * time.Minute)
+	// Cart anchored to cabinet A.
+	c, _ := store.StartByExternal(worker.Id, worker.GetString("code"),
+		worker.GetString("name"), worker.GetString("role"), "A")
+
+	readerA := &fakeReader{} // sees nothing on this read
+	h := handlers.New(app, cfg, store, notifications.New(app))
+	rdA := &handlers.ReaderHandle{Reader: readerA, Mode: config.RFIDModeEnclosureDiff, EnclosureID: "A"}
+	// Two enclosures configured -> partitioning is active.
+	h.Readers = map[string]*handlers.ReaderHandle{
+		"cab-a": rdA,
+		"cab-b": {Reader: &fakeReader{}, Mode: config.RFIDModeEnclosureDiff, EnclosureID: "B"},
+	}
+
+	resp, err := h.PerformReadTrigger(context.Background(), c, rdA)
+	if err != nil {
+		t.Fatalf("PerformReadTrigger: %v", err)
+	}
+
+	// Cabinet A expects {instance A}; not observed -> exactly one checkout, for
+	// A. Instance B (cabinet B's partition) must not appear.
+	if len(resp.AddedLines) != 1 {
+		t.Fatalf("AddedLines: want 1 (instance A checkout), got %d (%v)", len(resp.AddedLines), resp.AddedLines)
+	}
+	if l := resp.AddedLines[0]; l.Action != "checkout" || l.ItemInstanceID != instA.Id {
+		t.Errorf("expected checkout of instance A (%s), got action=%s instance=%s", instA.Id, l.Action, l.ItemInstanceID)
+	}
+	for _, l := range resp.AddedLines {
+		if l.ItemInstanceID == instB.Id {
+			t.Errorf("instance B (cabinet B) must not appear in cabinet A's diff")
+		}
+	}
+}

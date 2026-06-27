@@ -76,7 +76,7 @@ func (h *Handlers) PerformReadTrigger(ctx context.Context, c *cart.Cart, rd *Rea
 		return nil, fmt.Errorf("%w: %w", errRFIDReadFailed, err)
 	}
 
-	expected, err := h.expectedInstanceStates()
+	expected, err := h.expectedInstanceStates(c.EnclosureID)
 	if err != nil {
 		return nil, fmt.Errorf("expectedInstanceStates: %w", err)
 	}
@@ -205,13 +205,25 @@ func (h *Handlers) appendDiffLine(cartID string, entry rfid.DiffEntry, action st
 // enclosure_diff — quantity-tracked tools and consumables can't
 // produce per-unit identity.
 //
-// Two queries: all active item_instances + all open_checkouts. We
+// When the node hosts more than one enclosure the expected-present set is
+// partitioned to enclosureID's cabinet (instances assigned that enclosure_id),
+// so a read of one cabinet never treats another cabinet's tools as missing. A
+// single-cabinet node (enclosureCount <= 1) skips the filter entirely, so the
+// whole serialized inventory is expected and pre-assignment rows still work.
+//
+// Two queries: item_instances (scoped) + all open_checkouts. We
 // join in Go (O(n)) rather than dragging in a more elaborate PB
 // query API. The instance count per kiosk is bounded by physical
 // tag inventory — hundreds at most, fine for a Go-side join.
-func (h *Handlers) expectedInstanceStates() ([]rfid.InstanceState, error) {
+func (h *Handlers) expectedInstanceStates(enclosureID string) ([]rfid.InstanceState, error) {
+	filter := "status != 'retired'"
+	params := dbx.Params{}
+	if h.enclosureCount() > 1 {
+		filter += " && enclosure_id = {:enc}"
+		params["enc"] = enclosureID
+	}
 	instances, err := h.App.FindRecordsByFilter("item_instances",
-		"status != 'retired'", "+code", 0, 0, dbx.Params{})
+		filter, "+code", 0, 0, params)
 	if err != nil {
 		return nil, fmt.Errorf("find non-retired instances: %w", err)
 	}

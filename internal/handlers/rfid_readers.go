@@ -52,6 +52,22 @@ func (h *Handlers) ReaderForEnclosure(enclosureID string) (*ReaderHandle, bool) 
 	return h.ReaderByID("")
 }
 
+// enclosureCount returns the number of distinct enclosures (by enclosure_id)
+// this node's readers cover. More than one means enclosure_diff reads must be
+// partitioned by enclosure_id (each cabinet diffs only its own inventory);
+// zero or one means the whole serialized inventory belongs to the sole cabinet,
+// so no partition filter is applied — single-cabinet kiosks and not-yet-assigned
+// instances keep working unchanged.
+func (h *Handlers) enclosureCount() int {
+	seen := make(map[string]struct{}, len(h.Readers))
+	for _, hd := range h.Readers {
+		if hd.Mode == config.RFIDModeEnclosureDiff && hd.EnclosureID != "" {
+			seen[hd.EnclosureID] = struct{}{}
+		}
+	}
+	return len(seen)
+}
+
 // anyReaderConnected reports whether at least one configured reader currently
 // holds a live LLRP session. Point-in-time, for the operational metrics gauge.
 func (h *Handlers) anyReaderConnected() bool {
