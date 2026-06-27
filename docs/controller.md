@@ -163,6 +163,20 @@ of truth for catalog plus a unified transaction ledger.
   standalone-kiosk SPA shows the same tab against its local
   `instance_audit`, so feature parity holds across managed and
   unmanaged deployments.
+- **Sighting aggregation + reconciliation (location/sightings).** Separately
+  from the durable aggregator, the controller runs a **plain** core-NATS
+  subscriber (`SightingIngest`, like the heartbeat registry) on the lossy
+  `sighting` family that external gateways publish to. It resolves each raw
+  sighting via `instance_epc_index` (fed by `rfid_epc` on the
+  `instance.lifecycle` projection), upserts the fleet `instance_location` view,
+  and mirrors each unit's last-seen back to its owning node via the
+  `last_observed_state` KV bucket (sliced per node like `catalog_items`). A
+  movement-not-reads dedup drops unchanged sightings before any write. The
+  payoff is the **custody-vs-location reconciliation** report
+  (`GET /api/controller/reconciliation` + the Reconciliation nav view), which
+  joins the replayed ledger with `instance_location` and flags `not_taken` /
+  `stale` / `unaccounted`. Advisory only — never gates custody. See
+  [Location & Sightings](location-sightings-plan.md).
 - **Admin force-close forwarding.**
   `POST /api/controller/kiosks/{code}/checkouts/{source_line_id}/close`
   forwards a force-close to a remote kiosk over NATS request/reply

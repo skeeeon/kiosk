@@ -248,13 +248,20 @@ subjects are in place to make them additive rather than rewrites.
   controller's Readers tab; and `counter_scan` **multi-reader selection** via a
   `?reader=` URL param. All additive and N=1-invisible. See
   [asset-tracker plan](asset-tracker-plan.md).
-- **Location & sightings.** *Scoped, not started.* Coarse last-seen of assets
-  via RFID/BLE gateways around a site (static → zone, roaming → GPS), carried
+- **Location & sightings.** *L1–L4 built on branch `location-sightings`, not yet
+  merged to `main`.* Coarse last-seen of assets from RFID/BLE gateways that are
+  **external publishers** (configured/run off-platform — RFID-over-MQTT into
+  NATS's MQTT interface, or an HTTP→NATS bridge), putting one raw sighting shape
   on a new lossy `sighting` NATS family (advisory, last-write-wins, outside the
-  durable stream), projected to `item_instances.last_observed_*` and mirrored
-  fleet-wide like `punch_state`. The payoff is **custody-vs-location
-  reconciliation** (out-but-not-seen, seen-off-site, …). Phased L1 (node-local)
-  → L4 (reconciliation + BLE). See [location & sightings plan](location-sightings-plan.md).
+  durable stream). Resolution is subscriber-side (standalone node via the scan
+  resolver; controller via `instance_epc_index`); projected to
+  `item_instances.last_observed_*` and mirrored fleet-wide via `last_observed_state`
+  KV (sliced per node like `catalog_items`). Custody reads double as sightings.
+  The payoff — **custody-vs-location reconciliation** (`not_taken` / `stale` /
+  `unaccounted`) — ships as `/api/{kiosk,controller}/reconciliation` + an admin
+  view. **Deferred within L4:** the scheduled `digest.reconciliation` email,
+  controller-side *fleet* BLE (standalone BLE works), and the GPS-polygon theft
+  flag. See [location & sightings plan](location-sightings-plan.md).
 
 Each of these can be evaluated on demand. None should be built until
 there is a concrete user asking for it.

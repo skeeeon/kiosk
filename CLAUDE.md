@@ -220,11 +220,26 @@ Three invariants:
    truth for both the kiosk publisher and the controller's
    stream/consumer filters) — don't re-string-format these at callsites.
 
-   The other two families:
+   The other families:
 
    - **Heartbeats** — `<prefix>.<kiosk_code>.heartbeat`. Built via
      `events.HeartbeatSubject` / `events.HeartbeatFilter`. Last-write-wins,
      no persistence; durability would mask the very signal we care about.
+   - **Sightings** — `<prefix>.<node_code>.sighting.raw`. Built via
+     `events.SightingSubject` / `events.SightingFilter`. The lossy
+     last-write-wins family for advisory asset **location** (the
+     location/sightings feature; see [Location](docs/location-sightings-plan.md)).
+     **Gateways are external publishers** (off-platform — RFID-over-MQTT into
+     NATS's MQTT interface, or an HTTP→NATS bridge), NOT a kiosk reader mode;
+     the platform only consumes. The wire shape is always **raw** (carries a
+     `tag_id`, never a resolved instance code) and resolution is
+     subscriber-side: a standalone node resolves via the scan resolver
+     (`internal/sightings.ApplySighting` + the node subscriber), the controller
+     via `instance_epc_index` (`internal/controller.SightingIngest`, plain
+     subscribe). Last-observed is mirrored back to the owning node via the
+     `last_observed_state` KV bucket, sliced per node like `catalog_items`
+     (NOT WatchAll). Publish via the raw conn (`PublishBytes` /
+     `sightings.PublishCustodyReads`), never `events.Publish`.
    - **Commands** — `<prefix>.<kiosk_code>.command.<name>` (built via
      `events.CommandSubject` / `events.CommandSubscribePattern`). Request/
      reply, single attempt, ≤5 s reply timeout. The kiosk's dispatcher
@@ -383,10 +398,12 @@ without that property in mind.
 **Scan resolution lives in its own package** (`internal/scan`) with the
 data-access functions injected as `Lookups`. The resolver order encodes
 disambiguation: explicit prefix wins; otherwise instance code → item code →
-instance RFID → user code. RFID is **instance-only** — EPCs are per-tag and
-live on `item_instances`, never on the SKU. Adding a new scan type means
-adding to the dispatch chain in `Resolver.Resolve`, not sprinkling lookups
-through handlers.
+instance RFID → instance BLE → user code. RFID/BLE are **instance-only** —
+EPCs and BLE beacon ids are per-tag and live on `item_instances`
+(`rfid_epc` / `ble_id`), never on the SKU. The BLE leg makes sighting
+resolution source-agnostic (RFID vs BLE differs only here). Adding a new scan
+type means adding to the dispatch chain in `Resolver.Resolve`, not sprinkling
+lookups through handlers.
 
 **Schema is code, not SQL.** `migrations/1779000000_init.go` defines all six
 collections (`users`, `admins`, `items`, `transactions`, `transaction_lines`,
@@ -458,6 +475,16 @@ backfill); controller-side `2001300000_rename_door_to_terminal.go` which
 controller migrations on the shared `transactions` collection, so it renames
 only if `terminal_id` is absent, drops any leftover `door_id`, and ensures the
 `terminal_id` index + `enclosure_id`).
+
+Location/sightings migrations (the advisory asset-location layer — see
+`docs/location-sightings-plan.md`): kiosk-side
+`1803000000_instance_last_observed.go` (adds the advisory
+`item_instances.last_observed_*` columns — `_at`/`_zone`/`_gateway`/`_lat`/`_lon`,
+nullable, kiosk-local) and `1804000000_instance_ble_id.go` (adds
+`item_instances.ble_id`, the BLE analog of `rfid_epc`); controller-side
+`2001400000_instance_location.go` (the fleet `instance_location` view, unique on
+`(kiosk_code, instance_code)`) and `2001500000_instance_epc_index.go`
+(the `rfid_epc` → owning-unit map the `SightingIngest` resolves against).
 
 **Scheduled-report delivery shapes.** `internal/scheduler` dispatches each
 `scheduled_reports` row through one of two registries: `reportRunners` (the

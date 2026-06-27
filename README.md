@@ -64,6 +64,14 @@ it via config. See [docs/controller.md](docs/controller.md).
   reconciles what's still in vs. what left and synthesizes the
   resulting cart lines. Worker confirms on a normal checkout screen.
   See [RFID](docs/rfid.md).
+- **Optional asset location (advisory).** RFID/BLE gateways around the
+  site — **external publishers** that put a normalized sighting onto NATS,
+  configured and run outside the platform — give each tracked unit a coarse
+  "last seen" zone (or GPS for a roaming gateway). Custody reads double as
+  sightings for free. It's lossy, last-write-wins, and **never** gates a
+  checkout. The payoff is **reconciliation**: "checked out to Bob but last
+  seen in Cabinet A" / "out but not seen in 3 days" / "seen leaving the yard
+  with no checkout." See [Location & Sightings](docs/location-sightings-plan.md).
 - **Optional timeclock with tool interlocks.** Workers clock in/out at
   the kiosk (splash-screen "Time clock" button + badge scan) against an
   append-only `time_punches` ledger — same discipline as the tool
@@ -183,9 +191,9 @@ The barcode scanner is a USB HID keyboard. The browser captures
 keystrokes via a window-level listener that buffers characters and
 dispatches on Enter. Same mechanism reads user QR codes and item
 barcodes; the dispatcher disambiguates by configurable prefix or by
-trying instance code → item code → instance RFID → user code. RFID is
-instance-only — EPCs are per-tag and live on `item_instances`, never
-on the SKU.
+trying instance code → item code → instance RFID → instance BLE → user
+code. RFID and BLE are instance-only — EPCs and beacon ids are per-tag and
+live on `item_instances` (`rfid_epc` / `ble_id`), never on the SKU.
 
 ## Tech stack
 
@@ -360,7 +368,7 @@ The repo's deeper documentation lives under [`docs/`](docs/):
 - [Development](docs/development.md) — dev loops, DB reset, test suite.
 - [API reference](docs/api.md) — custom endpoints, collection rules.
 - [Wire reference](docs/wire.md) — every NATS subject (events,
-  commands, heartbeats) with payload and reply shapes.
+  commands, heartbeats, sightings) with payload and reply shapes.
 - [Schema](docs/schema.md) — collections, cardinality rules, CSV
   import format.
 - [Operations](docs/operations.md) — deploy, backups, ledger integrity,
@@ -371,4 +379,7 @@ The repo's deeper documentation lives under [`docs/`](docs/):
   scheduled digests.
 - [RFID](docs/rfid.md) — `counter_scan` and `enclosure_diff` modes,
   LLRP reader integration, the SSE cart-events channel.
+- [Location & Sightings](docs/location-sightings-plan.md) — advisory asset
+  location from external gateways, the `sighting` family, and custody-vs-location
+  reconciliation.
 - [Shipped & roadmap](docs/roadmap.md) — what's live and what's deferred.

@@ -638,7 +638,11 @@ rfid_epc, notes) and status-unchanged updates do **not** publish.
 **Payload.** Carries `prev_status` / `new_status` (the transition) plus
 `source_audit_id` (the kiosk-side `instance_audit.id`) which the
 controller uses as the idempotency anchor when projecting into
-`instance_lifecycle_audit`.
+`instance_lifecycle_audit`. Also carries `rfid_epc` (the unit's current
+tag id) so the controller can keep its `instance_epc_index` current — the
+EPC→owning-unit map the sighting ingest resolves against (location/sightings
+L3). Empty for untagged units; a bare cosmetic EPC change emits no event, so
+the index refreshes on the next create/status transition.
 
 ### `event.timeclock.punch`
 
