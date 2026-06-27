@@ -137,7 +137,11 @@ it via config. See [docs/controller.md](docs/controller.md).
   empty on a normal single-screen kiosk, and never an auth boundary
   (the isolated network is the trust boundary, as with any kiosk). An RFID
   enclosure_diff cart additionally records its cabinet as
-  `transactions.enclosure_id`.
+  `transactions.enclosure_id`. When a node also hosts more than one RFID
+  reader (e.g. two crib windows), each screen adds a `?reader=<reader_id>`
+  param so its "RFID scan" button fires that reader; a single-reader node
+  needs no param. All of this stays invisible at N=1 — one screen, one
+  reader, no URL params.
 - **Optional central controller.** A `kiosk-controller` binary
   aggregates per-kiosk transaction events into its own ledger via a
   JetStream durable consumer, pushes catalog updates down to managed

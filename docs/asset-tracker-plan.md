@@ -192,12 +192,13 @@ empty — unchanged.
 
 ## Deferred (shaped-for, not in this plan)
 
-- **Location / sightings.** Sighting `{tag_id, zone?, lat?, lon?, time}` (static gateway →
-  zone; roaming gateway → GPS). Heartbeat-family transport (lossy, last-write-wins, outside
-  the durable ledger stream). Advisory `last_observed_*` projection mirrored to the owning
-  node like `punch_state`/`open_checkouts_state`. Reconciliation reports (custody vs
-  location diff) = the real value. `event.scan.rfid.observed` + its controller filter are the
-  first ingestion seam.
+- **Location / sightings — now scoped: see [`docs/location-sightings-plan.md`](location-sightings-plan.md).**
+  Sighting `{tag_id, zone?, lat?, lon?, time}` (static gateway → zone; roaming gateway → GPS),
+  carried on a new lossy `sighting` NATS family (outside the durable stream). Advisory
+  `last_observed_*` projection mirrored to the owning node like
+  `punch_state`/`open_checkouts_state`. Reconciliation (custody vs location diff) = the real
+  value. Phased L1 (node-local) → L2 (controller aggregation) → L3 (standalone/roaming + GPS)
+  → L4 (reconciliation + BLE).
 - **Access-control vendor integration.** Wire a real lock/badge system as the publisher of
   `cart.start`/`read.trigger`. Lock→enclosure + badge→worker resolution in an adapter (or
   node-side via the scan resolver).
