@@ -217,10 +217,10 @@ func txCompletePayload(t *testing.T, pub *captured) map[string]any {
 
 // ----- tests -----
 
-// TestCommit_StampsDoorID: a cart carrying a DoorID (set by the enclosure_diff
-// path, or injected by the manual-commit handler) lands on the ledger row and
-// rides the transaction.complete event.
-func TestCommit_StampsDoorID(t *testing.T) {
+// TestCommit_StampsTerminalAndEnclosure: a cart carrying a TerminalID (the
+// accepting screen) and an EnclosureID (set by the enclosure_diff path) lands
+// both on the ledger row and rides the transaction.complete event.
+func TestCommit_StampsTerminalAndEnclosure(t *testing.T) {
 	app := setupApp(t)
 	s := seedFixtures(t, app)
 
@@ -229,7 +229,8 @@ func TestCommit_StampsDoorID(t *testing.T) {
 		ItemType: "tool", TrackingMode: "quantity",
 		Action: "checkout", Qty: 1,
 	})
-	c.DoorID = "DOOR-A"
+	c.TerminalID = "TERM-A"
+	c.EnclosureID = "ENC-A"
 	pub := &captured{}
 
 	if _, err := commit.Commit(app, c, testIdentity, commit.DefaultPolicy(), pub.publish); err != nil {
@@ -243,19 +244,27 @@ func TestCommit_StampsDoorID(t *testing.T) {
 	if len(txs) != 1 {
 		t.Fatalf("transactions: want 1, got %d", len(txs))
 	}
-	if got := txs[0].GetString("door_id"); got != "DOOR-A" {
-		t.Errorf("transaction door_id: want DOOR-A, got %q", got)
+	if got := txs[0].GetString("terminal_id"); got != "TERM-A" {
+		t.Errorf("transaction terminal_id: want TERM-A, got %q", got)
+	}
+	if got := txs[0].GetString("enclosure_id"); got != "ENC-A" {
+		t.Errorf("transaction enclosure_id: want ENC-A, got %q", got)
 	}
 
-	if got := txCompletePayload(t, pub)["door_id"]; got != "DOOR-A" {
-		t.Errorf("event door_id: want DOOR-A, got %v", got)
+	payload := txCompletePayload(t, pub)
+	if got := payload["terminal_id"]; got != "TERM-A" {
+		t.Errorf("event terminal_id: want TERM-A, got %v", got)
+	}
+	if got := payload["enclosure_id"]; got != "ENC-A" {
+		t.Errorf("event enclosure_id: want ENC-A, got %v", got)
 	}
 }
 
-// TestCommit_OmitsDoorIDWhenEmpty: the common single-kiosk path leaves the
-// column empty and keeps door_id off the wire entirely (the conditional in
-// BuildTransactionCompletePayload), so old consumers see an unchanged payload.
-func TestCommit_OmitsDoorIDWhenEmpty(t *testing.T) {
+// TestCommit_OmitsAttributionWhenEmpty: the common single-kiosk path leaves
+// both columns empty and keeps terminal_id/enclosure_id off the wire entirely
+// (the conditionals in BuildTransactionCompletePayload), so old consumers see
+// an unchanged payload.
+func TestCommit_OmitsAttributionWhenEmpty(t *testing.T) {
 	app := setupApp(t)
 	s := seedFixtures(t, app)
 
@@ -277,12 +286,19 @@ func TestCommit_OmitsDoorIDWhenEmpty(t *testing.T) {
 	if len(txs) != 1 {
 		t.Fatalf("transactions: want 1, got %d", len(txs))
 	}
-	if got := txs[0].GetString("door_id"); got != "" {
-		t.Errorf("transaction door_id: want empty, got %q", got)
+	if got := txs[0].GetString("terminal_id"); got != "" {
+		t.Errorf("transaction terminal_id: want empty, got %q", got)
+	}
+	if got := txs[0].GetString("enclosure_id"); got != "" {
+		t.Errorf("transaction enclosure_id: want empty, got %q", got)
 	}
 
-	if _, ok := txCompletePayload(t, pub)["door_id"]; ok {
-		t.Errorf("transaction.complete should omit door_id when empty")
+	payload := txCompletePayload(t, pub)
+	if _, ok := payload["terminal_id"]; ok {
+		t.Errorf("transaction.complete should omit terminal_id when empty")
+	}
+	if _, ok := payload["enclosure_id"]; ok {
+		t.Errorf("transaction.complete should omit enclosure_id when empty")
 	}
 }
 

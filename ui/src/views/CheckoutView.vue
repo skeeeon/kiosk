@@ -35,14 +35,14 @@ const TOP = { position: 'top' } as const
 const c = useCart()
 const { identity } = useKioskIdentity()
 
-// Optional per-terminal attribution: each physical screen/door is configured
-// with a ?door= URL param. Read once (the kiosk never mutates it) and passed
-// through to commit so the transaction records where it was finished. Absent
-// on single-kiosk installs, which is fully supported (door_id is optional).
+// Optional per-terminal attribution: each physical screen is configured with a
+// ?terminal= URL param. Read once (the kiosk never mutates it) and passed
+// through to commit so the transaction records where it was accepted. Absent on
+// single-kiosk installs, which is fully supported (terminal_id is optional).
 const route = useRoute()
-const doorId = computed(() => {
-  const d = route.query.door
-  return (Array.isArray(d) ? d[0] : d) || null
+const terminalId = computed(() => {
+  const t = route.query.terminal
+  return (Array.isArray(t) ? t[0] : t) || null
 })
 
 const splashLogoBroken = ref(false)
@@ -559,7 +559,7 @@ async function doCommit() {
   const snapshotLines = cart.value.lines.map((l) => ({ ...l }))
   const snapshotUser = cart.value.user_name
   try {
-    const result = await c.commit(doorId.value)
+    const result = await c.commit(terminalId.value)
     success.value = { result, lines: snapshotLines, userName: snapshotUser }
     outstanding.value = []
     outstandingExpanded.value = false

@@ -9,7 +9,7 @@ import (
 // TestValidateRFID covers the cross-field invariants on the RFID
 // config block. The cases mirror docs/rfid.md: when disabled,
 // everything is irrelevant; when enabled, mode + reader endpoint are
-// required; enclosure_diff additionally requires door_id;
+// required; enclosure_diff additionally requires enclosure_id;
 // read_window defaults to 3s.
 func TestValidateRFID(t *testing.T) {
 	cases := []struct {
@@ -50,33 +50,33 @@ func TestValidateRFID(t *testing.T) {
 			},
 		},
 		{
-			name: "enabled, enclosure_diff with door_id — ok",
+			name: "enabled, enclosure_diff with enclosure_id — ok",
 			in: RFIDConfig{
-				Enabled: true,
-				Mode:    RFIDModeEnclosureDiff,
-				Reader:  RFIDReaderConfig{Host: "10.0.0.50", Port: 5084},
-				DoorID:  "BAY-A",
+				Enabled:     true,
+				Mode:        RFIDModeEnclosureDiff,
+				Reader:      RFIDReaderConfig{Host: "10.0.0.50", Port: 5084},
+				EnclosureID: "BAY-A",
 			},
 		},
 		{
 			name: "enclosure_diff read_window over cap — error (would blow the 5s reply window)",
 			in: RFIDConfig{
-				Enabled:    true,
-				Mode:       RFIDModeEnclosureDiff,
-				Reader:     RFIDReaderConfig{Host: "h", Port: 5084},
-				DoorID:     "BAY-A",
-				ReadWindow: Duration(5 * time.Second),
+				Enabled:     true,
+				Mode:        RFIDModeEnclosureDiff,
+				Reader:      RFIDReaderConfig{Host: "h", Port: 5084},
+				EnclosureID: "BAY-A",
+				ReadWindow:  Duration(5 * time.Second),
 			},
 			wantErr: "too long for",
 		},
 		{
 			name: "enclosure_diff read_window at cap — ok",
 			in: RFIDConfig{
-				Enabled:    true,
-				Mode:       RFIDModeEnclosureDiff,
-				Reader:     RFIDReaderConfig{Host: "h", Port: 5084},
-				DoorID:     "BAY-A",
-				ReadWindow: Duration(MaxEnclosureReadWindow),
+				Enabled:     true,
+				Mode:        RFIDModeEnclosureDiff,
+				Reader:      RFIDReaderConfig{Host: "h", Port: 5084},
+				EnclosureID: "BAY-A",
+				ReadWindow:  Duration(MaxEnclosureReadWindow),
 			},
 			wantApply: func(t *testing.T, out RFIDConfig) {
 				if out.ReadWindow.AsDuration() != MaxEnclosureReadWindow {
@@ -114,16 +114,16 @@ func TestValidateRFID(t *testing.T) {
 			wantErr: "rfid.reader.port is required",
 		},
 		{
-			name: "enabled enclosure_diff without door_id — error",
+			name: "enabled enclosure_diff without enclosure_id — error",
 			in: RFIDConfig{
 				Enabled: true,
 				Mode:    RFIDModeEnclosureDiff,
 				Reader:  RFIDReaderConfig{Host: "h", Port: 5084},
 			},
-			wantErr: "rfid.door_id is required",
+			wantErr: "rfid.enclosure_id is required",
 		},
 		{
-			name: "counter_scan without door_id — ok (door_id is enclosure-only)",
+			name: "counter_scan without enclosure_id — ok (enclosure_id is enclosure-only)",
 			in: RFIDConfig{
 				Enabled: true,
 				Mode:    RFIDModeCounterScan,
@@ -282,12 +282,12 @@ func TestRFIDEnvOverrides(t *testing.T) {
 		}
 	})
 
-	t.Run("KIOSK_RFID_DOOR_ID sets door id", func(t *testing.T) {
+	t.Run("KIOSK_RFID_ENCLOSURE_ID sets enclosure id", func(t *testing.T) {
 		c := &Config{}
-		t.Setenv("KIOSK_RFID_DOOR_ID", "BAY-B")
+		t.Setenv("KIOSK_RFID_ENCLOSURE_ID", "BAY-B")
 		applyEnvOverrides(c)
-		if c.RFID.DoorID != "BAY-B" {
-			t.Errorf("expected DoorID=BAY-B, got %q", c.RFID.DoorID)
+		if c.RFID.EnclosureID != "BAY-B" {
+			t.Errorf("expected EnclosureID=BAY-B, got %q", c.RFID.EnclosureID)
 		}
 	})
 }

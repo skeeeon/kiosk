@@ -48,7 +48,7 @@ func newRFIDDispatcher(app core.App) *Dispatcher {
 func TestHandleCartStart_NilKioskHandlers(t *testing.T) {
 	app := setupApp(t)
 	d := NewDispatcher(app, "KIOSK01") // KioskHandlers deliberately unset
-	reply := d.handleCartStart(context.Background(), []byte(`{"user_code":"EMP-1","door_id":"BAY-A"}`))
+	reply := d.handleCartStart(context.Background(), []byte(`{"user_code":"EMP-1","enclosure_id":"BAY-A"}`))
 	if reply.Success {
 		t.Fatal("expected failure when KioskHandlers is nil")
 	}
@@ -60,9 +60,9 @@ func TestHandleCartStart_Validation(t *testing.T) {
 
 	cases := []struct{ name, payload string }{
 		{"bad json", `{`},
-		{"missing user_code", `{"door_id":"BAY-A"}`},
-		{"missing door_id", `{"user_code":"EMP-1"}`},
-		{"unknown user", `{"user_code":"NOPE","door_id":"BAY-A"}`},
+		{"missing user_code", `{"enclosure_id":"BAY-A"}`},
+		{"missing enclosure_id", `{"user_code":"EMP-1"}`},
+		{"unknown user", `{"user_code":"NOPE","enclosure_id":"BAY-A"}`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -82,7 +82,7 @@ func TestHandleCartStart_InactiveUserRejected(t *testing.T) {
 	seedActiveUser(t, app, "EMP-OFF", false)
 	d := newRFIDDispatcher(app)
 
-	reply := d.handleCartStart(context.Background(), []byte(`{"user_code":"EMP-OFF","door_id":"BAY-A"}`))
+	reply := d.handleCartStart(context.Background(), []byte(`{"user_code":"EMP-OFF","enclosure_id":"BAY-A"}`))
 	if reply.Success {
 		t.Fatal("expected inactive user to be rejected")
 	}
@@ -93,7 +93,7 @@ func TestHandleCartStart_SuccessAndIdempotentReuse(t *testing.T) {
 	seedActiveUser(t, app, "EMP-1", true)
 	d := newRFIDDispatcher(app)
 
-	payload := []byte(`{"user_code":"EMP-1","door_id":"BAY-A"}`)
+	payload := []byte(`{"user_code":"EMP-1","enclosure_id":"BAY-A"}`)
 	first := d.handleCartStart(context.Background(), payload)
 	if !first.Success {
 		t.Fatalf("first cart.start failed: %s", first.Error)
@@ -136,7 +136,7 @@ func TestHandleReadTrigger_AnonymousReadRejected(t *testing.T) {
 	app := setupApp(t)
 	d := newRFIDDispatcher(app)
 
-	// Neither cart_id nor (user_code + door_id) → no cart to anchor the read.
+	// Neither cart_id nor (user_code + enclosure_id) → no cart to anchor the read.
 	reply := d.handleReadTrigger(context.Background(), []byte(`{}`))
 	if reply.Success {
 		t.Fatal("expected failure: read with no resolvable cart must be rejected")

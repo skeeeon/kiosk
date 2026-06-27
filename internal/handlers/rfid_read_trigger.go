@@ -132,7 +132,7 @@ func (h *Handlers) PerformReadTrigger(ctx context.Context, c *cart.Cart) (*ReadT
 		"kiosk_code":    id.KioskCode,
 		"location_code": id.LocationCode,
 		"cart_id":       c.ID,
-		"door_id":       c.DoorID,
+		"enclosure_id":  c.EnclosureID,
 		"mode":          h.Cfg.RFID.Mode,
 		"observed_epcs": observedStrings,
 		"observed_at":   time.Now().UTC(),

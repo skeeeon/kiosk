@@ -68,8 +68,8 @@ present. The flow is event-driven and NATS-orchestrated:
    enclosure door, handled by an external system) publishes a
    `cart.start` NATS command at
    `<prefix>.<kiosk_code>.command.cart.start` carrying `user_code` and
-   `door_id`. The kiosk's command dispatcher creates or reuses a cart
-   keyed `(user_code, door_id)` — re-fires within the active window
+   `enclosure_id`. The kiosk's command dispatcher creates or reuses a cart
+   keyed `(user_code, enclosure_id)` — re-fires within the active window
    return the same cart_id. The cart is empty at this point.
 2. **Worker uses the enclosure.** Takes things out, puts things back.
    No kiosk involvement; the camera / occupancy system handles this
@@ -77,7 +77,7 @@ present. The flow is event-driven and NATS-orchestrated:
 3. **Read trigger.** When occupancy ends (worker has stepped out), the
    external system publishes a `read.trigger` NATS command at
    `<prefix>.<kiosk_code>.command.read.trigger` carrying the
-   `(user_code, door_id)` of the active cart, or the `cart_id` if
+   `(user_code, enclosure_id)` of the active cart, or the `cart_id` if
    known. The kiosk runs one LLRP inventory cycle.
 4. **In-process diff.** Pure function over (observed EPCs, expected
    set). Expected-present = non-retired serialized instances (in_service +
@@ -146,7 +146,7 @@ internal/commands/
   dispatcher.go                 gains KioskHandlers field for those handlers to reach in
 
 internal/cart/
-  store.go                      gains StartByExternal + GetByUserDoor + secondary byUserDoor index
+  store.go                      gains StartByExternal + GetByUserEnclosure + secondary byUserEnclosure index
 
 internal/config/
   config.go                     RFIDConfig block + KIOSK_RFID_* env overrides + cross-field validation
@@ -176,7 +176,7 @@ re-exported from `internal/rfid`.
 No new collections. No migrations. `item_instances.rfid_epc` already
 exists; the diff is computed against existing PB tables. The cart
 remains in-memory; the in-memory store grows a secondary lookup key
-to support `(user_code, door_id)` cart resolution in `enclosure_diff`
+to support `(user_code, enclosure_id)` cart resolution in `enclosure_diff`
 mode, but the persistence story is unchanged.
 
 ## Config
@@ -204,7 +204,7 @@ rfid:
     #   - id: 3
     #     tx_power_dbm: 20.0
   read_window: "3s"         # one inventory cycle; enclosure_diff caps this at 3.5s
-  door_id: ""               # required when mode=enclosure_diff
+  enclosure_id: ""               # required when mode=enclosure_diff
 ```
 
 Validation at startup:
@@ -212,7 +212,7 @@ Validation at startup:
 - When `rfid.enabled=true`, `rfid.mode` is required.
 - When `rfid.enabled=true`, `rfid.reader.host` and `rfid.reader.port`
   are required.
-- When `rfid.mode=enclosure_diff`, `rfid.door_id` is required.
+- When `rfid.mode=enclosure_diff`, `rfid.enclosure_id` is required.
 - When `rfid.mode=enclosure_diff`, `rfid.read_window` must be ≤ 3.5 s
   (`config.MaxEnclosureReadWindow`) — the read runs synchronously inside the
   controller's ~5 s command-reply window, so a larger window would push the
@@ -311,8 +311,8 @@ semantics already documented in CLAUDE.md.
 
 | Subject | Payload | Reply |
 |---|---|---|
-| `<prefix>.<code>.command.cart.start` | `{user_code, door_id, command_id}` | `{success, error, data: {cart_id, user_code, door_id, reused}}` |
-| `<prefix>.<code>.command.read.trigger` | `{cart_id}` *or* `{user_code, door_id}` (+ optional `command_id`) | `{success, error, data: {cart, added_lines, observed_epcs, unresolved_epcs, skipped_cross_user_count}}` |
+| `<prefix>.<code>.command.cart.start` | `{user_code, enclosure_id, command_id}` | `{success, error, data: {cart_id, user_code, enclosure_id, reused}}` |
+| `<prefix>.<code>.command.read.trigger` | `{cart_id}` *or* `{user_code, enclosure_id}` (+ optional `command_id`) | `{success, error, data: {cart, added_lines, observed_epcs, unresolved_epcs, skipped_cross_user_count}}` |
 
 Both commands MUST reply within the 5 s window even on error —
 silence renders "kiosk offline" at the caller. To hold that contract for
@@ -326,7 +326,7 @@ and replies with an error rather than hanging the caller. The `read_window`
 
 | Subject | When | Payload |
 |---|---|---|
-| `<prefix>.<code>.event.scan.rfid.observed` | After every completed read in either mode | `{kiosk_code, location_code, cart_id, door_id, mode, observed_epcs, observed_at}` |
+| `<prefix>.<code>.event.scan.rfid.observed` | After every completed read in either mode | `{kiosk_code, location_code, cart_id, enclosure_id, mode, observed_epcs, observed_at}` |
 
 The observed-EPCs event is cheap observability — it gives the
 controller (or any downstream consumer) a stream of "what tags have
@@ -443,7 +443,7 @@ fails soft (warn + continue, like NATS unreachability), but no
 endpoints or commands consume the reader yet.
 
 **Tests.** Config validation (enabled/disabled, mode requirements,
-door_id requirement when `mode=enclosure_diff`, env overrides).
+enclosure_id requirement when `mode=enclosure_diff`, env overrides).
 Wrapper construction from a `RFIDConfig` value. No LLRP-level
 integration tests in this phase — those land with Phase 2's `ReadFor`
 implementation against the EdgeX simulator, gated on an opt-in
@@ -490,13 +490,13 @@ mutate cart, assert tickle arrives.
 
 **Scope.** Two new commands on the kiosk-side `Dispatcher`:
 
-- `cart.start`: payload `{user_code, door_id, command_id}`.
+- `cart.start`: payload `{user_code, enclosure_id, command_id}`.
   Idempotency: the cart store grows a secondary index keyed
-  `(user_code, door_id)`; a re-fire within the cart's active window
+  `(user_code, enclosure_id)`; a re-fire within the cart's active window
   (governed by `session.idle_timeout`) returns the existing cart_id
   rather than creating a new one. After commit or idle expiry, the
   next `cart.start` for the same key creates a fresh cart.
-- `read.trigger`: payload `{cart_id}` or `{user_code, door_id}`.
+- `read.trigger`: payload `{cart_id}` or `{user_code, enclosure_id}`.
   Looks up the active cart; **rejects with error if no active cart
   exists for the key.** Runs `ReadFor`, computes the diff, synthesizes
   cart lines, fires the SSE tickle. We deliberately do not start an

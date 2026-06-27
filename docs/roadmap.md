@@ -159,7 +159,7 @@ These started as deferred roadmap items and are now live in the binary:
   observed tag into the cart through the existing add path
   (`POST /api/kiosk/cart/rfid-scan`). **enclosure_diff** is
   NATS-orchestrated: external access-control fires `cart.start`
-  with `{user_code, door_id}` (idempotent on a secondary cart-store
+  with `{user_code, enclosure_id}` (idempotent on a secondary cart-store
   index keyed by that pair), then a camera/occupancy system fires
   `read.trigger`; the kiosk runs a pure diff against expected-present
   state via `rfid.Diff` and synthesizes self-return / checkout cart

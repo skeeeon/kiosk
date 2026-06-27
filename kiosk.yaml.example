@@ -84,10 +84,11 @@ branding:
 #                     NATS commands at <prefix>.<code>.command.cart.start
 #                     and .command.read.trigger; kiosk diffs observed
 #                     EPCs against the expected-present set to derive
-#                     checkout/return lines. door_id is the opaque label
-#                     used as part of the cart-start idempotency key
-#                     (user_code, door_id), so two enclosures sharing a
-#                     kiosk can be told apart.
+#                     checkout/return lines. enclosure_id is the opaque
+#                     label for the access-controlled cabinet, used as part
+#                     of the cart-start idempotency key (user_code,
+#                     enclosure_id), so two enclosures sharing a kiosk can
+#                     be told apart.
 #
 # Connection to the reader is best-effort: a failure at startup logs a
 # warning and the binary continues, mirroring NATS unreachability
@@ -146,4 +147,4 @@ rfid:
     #   - id: 3
     #     tx_power_dbm: 20.0
   read_window: "3s"         # one inventory cycle; enclosure_diff caps this at 3.5s (runs inside the ~5s command reply)
-  door_id: ""               # required when mode=enclosure_diff
+  enclosure_id: ""          # required when mode=enclosure_diff (the access-controlled cabinet's id)

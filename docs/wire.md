@@ -434,7 +434,7 @@ snapshot. Proxied by the controller's
 ### `cart.start`
 
 **RFID `enclosure_diff` mode only.** Start (or reuse) a cart keyed
-`(user_code, door_id)` so the subsequent `read.trigger` has a cart to
+`(user_code, enclosure_id)` so the subsequent `read.trigger` has a cart to
 write into. Typically fired by an access-control system when a worker
 badges into the enclosure door.
 
@@ -444,7 +444,7 @@ badges into the enclosure door.
 ```json
 {
   "user_code": "W-042",
-  "door_id": "cabinet-a",
+  "enclosure_id": "cabinet-a",
   "command_id": "uuid"   // optional, for caller-side traceability
 }
 ```
@@ -454,12 +454,12 @@ badges into the enclosure door.
 {
   "cart_id": "...",
   "user_code": "W-042",
-  "door_id": "cabinet-a",
-  "reused": false   // true if a previous cart matched the (user, door) key
+  "enclosure_id": "cabinet-a",
+  "reused": false   // true if a previous cart matched the (user, enclosure) key
 }
 ```
 
-**Idempotency.** Built into the cart store's `(user_code, door_id)`
+**Idempotency.** Built into the cart store's `(user_code, enclosure_id)`
 secondary index: a re-fire within the cart's idle window returns the
 same `cart_id` with `reused: true`. After commit or idle expiry, the
 next `cart.start` for the same key creates a fresh cart.
@@ -481,7 +481,7 @@ steps out of the enclosure.
 ```
 or
 ```json
-{ "user_code": "W-042", "door_id": "cabinet-a", "command_id": "uuid" }
+{ "user_code": "W-042", "enclosure_id": "cabinet-a", "command_id": "uuid" }
 ```
 
 **Reply data.**
@@ -700,7 +700,7 @@ captures it for future drift detection and analytics.
   "kiosk_code": "...",
   "location_code": "...",
   "cart_id": "...",
-  "door_id": "cabinet-a",   // enclosure_diff only
+  "enclosure_id": "cabinet-a",   // enclosure_diff only
   "mode": "counter_scan" | "enclosure_diff",
   "observed_epcs": ["..."],
   "observed_at": "RFC3339"

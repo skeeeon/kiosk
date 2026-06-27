@@ -73,15 +73,15 @@ export function useCart() {
     session.setCart(null)
   }
 
-  // doorId is the optional per-terminal attribution tag read from the page's
-  // ?door= URL param. It's stamped onto the transaction at commit (the
-  // finishing terminal wins), unless the RFID enclosure_diff flow already set
-  // a door on the cart server-side. Omitted from the body when absent.
-  async function commit(doorId?: string | null): Promise<CommitResult> {
+  // terminalId is the optional attribution tag read from the page's ?terminal=
+  // URL param — the screen the worker accepted the cart at. It's stamped onto
+  // the transaction at commit (an enclosure_diff cart additionally carries its
+  // cabinet's enclosure_id server-side). Omitted from the body when absent.
+  async function commit(terminalId?: string | null): Promise<CommitResult> {
     if (!session.cart) throw new Error('no active cart')
     const result = await api.post<CommitResult>('/api/kiosk/cart/commit', {
       cart_id: session.cart.id,
-      door_id: doorId || undefined,
+      terminal_id: terminalId || undefined,
     })
     session.setCart(null)
     return result

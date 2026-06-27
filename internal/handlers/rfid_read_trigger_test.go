@@ -141,10 +141,10 @@ func seedRFIDDiff(t *testing.T) (core.App, rfidDiffSeed) {
 
 	cfg := &config.Config{
 		RFID: config.RFIDConfig{
-			Enabled:    true,
-			Mode:       config.RFIDModeEnclosureDiff,
-			DoorID:     "BAY-A",
-			ReadWindow: config.Duration(50 * time.Millisecond),
+			Enabled:     true,
+			Mode:        config.RFIDModeEnclosureDiff,
+			EnclosureID: "BAY-A",
+			ReadWindow:  config.Duration(50 * time.Millisecond),
 		},
 	}
 	store := cart.NewStore(5 * time.Minute)

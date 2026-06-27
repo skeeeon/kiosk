@@ -66,7 +66,7 @@ rfid:                          # Optional. Off by default.
                                # and unique; dBm resolved to nearest index via reader
                                # capabilities at Connect.
   read_window: "3s"            # How long one inventory cycle runs
-  door_id: ""                  # Required when mode=enclosure_diff
+  enclosure_id: ""             # Required when mode=enclosure_diff (access-controlled cabinet id)
 
 timeclock:                     # Optional. Off by default.
   enabled: false               # Gates the whole feature: endpoints, splash button, events.
@@ -155,7 +155,7 @@ Validation at startup:
 - `rfid.mode` is required when `rfid.enabled=true`.
 - `rfid.reader.host` and `rfid.reader.port` are required when
   `rfid.enabled=true`.
-- `rfid.door_id` is required when `rfid.mode=enclosure_diff`.
+- `rfid.enclosure_id` is required when `rfid.mode=enclosure_diff`.
 - `rfid.read_window` must be ≤ 3.5 s when `rfid.mode=enclosure_diff`
   (`config.MaxEnclosureReadWindow`): the read runs synchronously inside the
   controller's ~5 s NATS command-reply window, so a larger window would push

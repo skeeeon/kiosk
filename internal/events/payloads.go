@@ -34,7 +34,8 @@ type TransactionCompleteInput struct {
 	TransactionID string
 	KioskCode     string
 	LocationCode  string
-	DoorID        string // optional physical-door/terminal attribution tag; on the wire only when set
+	TerminalID    string // optional accepting/interacting terminal attribution; on the wire only when set
+	EnclosureID   string // optional enclosure_diff cabinet attribution; on the wire only when set
 	UserID        string
 	UserCode      string
 	UserName      string
@@ -65,11 +66,14 @@ func BuildTransactionCompletePayload(in TransactionCompleteInput) map[string]any
 		"returned":       in.Returned,
 		"consumed":       in.Consumed,
 	}
-	// Optional attribution tag — only ride the wire when set, so the common
+	// Optional attribution tags — only ride the wire when set, so the common
 	// single-kiosk payload is unchanged and the controller's omitempty decode
 	// stays a no-op for un-tagged transactions.
-	if in.DoorID != "" {
-		p["door_id"] = in.DoorID
+	if in.TerminalID != "" {
+		p["terminal_id"] = in.TerminalID
+	}
+	if in.EnclosureID != "" {
+		p["enclosure_id"] = in.EnclosureID
 	}
 	return p
 }

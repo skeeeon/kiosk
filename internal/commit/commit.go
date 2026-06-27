@@ -410,7 +410,8 @@ func Commit(app core.App, c *cart.Cart, id kioskctx.Identity, policy Policy, pub
 				TransactionID: txRec.Id,
 				KioskCode:     id.KioskCode,
 				LocationCode:  id.LocationCode,
-				DoorID:        c.DoorID,
+				TerminalID:    c.TerminalID,
+				EnclosureID:   c.EnclosureID,
 				UserID:        c.UserID,
 				UserCode:      c.UserCode,
 				UserName:      userRec.GetString("name"),
@@ -452,10 +453,12 @@ func createTransaction(tx core.App, c *cart.Cart, id kioskctx.Identity, userGrou
 	rec := core.NewRecord(col)
 	rec.Set("kiosk_code", id.KioskCode)
 	rec.Set("location_code", id.LocationCode)
-	// Optional per-door/terminal attribution. Carried on the cart (set by the
-	// RFID enclosure_diff StartByExternal path, or injected from the commit
-	// request by the manual-checkout handler). Empty for single-kiosk installs.
-	rec.Set("door_id", c.DoorID)
+	// Optional attribution, both carried on the cart. terminal_id is the
+	// accepting/interacting screen (set from the commit request's ?terminal=);
+	// enclosure_id is the access-controlled cabinet an enclosure_diff cart drew
+	// from (set at StartByExternal). Both empty for single-kiosk counter installs.
+	rec.Set("terminal_id", c.TerminalID)
+	rec.Set("enclosure_id", c.EnclosureID)
 	rec.Set("user", c.UserID)
 	rec.Set("user_group", userGroupCode)
 	rec.Set("started_at", c.StartedAt)

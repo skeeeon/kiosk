@@ -146,21 +146,21 @@ type ControllerConfig struct {
 //   - enclosure_diff — NATS commands (cart.start, read.trigger) drive
 //     the cart from an external access-control / occupancy system. A
 //     read computes a diff against the kiosk's expected-present set
-//     and synthesizes checkout / return lines accordingly. DoorID is
-//     the opaque label used as part of the cart-start idempotency key
-//     (user_code, door_id), so two enclosures sharing a kiosk can be
-//     disambiguated.
+//     and synthesizes checkout / return lines accordingly. EnclosureID
+//     is the opaque label for the access-controlled cabinet, used as
+//     part of the cart-start idempotency key (user_code, enclosure_id),
+//     so two enclosures sharing a kiosk can be disambiguated.
 //
 // Connection to the reader is best-effort: failure on startup logs a
 // warning and the binary continues — mirrors NATS unreachability
 // handling. RFID endpoints/commands will reply with errors until the
 // connection comes up.
 type RFIDConfig struct {
-	Enabled    bool             `yaml:"enabled"`
-	Mode       string           `yaml:"mode"`
-	Reader     RFIDReaderConfig `yaml:"reader"`
-	ReadWindow Duration         `yaml:"read_window"`
-	DoorID     string           `yaml:"door_id"`
+	Enabled     bool             `yaml:"enabled"`
+	Mode        string           `yaml:"mode"`
+	Reader      RFIDReaderConfig `yaml:"reader"`
+	ReadWindow  Duration         `yaml:"read_window"`
+	EnclosureID string           `yaml:"enclosure_id"`
 }
 
 type RFIDReaderConfig struct {
@@ -467,8 +467,8 @@ func applyEnvOverrides(c *Config) {
 			slog.Warn("config.env_override_ignored", "var", "KIOSK_RFID_READ_WINDOW", "value", v, "error", err)
 		}
 	}
-	if v := os.Getenv("KIOSK_RFID_DOOR_ID"); v != "" {
-		c.RFID.DoorID = v
+	if v := os.Getenv("KIOSK_RFID_ENCLOSURE_ID"); v != "" {
+		c.RFID.EnclosureID = v
 	}
 	if v := os.Getenv("KIOSK_TIMECLOCK_ENABLED"); v != "" {
 		c.Timeclock.Enabled = parseBool(v)
@@ -536,7 +536,7 @@ func validate(c *Config) error {
 // validateRFID enforces the cross-field invariants for the RFID block.
 // When disabled, everything below it is irrelevant; when enabled, the
 // mode + reader endpoint are required, and enclosure_diff additionally
-// requires a door_id (it's part of the cart-start idempotency key).
+// requires an enclosure_id (it's part of the cart-start idempotency key).
 // ReadWindow defaults to 3s when unset to spare callers from spelling
 // out the common case.
 func validateRFID(r *RFIDConfig) error {
@@ -558,8 +558,8 @@ func validateRFID(r *RFIDConfig) error {
 	if r.Reader.Port == 0 {
 		return fmt.Errorf("rfid.reader.port is required when rfid.enabled=true")
 	}
-	if r.Mode == RFIDModeEnclosureDiff && r.DoorID == "" {
-		return fmt.Errorf("rfid.door_id is required when rfid.mode=%q", RFIDModeEnclosureDiff)
+	if r.Mode == RFIDModeEnclosureDiff && r.EnclosureID == "" {
+		return fmt.Errorf("rfid.enclosure_id is required when rfid.mode=%q", RFIDModeEnclosureDiff)
 	}
 	if r.ReadWindow.AsDuration() == 0 {
 		r.ReadWindow = Duration(3 * time.Second)
