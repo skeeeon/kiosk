@@ -138,34 +138,56 @@ type ControllerConfig struct {
 // docs/rfid.md for the full design. Disabled by default; when off the
 // binary behaves exactly as it does without RFID hardware.
 //
-// Two modes:
+// A node can host SEVERAL readers — a counter plus one or more enclosure
+// cabinets — so readers are a map keyed by an operator-chosen reader_id,
+// each carrying its own mode:
 //
-//   - counter_scan — operator hits a button on CheckoutView, kiosk runs
-//     a single inventory cycle for the configured ReadWindow, observed
-//     EPCs resolve through scan.Resolver into cart lines.
-//   - enclosure_diff — NATS commands (cart.start, read.trigger) drive
-//     the cart from an external access-control / occupancy system. A
-//     read computes a diff against the kiosk's expected-present set
-//     and synthesizes checkout / return lines accordingly. EnclosureID
-//     is the opaque label for the access-controlled cabinet, used as
-//     part of the cart-start idempotency key (user_code, enclosure_id),
-//     so two enclosures sharing a kiosk can be disambiguated.
+//   - counter_scan — operator hits a button on CheckoutView; the kiosk
+//     runs one inventory cycle for ReadWindow and resolves observed EPCs
+//     through scan.Resolver into cart lines.
+//   - enclosure_diff — NATS commands (cart.start, read.trigger) drive the
+//     cart from an external access-control system. A read diffs observed
+//     against the expected-present set and synthesizes checkout / return
+//     lines. EnclosureID names the access-controlled cabinet and is part
+//     of the cart-start idempotency key (user_code, enclosure_id).
 //
-// Connection to the reader is best-effort: failure on startup logs a
+// A single-reader kiosk declares exactly one entry; reader selection is
+// then implicit (no per-terminal selector needed). ReadWindow is shared
+// across readers. Per-reader fields are YAML-only — the KIOSK_* env
+// overrides cover the top-level Enabled / ReadWindow, not map entries.
+//
+// Connection to each reader is best-effort: a failure on startup logs a
 // warning and the binary continues — mirrors NATS unreachability
-// handling. RFID endpoints/commands will reply with errors until the
-// connection comes up.
+// handling. RFID endpoints/commands reply with errors until a reader
+// connects.
 type RFIDConfig struct {
-	Enabled     bool             `yaml:"enabled"`
-	Mode        string           `yaml:"mode"`
-	Reader      RFIDReaderConfig `yaml:"reader"`
-	ReadWindow  Duration         `yaml:"read_window"`
-	EnclosureID string           `yaml:"enclosure_id"`
+	Enabled    bool                        `yaml:"enabled"`
+	ReadWindow Duration                    `yaml:"read_window"`
+	Readers    map[string]RFIDReaderConfig `yaml:"readers"`
 }
 
+// SoleReaderMode returns the mode of the single configured reader, or "" when
+// zero or more than one reader is configured. The SPA's single rfid_mode hint
+// (which gates the counter_scan button) is only meaningful at one reader;
+// multi-reader terminal→reader selection arrives with the terminal work.
+func (c RFIDConfig) SoleReaderMode() string {
+	if len(c.Readers) != 1 {
+		return ""
+	}
+	for _, r := range c.Readers {
+		return r.Mode
+	}
+	return ""
+}
+
+// RFIDReaderConfig is one physical reader's config. Mode and EnclosureID are
+// per-reader (moved off the top level) so one node can mix a counter and
+// enclosure cabinets.
 type RFIDReaderConfig struct {
-	Host string `yaml:"host"`
-	Port int    `yaml:"port"`
+	Mode        string `yaml:"mode"` // "counter_scan" | "enclosure_diff"
+	Host        string `yaml:"host"`
+	Port        int    `yaml:"port"`
+	EnclosureID string `yaml:"enclosure_id"` // required when mode=enclosure_diff
 
 	// Antennas enumerates the reader's active antenna ports and the TX
 	// power each one should run at. Empty list means "leave the reader's
@@ -447,28 +469,15 @@ func applyEnvOverrides(c *Config) {
 	if v := os.Getenv("KIOSK_RFID_ENABLED"); v != "" {
 		c.RFID.Enabled = parseBool(v)
 	}
-	if v := os.Getenv("KIOSK_RFID_MODE"); v != "" {
-		c.RFID.Mode = v
-	}
-	if v := os.Getenv("KIOSK_RFID_READER_HOST"); v != "" {
-		c.RFID.Reader.Host = v
-	}
-	if v := os.Getenv("KIOSK_RFID_READER_PORT"); v != "" {
-		if p, err := strconv.Atoi(v); err == nil {
-			c.RFID.Reader.Port = p
-		} else {
-			slog.Warn("config.env_override_ignored", "var", "KIOSK_RFID_READER_PORT", "value", v, "error", err)
-		}
-	}
+	// Per-reader RFID fields (mode/host/port/enclosure_id/antennas) live in
+	// the rfid.readers map and are YAML-only — there's no flat env path into a
+	// map entry. Only the top-level toggles get env overrides.
 	if v := os.Getenv("KIOSK_RFID_READ_WINDOW"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			c.RFID.ReadWindow = Duration(d)
 		} else {
 			slog.Warn("config.env_override_ignored", "var", "KIOSK_RFID_READ_WINDOW", "value", v, "error", err)
 		}
-	}
-	if v := os.Getenv("KIOSK_RFID_ENCLOSURE_ID"); v != "" {
-		c.RFID.EnclosureID = v
 	}
 	if v := os.Getenv("KIOSK_TIMECLOCK_ENABLED"); v != "" {
 		c.Timeclock.Enabled = parseBool(v)
@@ -534,58 +543,68 @@ func validate(c *Config) error {
 }
 
 // validateRFID enforces the cross-field invariants for the RFID block.
-// When disabled, everything below it is irrelevant; when enabled, the
-// mode + reader endpoint are required, and enclosure_diff additionally
-// requires an enclosure_id (it's part of the cart-start idempotency key).
-// ReadWindow defaults to 3s when unset to spare callers from spelling
-// out the common case.
+// When disabled, everything below it is irrelevant; when enabled, at least
+// one reader is required and each reader needs a valid mode + endpoint;
+// enclosure_diff readers additionally require an enclosure_id. ReadWindow is
+// shared, defaults to 3s, and is capped at MaxEnclosureReadWindow whenever any
+// reader runs enclosure_diff (the read rides a ~5s NATS command reply).
 func validateRFID(r *RFIDConfig) error {
 	if !r.Enabled {
 		return nil
 	}
-	switch r.Mode {
-	case RFIDModeCounterScan, RFIDModeEnclosureDiff:
-		// ok
-	case "":
-		return fmt.Errorf("rfid.mode is required when rfid.enabled=true")
-	default:
-		return fmt.Errorf("rfid.mode must be %q or %q (got %q)",
-			RFIDModeCounterScan, RFIDModeEnclosureDiff, r.Mode)
+	if len(r.Readers) == 0 {
+		return fmt.Errorf("rfid.readers must have at least one entry when rfid.enabled=true")
 	}
-	if r.Reader.Host == "" {
-		return fmt.Errorf("rfid.reader.host is required when rfid.enabled=true")
+	anyEnclosure := false
+	for id, rd := range r.Readers {
+		if id == "" {
+			return fmt.Errorf("rfid.readers has an entry with an empty reader id")
+		}
+		switch rd.Mode {
+		case RFIDModeCounterScan, RFIDModeEnclosureDiff:
+			// ok
+		case "":
+			return fmt.Errorf("rfid.readers[%q].mode is required", id)
+		default:
+			return fmt.Errorf("rfid.readers[%q].mode must be %q or %q (got %q)",
+				id, RFIDModeCounterScan, RFIDModeEnclosureDiff, rd.Mode)
+		}
+		if rd.Host == "" {
+			return fmt.Errorf("rfid.readers[%q].host is required", id)
+		}
+		if rd.Port == 0 {
+			return fmt.Errorf("rfid.readers[%q].port is required", id)
+		}
+		if rd.Mode == RFIDModeEnclosureDiff {
+			anyEnclosure = true
+			if rd.EnclosureID == "" {
+				return fmt.Errorf("rfid.readers[%q].enclosure_id is required when mode=%q", id, RFIDModeEnclosureDiff)
+			}
+		}
+		seen := make(map[int]struct{}, len(rd.Antennas))
+		for i, a := range rd.Antennas {
+			if a.ID <= 0 {
+				return fmt.Errorf("rfid.readers[%q].antennas[%d].id must be >= 1 (got %d)", id, i, a.ID)
+			}
+			if _, dup := seen[a.ID]; dup {
+				return fmt.Errorf("rfid.readers[%q].antennas: duplicate id %d", id, a.ID)
+			}
+			seen[a.ID] = struct{}{}
+			if a.TxPowerDBm <= 0 {
+				return fmt.Errorf("rfid.readers[%q].antennas[%d].tx_power_dbm must be > 0 (got %g)", id, i, a.TxPowerDBm)
+			}
+		}
 	}
-	if r.Reader.Port == 0 {
-		return fmt.Errorf("rfid.reader.port is required when rfid.enabled=true")
-	}
-	if r.Mode == RFIDModeEnclosureDiff && r.EnclosureID == "" {
-		return fmt.Errorf("rfid.enclosure_id is required when rfid.mode=%q", RFIDModeEnclosureDiff)
-	}
+	// enclosure_diff runs the read synchronously inside a NATS request/reply
+	// bounded by the controller's ~5s command timeout, so cap the shared
+	// read_window with headroom whenever any reader runs that mode. A
+	// counter_scan-only node is HTTP-driven and not subject to the 5s reply.
 	if r.ReadWindow.AsDuration() == 0 {
 		r.ReadWindow = Duration(3 * time.Second)
 	}
-	// enclosure_diff runs the read synchronously inside a NATS request/reply
-	// bounded by the controller's ~5s command timeout. A read_window at or
-	// near that guarantees the reply misses the window — the caller then
-	// renders "kiosk offline" even though the read succeeded. Cap it with
-	// headroom for the LLRP round-trips + reconciliation queries. counter_scan
-	// is HTTP-driven and not subject to the 5s reply, so it isn't capped here.
-	if r.Mode == RFIDModeEnclosureDiff && r.ReadWindow.AsDuration() > MaxEnclosureReadWindow {
-		return fmt.Errorf("rfid.read_window %s is too long for %q (max %s; the read runs inside a ~5s command reply window)",
-			r.ReadWindow.AsDuration(), RFIDModeEnclosureDiff, MaxEnclosureReadWindow)
-	}
-	seen := make(map[int]struct{}, len(r.Reader.Antennas))
-	for i, a := range r.Reader.Antennas {
-		if a.ID <= 0 {
-			return fmt.Errorf("rfid.reader.antennas[%d].id must be >= 1 (got %d)", i, a.ID)
-		}
-		if _, dup := seen[a.ID]; dup {
-			return fmt.Errorf("rfid.reader.antennas: duplicate id %d", a.ID)
-		}
-		seen[a.ID] = struct{}{}
-		if a.TxPowerDBm <= 0 {
-			return fmt.Errorf("rfid.reader.antennas[%d].tx_power_dbm must be > 0 (got %g)", i, a.TxPowerDBm)
-		}
+	if anyEnclosure && r.ReadWindow.AsDuration() > MaxEnclosureReadWindow {
+		return fmt.Errorf("rfid.read_window %s is too long with an enclosure_diff reader (max %s; the read runs inside a ~5s command reply window)",
+			r.ReadWindow.AsDuration(), MaxEnclosureReadWindow)
 	}
 	return nil
 }

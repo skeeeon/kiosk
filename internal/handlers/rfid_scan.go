@@ -48,19 +48,22 @@ func (h *Handlers) RFIDScan(re *core.RequestEvent) error {
 	if !h.Cfg.RFID.Enabled {
 		return re.NotFoundError("rfid is not enabled on this kiosk", nil)
 	}
-	if h.Cfg.RFID.Mode != "" && h.Cfg.RFID.Mode != "counter_scan" {
-		// enclosure_diff has its own NATS-driven entry; the operator
-		// shouldn't be able to fire this from the touchscreen.
+	// Phase 2: single-reader selection is implicit (id=""); per-terminal
+	// reader selection via a URL param arrives with the terminal work.
+	// enclosure_diff has its own NATS-driven entry, so the counter button
+	// is gated to a counter_scan reader.
+	rd, ok := h.ReaderByID("")
+	if !ok || rd.Mode != "counter_scan" {
 		return re.NotFoundError("rfid scan button is only available in counter_scan mode", nil)
 	}
-	if h.RFID == nil {
+	if rd.Reader == nil {
 		return re.JSON(http.StatusServiceUnavailable, map[string]any{
 			"error": "rfid_unavailable",
 			"hint":  "reader connection was not established at startup",
 		})
 	}
 
-	resp, err := h.PerformRFIDScan(re.Request.Context(), cartID)
+	resp, err := h.PerformRFIDScan(re.Request.Context(), cartID, rd)
 	switch {
 	case err == nil:
 		return re.JSON(http.StatusOK, resp)
@@ -92,9 +95,10 @@ var errRFIDReadFailed = errors.New("rfid read failed")
 // the full EPC array for downstream observability.
 //
 // Caller (the HTTP wrapper) is responsible for the config-enabled +
-// reader-connected pre-checks; this method assumes h.RFID is non-nil
-// and uses h.Cfg.RFID.ReadWindow as the inventory-cycle duration.
-func (h *Handlers) PerformRFIDScan(ctx context.Context, cartID string) (*RFIDScanResponse, error) {
+// reader-connected pre-checks and passes the resolved reader handle; this
+// method uses rd.Reader for the read and h.Cfg.RFID.ReadWindow (shared across
+// readers) as the inventory-cycle duration.
+func (h *Handlers) PerformRFIDScan(ctx context.Context, cartID string, rd *ReaderHandle) (*RFIDScanResponse, error) {
 	// Fail fast on a stale cart before burning a 3-second read window.
 	// addCodeToCart re-resolves per EPC anyway; this just turns a
 	// stale cart_id into a clean error without the round-trip.
@@ -107,7 +111,7 @@ func (h *Handlers) PerformRFIDScan(ctx context.Context, cartID string) (*RFIDSca
 		window = 3 * time.Second
 	}
 
-	observed, err := h.RFID.ReadFor(ctx, window)
+	observed, err := rd.Reader.ReadFor(ctx, window)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", errRFIDReadFailed, err)
 	}
@@ -145,7 +149,7 @@ func (h *Handlers) PerformRFIDScan(ctx context.Context, cartID string) (*RFIDSca
 		"kiosk_code":    id.KioskCode,
 		"location_code": id.LocationCode,
 		"cart_id":       cartID,
-		"mode":          h.Cfg.RFID.Mode,
+		"mode":          rd.Mode,
 		"observed_epcs": observedStrings,
 		"observed_at":   time.Now().UTC(),
 	})

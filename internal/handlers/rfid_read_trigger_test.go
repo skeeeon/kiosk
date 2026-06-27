@@ -35,6 +35,7 @@ type rfidDiffSeed struct {
 	Cart         *cart.Cart
 	H            *handlers.Handlers
 	Reader       *fakeReader
+	Handle       *handlers.ReaderHandle
 }
 
 func seedRFIDDiff(t *testing.T) (core.App, rfidDiffSeed) {
@@ -141,10 +142,8 @@ func seedRFIDDiff(t *testing.T) (core.App, rfidDiffSeed) {
 
 	cfg := &config.Config{
 		RFID: config.RFIDConfig{
-			Enabled:     true,
-			Mode:        config.RFIDModeEnclosureDiff,
-			EnclosureID: "BAY-A",
-			ReadWindow:  config.Duration(50 * time.Millisecond),
+			Enabled:    true,
+			ReadWindow: config.Duration(50 * time.Millisecond),
 		},
 	}
 	store := cart.NewStore(5 * time.Minute)
@@ -153,7 +152,8 @@ func seedRFIDDiff(t *testing.T) (core.App, rfidDiffSeed) {
 
 	reader := &fakeReader{}
 	h := handlers.New(app, cfg, store, notifications.New(app))
-	h.RFID = reader
+	rd := &handlers.ReaderHandle{Reader: reader, Mode: config.RFIDModeEnclosureDiff, EnclosureID: "BAY-A"}
+	h.Readers = map[string]*handlers.ReaderHandle{"cabinet": rd}
 
 	return app, rfidDiffSeed{
 		WorkerID:     worker.Id,
@@ -167,6 +167,7 @@ func seedRFIDDiff(t *testing.T) (core.App, rfidDiffSeed) {
 		Cart:         c,
 		H:            h,
 		Reader:       reader,
+		Handle:       rd,
 	}
 }
 
@@ -182,7 +183,7 @@ func TestPerformReadTrigger_HappyPath(t *testing.T) {
 		rfid.EPC(s.UnknownEPC),
 	}
 
-	resp, err := s.H.PerformReadTrigger(context.Background(), s.Cart)
+	resp, err := s.H.PerformReadTrigger(context.Background(), s.Cart, s.Handle)
 	if err != nil {
 		t.Fatalf("PerformReadTrigger: %v", err)
 	}
@@ -226,7 +227,7 @@ func TestPerformReadTrigger_EmptyRead(t *testing.T) {
 	_, s := seedRFIDDiff(t)
 	s.Reader.epcs = nil
 
-	resp, err := s.H.PerformReadTrigger(context.Background(), s.Cart)
+	resp, err := s.H.PerformReadTrigger(context.Background(), s.Cart, s.Handle)
 	if err != nil {
 		t.Fatalf("PerformReadTrigger: %v", err)
 	}
@@ -258,7 +259,7 @@ func TestPerformReadTrigger_AllObserved(t *testing.T) {
 		rfid.EPC(s.ReturningEPC),
 	}
 
-	resp, err := s.H.PerformReadTrigger(context.Background(), s.Cart)
+	resp, err := s.H.PerformReadTrigger(context.Background(), s.Cart, s.Handle)
 	if err != nil {
 		t.Fatalf("PerformReadTrigger: %v", err)
 	}
@@ -313,7 +314,7 @@ func TestPerformReadTrigger_CrossUserReturnSkipped(t *testing.T) {
 		rfid.EPC(s.ReturningEPC),
 	}
 
-	resp, err := s.H.PerformReadTrigger(context.Background(), s.Cart)
+	resp, err := s.H.PerformReadTrigger(context.Background(), s.Cart, s.Handle)
 	if err != nil {
 		t.Fatalf("PerformReadTrigger: %v", err)
 	}
@@ -335,7 +336,7 @@ func TestPerformReadTrigger_FiresBrokerTickle(t *testing.T) {
 	ch, unsub := s.H.CartEvents.Subscribe(s.Cart.ID)
 	defer unsub()
 
-	if _, err := s.H.PerformReadTrigger(context.Background(), s.Cart); err != nil {
+	if _, err := s.H.PerformReadTrigger(context.Background(), s.Cart, s.Handle); err != nil {
 		t.Fatalf("PerformReadTrigger: %v", err)
 	}
 
@@ -354,7 +355,7 @@ func TestPerformReadTrigger_FiresBrokerTickle(t *testing.T) {
 // nil-deref'ing.
 func TestPerformReadTrigger_NilCart(t *testing.T) {
 	_, s := seedRFIDDiff(t)
-	_, err := s.H.PerformReadTrigger(context.Background(), nil)
+	_, err := s.H.PerformReadTrigger(context.Background(), nil, s.Handle)
 	if err == nil {
 		t.Fatal("expected error for nil cart")
 	}
@@ -366,7 +367,7 @@ func TestPerformReadTrigger_ReaderError(t *testing.T) {
 	_, s := seedRFIDDiff(t)
 	s.Reader.err = errors.New("reader unplugged")
 
-	_, err := s.H.PerformReadTrigger(context.Background(), s.Cart)
+	_, err := s.H.PerformReadTrigger(context.Background(), s.Cart, s.Handle)
 	if err == nil {
 		t.Fatal("expected error from ReadFor failure")
 	}

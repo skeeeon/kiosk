@@ -47,7 +47,8 @@ type ReadTriggerResult struct {
 }
 
 // PerformReadTrigger is the shared core: cart already resolved
-// (caller decides cart_id-vs-(user,door) lookup), reader configured.
+// (caller decides cart_id-vs-(user,enclosure) lookup), reader resolved by
+// the caller (via ReaderForEnclosure) and passed in.
 // Runs one LLRP inventory cycle, fetches expected-present + currently-
 // out state from PB, calls rfid.Diff, and synthesizes cart lines:
 //
@@ -60,7 +61,7 @@ type ReadTriggerResult struct {
 // One broker tickle at the end regardless of how many lines landed,
 // matching PerformRFIDScan's semantics. event.scan.rfid.observed
 // publishes the full deduplicated EPC array for audit.
-func (h *Handlers) PerformReadTrigger(ctx context.Context, c *cart.Cart) (*ReadTriggerResult, error) {
+func (h *Handlers) PerformReadTrigger(ctx context.Context, c *cart.Cart, rd *ReaderHandle) (*ReadTriggerResult, error) {
 	if c == nil {
 		return nil, errCartNotFound
 	}
@@ -70,7 +71,7 @@ func (h *Handlers) PerformReadTrigger(ctx context.Context, c *cart.Cart) (*ReadT
 		window = 3 * time.Second
 	}
 
-	observed, err := h.RFID.ReadFor(ctx, window)
+	observed, err := rd.Reader.ReadFor(ctx, window)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", errRFIDReadFailed, err)
 	}
@@ -133,7 +134,7 @@ func (h *Handlers) PerformReadTrigger(ctx context.Context, c *cart.Cart) (*ReadT
 		"location_code": id.LocationCode,
 		"cart_id":       c.ID,
 		"enclosure_id":  c.EnclosureID,
-		"mode":          h.Cfg.RFID.Mode,
+		"mode":          rd.Mode,
 		"observed_epcs": observedStrings,
 		"observed_at":   time.Now().UTC(),
 	})
@@ -261,22 +262,27 @@ func (h *Handlers) ReadTrigger(re *core.RequestEvent) error {
 	if !h.Cfg.RFID.Enabled {
 		return re.NotFoundError("rfid is not enabled on this kiosk", nil)
 	}
-	if h.Cfg.RFID.Mode != "" && h.Cfg.RFID.Mode != "enclosure_diff" {
-		return re.NotFoundError("read-trigger is only available in enclosure_diff mode", nil)
-	}
-	if h.RFID == nil {
-		return re.JSON(http.StatusServiceUnavailable, map[string]any{
-			"error": "rfid_unavailable",
-			"hint":  "reader connection was not established at startup",
-		})
-	}
 
 	c, err := h.Carts.Get(cartID)
 	if err != nil {
 		return re.NotFoundError("cart not found or expired", nil)
 	}
 
-	result, err := h.PerformReadTrigger(re.Request.Context(), c)
+	// Resolve the reader covering this cart's enclosure (sole reader on a
+	// single-cabinet kiosk). enclosure_diff only — counter readers have no
+	// read-trigger entry.
+	rd, ok := h.ReaderForEnclosure(c.EnclosureID)
+	if !ok || rd.Mode != "enclosure_diff" {
+		return re.NotFoundError("read-trigger is only available in enclosure_diff mode", nil)
+	}
+	if rd.Reader == nil {
+		return re.JSON(http.StatusServiceUnavailable, map[string]any{
+			"error": "rfid_unavailable",
+			"hint":  "reader connection was not established at startup",
+		})
+	}
+
+	result, err := h.PerformReadTrigger(re.Request.Context(), c, rd)
 	switch {
 	case err == nil:
 		return re.JSON(http.StatusOK, result)

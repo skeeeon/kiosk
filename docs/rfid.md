@@ -187,33 +187,35 @@ the kiosk binary behaves exactly as it does today.
 ```yaml
 rfid:
   enabled: false
-  mode: ""                  # "counter_scan" | "enclosure_diff" (required when enabled)
-  reader:
-    host: ""                # reader IP / hostname (required when enabled)
-    port: 5084              # standard LLRP port
-    # antennas (optional): enumerate the active reader ports and the
-    # TX power each one should run at. Empty/omitted leaves the
-    # reader's own baseline alone — useful for sites that prefer to
-    # provision via the reader's web UI / IoT REST. When set, only
-    # the listed ports are inventoried and each runs at the given
-    # dBm (resolved to the reader's nearest available power index at
-    # Connect time).
-    # antennas:
-    #   - id: 1
-    #     tx_power_dbm: 25.0
-    #   - id: 3
-    #     tx_power_dbm: 20.0
-  read_window: "3s"         # one inventory cycle; enclosure_diff caps this at 3.5s
-  enclosure_id: ""               # required when mode=enclosure_diff
+  read_window: "3s"         # one inventory cycle, shared across readers
+  # readers maps a reader_id to one physical reader. A node can host several —
+  # a counter plus one or more enclosure cabinets — each with its own mode.
+  # A single-reader kiosk declares exactly one entry (selection is implicit).
+  readers:
+    front-counter:
+      mode: "counter_scan"  # "counter_scan" | "enclosure_diff"
+      host: "10.0.0.50"     # reader IP / hostname
+      port: 5084            # standard LLRP port
+      # antennas (optional): active reader ports + the TX power each should run
+      # at. Empty/omitted leaves the reader's own baseline alone. When set, only
+      # the listed ports are inventoried, each at the given dBm (resolved to the
+      # reader's nearest available power index at Connect time).
+      # antennas:
+      #   - id: 1
+      #     tx_power_dbm: 25.0
+    cabinet-a:
+      mode: "enclosure_diff"
+      host: "10.0.0.51"
+      port: 5084
+      enclosure_id: "cabinet-a"  # required when mode=enclosure_diff
 ```
 
 Validation at startup:
 
-- When `rfid.enabled=true`, `rfid.mode` is required.
-- When `rfid.enabled=true`, `rfid.reader.host` and `rfid.reader.port`
-  are required.
-- When `rfid.mode=enclosure_diff`, `rfid.enclosure_id` is required.
-- When `rfid.mode=enclosure_diff`, `rfid.read_window` must be ≤ 3.5 s
+- When `rfid.enabled=true`, `rfid.readers` must have at least one entry.
+- Each reader requires `mode` (`counter_scan` | `enclosure_diff`), `host`, and `port`.
+- A reader's `enclosure_id` is required when its `mode=enclosure_diff`.
+- When any reader is `enclosure_diff`, the shared `rfid.read_window` must be ≤ 3.5 s
   (`config.MaxEnclosureReadWindow`) — the read runs synchronously inside the
   controller's ~5 s command-reply window, so a larger window would push the
   reply past it. `counter_scan` is HTTP-driven and not capped. Defaults to
@@ -230,8 +232,9 @@ Validation at startup:
   the SPA) during any gap and recover transparently when the session
   is re-established.
 
-Env-var overrides follow the standard `KIOSK_*` pattern
-(`KIOSK_RFID_ENABLED`, `KIOSK_RFID_MODE`, etc.).
+Env-var overrides cover the top-level toggles only — `KIOSK_RFID_ENABLED`
+and `KIOSK_RFID_READ_WINDOW`. Per-reader fields live in the `rfid.readers`
+map and are YAML-only (there's no flat env path into a map entry).
 
 The identity payload served to the SPA grows `rfid_enabled` and
 `rfid_mode` so the frontend gates affordances appropriately.
@@ -243,10 +246,12 @@ entirely when RFID is disabled.
 
 ## Reader lifecycle
 
-The kiosk maintains one long-running LLRP TCP session to the reader,
-not a connect-per-read model. `internal/rfid/reader.go` owns the
-session through a supervisor goroutine started by `Connect` and
-cancelled by `Close`.
+The kiosk maintains one long-running LLRP TCP session per configured
+reader, not a connect-per-read model. Each entry in `rfid.readers` is
+its own `impinjReader` (`internal/rfid/reader.go`) owning a session
+through a supervisor goroutine started by `Connect` and cancelled by
+`Close`; the read lock (`readMu`) is therefore per-reader, so two
+enclosures on one node can read concurrently.
 
 **Supervisor loop.** On each iteration:
 

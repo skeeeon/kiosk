@@ -11,29 +11,18 @@ import (
 	"github.com/skeeeon/kiosk/internal/config"
 )
 
-// TestNew_RejectsDisabled guards the "you forgot to gate the caller"
-// case: New on a disabled config block should fail loud rather than
-// silently produce a reader that never works. Cross-field validation
-// at the config layer should already prevent this, but defense in
-// depth is cheap here.
-func TestNew_RejectsDisabled(t *testing.T) {
-	_, err := New(config.RFIDConfig{Enabled: false})
-	if err == nil {
-		t.Fatal("expected error from New with enabled=false, got nil")
-	}
-}
-
-// TestNew_RejectsMissingEndpoint catches a config that passed cross-
-// field validation in a surprising way (a future refactor, perhaps) but
-// still doesn't have the network endpoint we need to dial.
+// TestNew_RejectsMissingEndpoint catches a reader config that passed cross-
+// field validation in a surprising way (a future refactor, perhaps) but still
+// doesn't have the network endpoint we need to dial. Enabling/gating is the
+// caller's job now — New takes a single reader's config.
 func TestNew_RejectsMissingEndpoint(t *testing.T) {
 	cases := []struct {
 		name string
-		cfg  config.RFIDConfig
+		cfg  config.RFIDReaderConfig
 	}{
-		{"no host", config.RFIDConfig{Enabled: true, Reader: config.RFIDReaderConfig{Port: 5084}}},
-		{"no port", config.RFIDConfig{Enabled: true, Reader: config.RFIDReaderConfig{Host: "h"}}},
-		{"neither", config.RFIDConfig{Enabled: true}},
+		{"no host", config.RFIDReaderConfig{Port: 5084}},
+		{"no port", config.RFIDReaderConfig{Host: "h"}},
+		{"neither", config.RFIDReaderConfig{}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -49,12 +38,7 @@ func TestNew_RejectsMissingEndpoint(t *testing.T) {
 // integration-scope, deferred to Phase 2 where the LLRP simulator
 // covers it.
 func TestNew_OkWhenConfigured(t *testing.T) {
-	r, err := New(config.RFIDConfig{
-		Enabled:    true,
-		Mode:       config.RFIDModeCounterScan,
-		Reader:     config.RFIDReaderConfig{Host: "127.0.0.1", Port: 5084},
-		ReadWindow: config.Duration(3 * time.Second),
-	})
+	r, err := New(config.RFIDReaderConfig{Host: "127.0.0.1", Port: 5084})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -69,11 +53,7 @@ func TestNew_OkWhenConfigured(t *testing.T) {
 // LLRP simulator integration test gated on RFID_SIM=1 (see
 // reader_sim_test.go when that lands).
 func TestReadFor_NotConnected(t *testing.T) {
-	r, err := New(config.RFIDConfig{
-		Enabled: true,
-		Mode:    config.RFIDModeCounterScan,
-		Reader:  config.RFIDReaderConfig{Host: "127.0.0.1", Port: 5084},
-	})
+	r, err := New(config.RFIDReaderConfig{Host: "127.0.0.1", Port: 5084})
 	if err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -120,11 +100,7 @@ func TestDedupEPCs(t *testing.T) {
 // This matches the OnTerminate path in main.go which closes
 // unconditionally when a Reader exists.
 func TestClose_NeverConnected(t *testing.T) {
-	r, err := New(config.RFIDConfig{
-		Enabled: true,
-		Mode:    config.RFIDModeCounterScan,
-		Reader:  config.RFIDReaderConfig{Host: "127.0.0.1", Port: 5084},
-	})
+	r, err := New(config.RFIDReaderConfig{Host: "127.0.0.1", Port: 5084})
 	if err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -141,13 +117,9 @@ func TestClose_NeverConnected(t *testing.T) {
 // config layer let through (e.g. a future refactor that widens the
 // type) but won't fit on the LLRP wire.
 func TestNew_RejectsAntennaOutOfRange(t *testing.T) {
-	_, err := New(config.RFIDConfig{
-		Enabled: true,
-		Mode:    config.RFIDModeCounterScan,
-		Reader: config.RFIDReaderConfig{
-			Host: "h", Port: 5084,
-			Antennas: []config.RFIDAntennaConfig{{ID: 70000, TxPowerDBm: 25}},
-		},
+	_, err := New(config.RFIDReaderConfig{
+		Host: "h", Port: 5084,
+		Antennas: []config.RFIDAntennaConfig{{ID: 70000, TxPowerDBm: 25}},
 	})
 	if err == nil {
 		t.Fatal("expected error for antenna id > uint16, got nil")
@@ -163,18 +135,18 @@ func TestNearestPowerIndex(t *testing.T) {
 	// Mimics an FCC-region Impinj table: index 1 = 10 dBm, stepping
 	// 0.25 dBm up to index 81 = 30 dBm. We use a coarse subset here.
 	table := []llrp.TransmitPowerLevelTableEntry{
-		{Index: 1, TransmitPowerValue: 1000},  // 10.00 dBm
-		{Index: 2, TransmitPowerValue: 1500},  // 15.00 dBm
-		{Index: 3, TransmitPowerValue: 2000},  // 20.00 dBm
-		{Index: 4, TransmitPowerValue: 2500},  // 25.00 dBm
-		{Index: 5, TransmitPowerValue: 2575},  // 25.75 dBm
-		{Index: 6, TransmitPowerValue: 3000},  // 30.00 dBm
+		{Index: 1, TransmitPowerValue: 1000}, // 10.00 dBm
+		{Index: 2, TransmitPowerValue: 1500}, // 15.00 dBm
+		{Index: 3, TransmitPowerValue: 2000}, // 20.00 dBm
+		{Index: 4, TransmitPowerValue: 2500}, // 25.00 dBm
+		{Index: 5, TransmitPowerValue: 2575}, // 25.75 dBm
+		{Index: 6, TransmitPowerValue: 3000}, // 30.00 dBm
 	}
 	cases := []struct {
-		name     string
-		want     float64
-		wantIdx  uint16
-		wantDBm  float64
+		name    string
+		want    float64
+		wantIdx uint16
+		wantDBm float64
 	}{
 		{"exact match — 20 dBm", 20.0, 3, 20.0},
 		{"between 25 and 25.75 → floor to 25", 25.5, 4, 25.0},

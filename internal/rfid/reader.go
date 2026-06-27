@@ -108,20 +108,17 @@ const (
 	reconnectMaxBackoff = 30 * time.Second
 )
 
-// New returns a Reader configured from the kiosk's RFID config block.
-// It does not dial yet — call Connect for that. Returns an error only
-// for static config problems the config package's own validation
-// should have already caught; in practice this is a defense-in-depth
-// check.
-func New(cfg config.RFIDConfig) (Reader, error) {
-	if !cfg.Enabled {
-		return nil, errors.New("rfid: New called with enabled=false")
-	}
-	if cfg.Reader.Host == "" || cfg.Reader.Port == 0 {
+// New returns a Reader configured from one reader's config block. It does
+// not dial yet — call Connect for that. The caller gates on rfid.enabled and
+// constructs one Reader per entry in the rfid.readers map. Returns an error
+// only for static config problems the config package's own validation should
+// have already caught; in practice this is a defense-in-depth check.
+func New(cfg config.RFIDReaderConfig) (Reader, error) {
+	if cfg.Host == "" || cfg.Port == 0 {
 		return nil, errors.New("rfid: reader host/port not configured")
 	}
-	antennas := make([]configuredAntenna, 0, len(cfg.Reader.Antennas))
-	for _, a := range cfg.Reader.Antennas {
+	antennas := make([]configuredAntenna, 0, len(cfg.Antennas))
+	for _, a := range cfg.Antennas {
 		if a.ID < 1 || a.ID > math.MaxUint16 {
 			return nil, fmt.Errorf("rfid: antenna id %d out of range", a.ID)
 		}
@@ -131,7 +128,7 @@ func New(cfg config.RFIDConfig) (Reader, error) {
 		})
 	}
 	return &impinjReader{
-		addr:     net.JoinHostPort(cfg.Reader.Host, strconv.Itoa(cfg.Reader.Port)),
+		addr:     net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port)),
 		antennas: antennas,
 	}, nil
 }

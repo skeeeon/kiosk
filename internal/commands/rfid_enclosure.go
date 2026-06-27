@@ -135,7 +135,8 @@ func (d *Dispatcher) handleReadTrigger(ctx context.Context, payload []byte) Repl
 		return Reply{Success: false, Error: err.Error()}
 	}
 
-	if d.KioskHandlers.RFID == nil {
+	rd, ok := d.KioskHandlers.ReaderForEnclosure(c.EnclosureID)
+	if !ok || rd.Reader == nil {
 		return Reply{Success: false, Error: "rfid reader is not connected"}
 	}
 
@@ -145,7 +146,7 @@ func (d *Dispatcher) handleReadTrigger(ctx context.Context, payload []byte) Repl
 	ctx, cancel := context.WithTimeout(ctx, ReadTriggerBudget)
 	defer cancel()
 
-	result, err := d.KioskHandlers.PerformReadTrigger(ctx, c)
+	result, err := d.KioskHandlers.PerformReadTrigger(ctx, c, rd)
 	if err != nil {
 		return Reply{Success: false, Error: err.Error()}
 	}

@@ -41,8 +41,8 @@ func (h *Handlers) OperationalMetrics() metrics.Operational {
 		UptimeSeconds: int64(time.Since(h.StartedAt).Seconds()),
 		NATSConnected: natsConnected,
 		RFIDEnabled:   h.Cfg.RFID.Enabled,
-		RFIDMode:      h.Cfg.RFID.Mode,
-		RFIDConnected: h.RFID != nil && h.RFID.Connected(),
+		RFIDMode:      h.Cfg.RFID.SoleReaderMode(),
+		RFIDConnected: h.anyReaderConnected(),
 		ActiveCarts:   h.Carts.Count(),
 	}
 }

@@ -104,15 +104,25 @@ always present) + `enclosure_id` (the cabinet — set for `enclosure_diff`). For
 Tests: commit / cart / controller / rfid-diff suites. Single-kiosk: both fields default
 empty — unchanged.
 
-### Phase 2 — Reader map  *(behavior-preserving at N=1)*
+### Phase 2 — Reader map  *(behavior-preserving at N=1)* — **DONE (core)**
 
 - Config: single `reader:` → `readers:` map keyed by `reader_id`, each carrying
-  host/port/antennas/**mode** (mode moves node-level → per-reader, so one node can host
-  `counter_scan` + `enclosure_diff` at once).
-- `h.RFID rfid.Reader` (single) → `h.Readers map[string]rfid.Reader`; `readMu` per-reader.
-- `main.go`: construct one `rfid.New` per entry. Single-reader configs map to a one-entry
-  map; selection implicit. No functional change.
-- **Controller parity:** read-only `config.snapshot` command + detail-page tab.
+  `mode`/`host`/`port`/`enclosure_id`/`antennas` (mode + enclosure_id moved node-level →
+  per-reader, so one node can host `counter_scan` + `enclosure_diff` at once). `read_window`
+  stays shared (top-level), capped when any reader is `enclosure_diff`. Per-reader fields are
+  YAML-only (no flat env path into a map entry).
+- `h.RFID rfid.Reader` (single) → `h.Readers map[string]*handlers.ReaderHandle`
+  (`{Reader, Mode, EnclosureID}`); `rfid.New` now takes one `RFIDReaderConfig`; `readMu` is
+  per-reader by construction (one `impinjReader` per entry).
+- Resolution: `ReaderByID("")` returns the sole reader (N=1 implicit); `ReaderForEnclosure`
+  matches a cabinet by `enclosure_id` and falls back to the sole reader. Counter button and
+  identity `rfid_mode` use `SoleReaderMode()` (meaningful at one reader; multi-reader SPA
+  selection is the terminal work).
+- `main.go`: one `rfid.New` per entry, Connect each on serve, Close all on terminate.
+  Single-reader configs behave exactly as before.
+- **Controller parity (deferred to a follow-on):** read-only `config.snapshot` command +
+  detail-page tab for reader/enclosure observability. Not blocking — node config is edited
+  locally; this is observability polish.
 
 ### Phase 3 — `counter_scan` multi-reader + terminals first-class  *(additive)*
 

@@ -46,8 +46,11 @@ type identityPayload struct {
 	// CheckoutView in Phase 2. Always present so the frontend can
 	// branch on it without re-checking for undefined.
 	RFIDEnabled bool `json:"rfid_enabled"`
-	// RFIDMode mirrors cfg.RFID.Mode. Empty when RFIDEnabled is false.
-	// Set to "counter_scan" or "enclosure_diff" otherwise.
+	// RFIDMode is the mode of the single configured reader
+	// (cfg.RFID.SoleReaderMode). Empty when RFIDEnabled is false or when more
+	// than one reader is configured — multi-reader terminal→reader selection
+	// is wired with the terminal work. The SPA gates the counter_scan button
+	// on it.
 	RFIDMode string `json:"rfid_mode,omitempty"`
 	// Timeclock flags mirror cfg.Timeclock. Enabled gates the splash-screen
 	// Time clock button + admin tab; the interlock flags let the SPA shape
@@ -73,12 +76,12 @@ type identityPayload struct {
 // plus the configured branding. The SPA fetches this once on boot.
 func (h *Handlers) Identity(re *core.RequestEvent) error {
 	out := identityPayload{
-		Role:        "kiosk",
-		Identity:    kioskctx.Get(),
-		MaxQty:      cart.MaxQty,
-		Managed:     h.Cfg.Controller.Enabled,
-		RFIDEnabled: h.Cfg.RFID.Enabled,
-		RFIDMode:    h.Cfg.RFID.Mode,
+		Role:                    "kiosk",
+		Identity:                kioskctx.Get(),
+		MaxQty:                  cart.MaxQty,
+		Managed:                 h.Cfg.Controller.Enabled,
+		RFIDEnabled:             h.Cfg.RFID.Enabled,
+		RFIDMode:                h.Cfg.RFID.SoleReaderMode(),
 		TimeclockEnabled:        h.Cfg.Timeclock.Enabled,
 		TimeclockRequireClockIn: h.Cfg.Timeclock.Enabled && h.Cfg.Timeclock.RequireClockInForCheckout,
 		TimeclockBlockClockOut:  h.Cfg.Timeclock.Enabled && h.Cfg.Timeclock.BlockClockOutWithOpenCheckouts,

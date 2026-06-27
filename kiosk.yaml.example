@@ -133,18 +133,27 @@ timeclock:
 
 rfid:
   enabled: false
-  mode: ""                  # "counter_scan" | "enclosure_diff" (required when enabled)
-  reader:
-    host: ""                # reader IP / hostname (required when enabled)
-    port: 5084              # standard LLRP port
-    # antennas: enumerate active reader ports + TX power in dBm.
-    # Empty/omitted = let the reader's own baseline stand. When set,
-    # only the listed ports are inventoried and each runs at the given
-    # power (resolved to the reader's nearest available index at Connect).
-    # antennas:
-    #   - id: 1
-    #     tx_power_dbm: 25.0
-    #   - id: 3
-    #     tx_power_dbm: 20.0
-  read_window: "3s"         # one inventory cycle; enclosure_diff caps this at 3.5s (runs inside the ~5s command reply)
-  enclosure_id: ""          # required when mode=enclosure_diff (the access-controlled cabinet's id)
+  read_window: "3s"         # one inventory cycle, shared across readers; capped at
+                            # 3.5s when any reader is enclosure_diff (the read rides
+                            # the ~5s NATS command reply)
+  # readers maps an operator-chosen reader_id to one physical reader. A node can
+  # host several — a counter plus one or more enclosure cabinets — each with its
+  # own mode. A single-reader kiosk declares exactly one entry and reader
+  # selection is implicit (no per-terminal selector needed).
+  readers: {}
+    # front-counter:
+    #   mode: "counter_scan"      # "counter_scan" | "enclosure_diff" (required)
+    #   host: "10.0.0.50"         # reader IP / hostname (required)
+    #   port: 5084                # standard LLRP port
+    #   # antennas (optional): active reader ports + TX power in dBm. Empty = let
+    #   # the reader's own baseline stand. When set, only the listed ports are
+    #   # inventoried, each at the given power (resolved to the reader's nearest
+    #   # available index at Connect).
+    #   antennas:
+    #     - id: 1
+    #       tx_power_dbm: 25.0
+    # cabinet-a:
+    #   mode: "enclosure_diff"
+    #   host: "10.0.0.51"
+    #   port: 5084
+    #   enclosure_id: "cabinet-a" # required when mode=enclosure_diff
