@@ -259,6 +259,14 @@ func MetricsSnapshotCommandSubject(kioskCode string) string {
 	return CommandSubject(kioskCode, "metrics.snapshot")
 }
 
+// ConfigSnapshotCommandSubject is the controller→kiosk read-only command that
+// returns the kiosk's RFID reader/enclosure config (+ live connected status).
+// Drives the controller SPA's per-kiosk Readers tab. No idempotency key — it
+// mutates nothing.
+func ConfigSnapshotCommandSubject(kioskCode string) string {
+	return CommandSubject(kioskCode, "config.snapshot")
+}
+
 // Instance command subjects mirror the inventory family. Mutations (create,
 // edit, set_status) are idempotent via command_id; the snapshot read is
 // unconditionally safe to replay. set_status carries the target status

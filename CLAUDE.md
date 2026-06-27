@@ -116,9 +116,13 @@ blank-imports `migrations/controller` for side effect.
   checks `re.Auth.Collection().Name == "admins"`.
 - `/api/controller/*` — controller-binary-only endpoints registered in
   `cmd/controller/main.go`, served by methods on `controller.Handlers`.
-  Today: `GET /api/controller/kiosks/heartbeats`,
-  `GET /api/controller/kiosks/{code}/inventory`, and
-  `POST /api/controller/kiosks/{code}/inventory/adjust`. All admin-gated
+  Today: `GET /api/controller/kiosks/heartbeats`, the inventory pair
+  `GET .../kiosks/{code}/inventory` + `POST .../inventory/adjust`, the
+  instances family `GET .../kiosks/{code}/instances` +
+  `POST` (create) + `PATCH .../{instance_code}` (edit, carries `enclosure_id`)
+  + `POST .../{instance_code}/status` (set_status), and the read-only
+  `GET .../kiosks/{code}/metrics` + `GET .../kiosks/{code}/config` (RFID
+  reader topology). All admin-gated
   via `controller.Handlers.requireAdmin` (mirrors the kiosk version —
   the duplicate is documented at `internal/controller/handlers.go:37`).
   The inventory/instance endpoints proxy core NATS request/reply commands
@@ -203,7 +207,7 @@ Three invariants:
    (`source_punch_id`) — same strategy as `inventory.adjust`'s
    `adjustment_id`. The payload also carries an optional `job_code` (free-text
    job / work-order tag, supplied on a clock-in) — an optional attribution
-   column on the punch ledger (same shape as `transactions.door_id`), threaded
+   column on the punch ledger (same shape as `transactions.terminal_id`), threaded
    through every punch path and projected onto the controller's `time_punches`;
    display pairing carries it from the "in" punch onto the interval.
    `<prefix>.<kiosk_code>.event.scan.rfid.observed` fires after every
@@ -229,8 +233,11 @@ Three invariants:
      `checkout.close`, the `instance.*` family
      (`create`/`edit`/`set_status`/`snapshot` — `set_status` carries the
      target status as data and covers send-to-maintenance / return-to-service
-     / retire / un-retire in one command), `metrics.snapshot`,
-     `integrity.rebuild`, `ledger.republish`, the timeclock pair
+     / retire / un-retire in one command — `create`/`edit` also carry the
+     unit's `enclosure_id`, the enclosure_diff cabinet assignment),
+     `metrics.snapshot`, `config.snapshot` (read-only RFID reader/enclosure
+     topology — drives the controller's Readers tab), `integrity.rebuild`,
+     `ledger.republish`, the timeclock pair
      `timeclock.punch` + `timeclock.republish` (controller-admin punch
      recorded AT the kiosk — kiosks are the only punch writers — and the
      punch-events backfill walk; both reach config + the punch-state
@@ -257,13 +264,18 @@ without an actual federation yet.
 
 **Cart state is in-memory only.** `internal/cart/store.go` is a mutex-guarded
 map keyed by cart ID. Carts expire lazily on access after `session.idle_timeout`
-and vanish on process restart. A kiosk has at most one active user at a time,
-so contention is nil. Don't add concurrency primitives optimizing for it. The
-HTTP handler accepts a `cart_id` from the client and dispatches against this
-store; commit drops the cart after successfully promoting to a transaction.
-A secondary `byUserDoor` index maps `(user_code, door_id) → *Cart` for the
-RFID `enclosure_diff` flow's `cart.start` idempotency — only populated by
-`Store.StartByExternal`; counter_scan and badge-driven carts don't touch it.
+and vanish on process restart. A single screen has one active user at a time; a
+multi-terminal node (several doors / screens on one binary) can hold several
+concurrent carts, but they never collide — every method takes the store mutex
+and carts are keyed by `cart_id`, with the badge `Start` path resolving one cart
+per `UserID`. The mutex already covers this; don't add further concurrency
+primitives. The HTTP handler accepts a `cart_id` from the client and dispatches
+against this store; commit drops the cart after successfully promoting to a
+transaction. A secondary `byUserEnclosure` index maps
+`(user_code, enclosure_id) → *Cart` for the RFID `enclosure_diff` flow's
+`cart.start` idempotency — only populated by `Store.StartByExternal`;
+counter_scan and badge-driven carts don't touch it. (`terminal_id` is
+attribution-only and never a cart-session key; the enclosure is the partition.)
 
 **Cart state changes notify subscribers via SSE.** `internal/cartevents`
 is a tiny per-cart pub/sub broker: Subscribe/Tickle/Close keyed by
@@ -279,15 +291,27 @@ spectator clients) can keep the SPA in sync without polling. The
 shared `addCodeToCart` helper deliberately does NOT tickle — RFIDScan
 calls it in a loop and we want one tickle per HTTP write, not N.
 
-**RFID lives in `internal/rfid`.** Two modes share one LLRP client
+**RFID lives in `internal/rfid`.** A node configures a **map of readers**
+(`rfid.readers`, keyed by `reader_id`), each its own long-lived LLRP client
 (EdgeX `device-rfid-llrp-go/pkg/llrp`, imported at a `@main`
 pseudo-version because EdgeX's v4 tags are unreachable to Go's
-module system). `counter_scan` is button-driven; `enclosure_diff`
-is NATS-driven via the `cart.start` and `read.trigger` commands
+module system). Mode is **per-reader**, so one node can host `counter_scan` +
+`enclosure_diff` readers at once. `handlers.Readers` (a `map[reader_id]*ReaderHandle`,
+each `{Reader, Mode, EnclosureID}`) is the runtime view; selection goes through
+`ReaderByID` (empty id → the sole reader; explicit id → that one — this is what
+the counter_scan `?reader=` URL param drives) and `ReaderForEnclosure`
+(enclosure_diff, matches the cabinet by `enclosure_id`). `counter_scan` is
+button-driven (`POST /api/kiosk/cart/rfid-scan?cart_id=…&reader=…`);
+`enclosure_diff` is NATS-driven via the `cart.start` and `read.trigger` commands
 above. `internal/rfid/diff.go` is a pure function reconciling
 observed EPCs against expected-present state (non-retired serialized
 instances + open_checkouts) — no I/O, no kiosk state, exhaustively
-table-tested. Each expected instance carries an `Eligible` flag
+table-tested. When a node hosts more than one cabinet
+(`enclosureCount() > 1`), `handlers.expectedInstanceStates` scopes that set to
+the cabinet being read via `item_instances.enclosure_id`; a single-cabinet node
+(or any unassigned instance) keeps the whole-inventory set, so existing
+deployments are unaffected and `rfid.Diff` itself is untouched. Each expected
+instance carries an `Eligible` flag
 (`status == in_service`): a **maintenance** unit is expected-present
 (physically in the enclosure) but if it leaves it is skip-and-counted
 (`SkippedIneligible`), never synthesized as a checkout — commit would
@@ -422,6 +446,18 @@ see the scheduler fan-out note below); controller-side
 unique-when-non-empty — the projection's idempotency anchor — plus
 `source_actor` for kiosk-admin actors whose FK can't resolve in the
 controller's DB, and a `(kiosk_code, occurred_at)` index).
+
+Asset-tracker migrations (the jobsite custody + RFID-partition generalization —
+see `docs/asset-tracker-plan.md`): kiosk-side
+`1801000000_rename_door_to_terminal.go` (renames `transactions.door_id` →
+`terminal_id` in place + reindexes, adds nullable `enclosure_id` + index) and
+`1802000000_instance_enclosure_id.go` (adds `item_instances.enclosure_id` +
+index — the enclosure_diff cabinet a serialized unit lives in, nullable, no
+backfill); controller-side `2001300000_rename_door_to_terminal.go` which
+**converges** rather than blind-renames (the controller runs both kiosk and
+controller migrations on the shared `transactions` collection, so it renames
+only if `terminal_id` is absent, drops any leftover `door_id`, and ensures the
+`terminal_id` index + `enclosure_id`).
 
 **Scheduled-report delivery shapes.** `internal/scheduler` dispatches each
 `scheduled_reports` row through one of two registries: `reportRunners` (the

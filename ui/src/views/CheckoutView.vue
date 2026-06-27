@@ -35,14 +35,23 @@ const TOP = { position: 'top' } as const
 const c = useCart()
 const { identity } = useKioskIdentity()
 
-// Optional per-terminal attribution: each physical screen/door is configured
-// with a ?door= URL param. Read once (the kiosk never mutates it) and passed
-// through to commit so the transaction records where it was finished. Absent
-// on single-kiosk installs, which is fully supported (door_id is optional).
+// Optional per-terminal attribution: each physical screen is configured with a
+// ?terminal= URL param. Read once (the kiosk never mutates it) and passed
+// through to commit so the transaction records where it was accepted. Absent on
+// single-kiosk installs, which is fully supported (terminal_id is optional).
 const route = useRoute()
-const doorId = computed(() => {
-  const d = route.query.door
-  return (Array.isArray(d) ? d[0] : d) || null
+const terminalId = computed(() => {
+  const t = route.query.terminal
+  return (Array.isArray(t) ? t[0] : t) || null
+})
+
+// Optional reader selection: a screen wired to a specific counter_scan reader
+// carries ?reader=<reader_id>. The scan button fires that reader instead of
+// the node's sole reader — the only setup needed when a node has more than one
+// reader (e.g. two crib windows). Absent on single-reader nodes (implicit).
+const readerId = computed(() => {
+  const r = route.query.reader
+  return (Array.isArray(r) ? r[0] : r) || null
 })
 
 const splashLogoBroken = ref(false)
@@ -247,11 +256,26 @@ useCartEvents(activeCartId, {
 //     diff path that the NATS-driven read.trigger normally fires
 //     when door-occupancy ends. Same backend window, same countdown
 //     style, different semantics (diff vs scan).
+// The scan button shows when the node's sole reader is counter_scan (single
+// reader, mode known from identity) OR this screen names a specific reader via
+// ?reader= (a multi-reader node, where identity's sole-reader mode is blank).
+// The server validates the named reader is actually counter_scan and 404s a
+// misconfigured screen.
 const rfidScanButtonVisible = computed(
-  () => identity.value?.rfid_enabled && identity.value?.rfid_mode === 'counter_scan',
+  () =>
+    !!identity.value?.rfid_enabled &&
+    (identity.value?.rfid_mode === 'counter_scan' || !!readerId.value),
 )
+// The Re-read button is a manual fallback for the NATS-driven read.trigger;
+// it's meaningful only for an enclosure_diff cart (one started server-side for
+// a cabinet, so it carries an enclosure_id). Gating on the cart's enclosure_id
+// — rather than only the node's sole-reader rfid_mode — makes it work at a
+// node that mixes counter_scan + enclosure_diff readers, where rfid_mode is
+// blank. The sole-reader clause stays for back-compat on single-reader nodes.
 const rfidReReadButtonVisible = computed(
-  () => identity.value?.rfid_enabled && identity.value?.rfid_mode === 'enclosure_diff',
+  () =>
+    !!identity.value?.rfid_enabled &&
+    (identity.value?.rfid_mode === 'enclosure_diff' || !!cart.value?.enclosure_id),
 )
 
 // rfidReadWindowMs is what we draw the "Reading… 3s" countdown over.
@@ -277,7 +301,7 @@ async function onRFIDScan() {
     rfidProgress.value = Math.min(1, elapsed / RFID_READ_WINDOW_MS)
   }, 50)
   try {
-    const result = await c.rfidScan()
+    const result = await c.rfidScan(readerId.value)
     const added = result.added_lines.length
     const observed = result.observed_epcs.length
     const unresolved = result.unresolved_epcs.length
@@ -559,7 +583,7 @@ async function doCommit() {
   const snapshotLines = cart.value.lines.map((l) => ({ ...l }))
   const snapshotUser = cart.value.user_name
   try {
-    const result = await c.commit(doorId.value)
+    const result = await c.commit(terminalId.value)
     success.value = { result, lines: snapshotLines, userName: snapshotUser }
     outstanding.value = []
     outstandingExpanded.value = false

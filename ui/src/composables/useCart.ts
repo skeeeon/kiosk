@@ -73,15 +73,15 @@ export function useCart() {
     session.setCart(null)
   }
 
-  // doorId is the optional per-terminal attribution tag read from the page's
-  // ?door= URL param. It's stamped onto the transaction at commit (the
-  // finishing terminal wins), unless the RFID enclosure_diff flow already set
-  // a door on the cart server-side. Omitted from the body when absent.
-  async function commit(doorId?: string | null): Promise<CommitResult> {
+  // terminalId is the optional attribution tag read from the page's ?terminal=
+  // URL param — the screen the worker accepted the cart at. It's stamped onto
+  // the transaction at commit (an enclosure_diff cart additionally carries its
+  // cabinet's enclosure_id server-side). Omitted from the body when absent.
+  async function commit(terminalId?: string | null): Promise<CommitResult> {
     if (!session.cart) throw new Error('no active cart')
     const result = await api.post<CommitResult>('/api/kiosk/cart/commit', {
       cart_id: session.cart.id,
-      door_id: doorId || undefined,
+      terminal_id: terminalId || undefined,
     })
     session.setCart(null)
     return result
@@ -93,10 +93,16 @@ export function useCart() {
   // resulting cart plus added_lines + observed_epcs + unresolved_epcs;
   // the caller drives any "Reading…" UI on its own clock since this
   // promise doesn't resolve until the read window completes server-side.
-  async function rfidScan(): Promise<RFIDScanResult> {
+  //
+  // readerId is the optional ?reader= URL param — which configured reader
+  // this screen fires. Needed only when the node hosts more than one reader;
+  // omitted, the server resolves the sole reader implicitly.
+  async function rfidScan(readerId?: string | null): Promise<RFIDScanResult> {
     if (!session.cart) throw new Error('no active cart')
+    const qs = new URLSearchParams({ cart_id: session.cart.id })
+    if (readerId) qs.set('reader', readerId)
     const result = await api.post<RFIDScanResult>(
-      `/api/kiosk/cart/rfid-scan?cart_id=${encodeURIComponent(session.cart.id)}`,
+      `/api/kiosk/cart/rfid-scan?${qs.toString()}`,
       {},
       // Blocks server-side for the configured read window; allow generous
       // headroom over the default so a normal read isn't aborted, while still

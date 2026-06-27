@@ -123,7 +123,7 @@ it via config. See [docs/controller.md](docs/controller.md).
   **match-only** so an IdP account with no pre-provisioned worker can't
   self-enroll. See [Virtual timeclock terminal](#virtual-timeclock-terminal).
 - **Federation-ready.** Every transaction is stamped with `kiosk_code`
-  and `location_code` (and an optional `door_id` — see below). Every
+  and `location_code` (and optional `terminal_id` / `enclosure_id` — see below). Every
   state change flows through `events.Publish`, which always logs via
   slog and (when enabled) also publishes to NATS — same subjects, no
   caller changes.
@@ -131,11 +131,17 @@ it via config. See [docs/controller.md](docs/controller.md).
   touchscreens on an isolated LAN (e.g. two doors of a building, an
   inside + outside screen at each) — one process, one SQLite DB, one
   shared inventory. Point each terminal's browser at the server with a
-  `?door=` URL param and that value is stamped onto the transaction at
-  commit (`transactions.door_id`), so a single shared inventory keeps
-  per-door attribution. `door_id` is optional and purely descriptive —
+  `?terminal=` URL param and that value is stamped onto the transaction at
+  commit (`transactions.terminal_id`), so a single shared inventory keeps
+  per-terminal attribution. `terminal_id` is optional and purely descriptive —
   empty on a normal single-screen kiosk, and never an auth boundary
-  (the isolated network is the trust boundary, as with any kiosk).
+  (the isolated network is the trust boundary, as with any kiosk). An RFID
+  enclosure_diff cart additionally records its cabinet as
+  `transactions.enclosure_id`. When a node also hosts more than one RFID
+  reader (e.g. two crib windows), each screen adds a `?reader=<reader_id>`
+  param so its "RFID scan" button fires that reader; a single-reader node
+  needs no param. All of this stays invisible at N=1 — one screen, one
+  reader, no URL params.
 - **Optional central controller.** A `kiosk-controller` binary
   aggregates per-kiosk transaction events into its own ledger via a
   JetStream durable consumer, pushes catalog updates down to managed

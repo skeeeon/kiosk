@@ -36,7 +36,7 @@ const error = ref<string | null>(null)
 // Draft row for "new instance" inline form. Null when not adding.
 const draft = ref<Partial<ItemInstance> | null>(null)
 const editingId = ref<string | null>(null)
-const editingDraft = ref<{ code?: string; serial?: string; rfid_epc?: string; notes?: string } | null>(null)
+const editingDraft = ref<{ code?: string; serial?: string; rfid_epc?: string; notes?: string; enclosure_id?: string } | null>(null)
 
 async function load() {
   loading.value = true
@@ -64,7 +64,7 @@ async function load() {
 watch(() => props.itemId, (id) => { if (id) void load() }, { immediate: true })
 
 function startAdd() {
-  draft.value = { code: '', serial: '', rfid_epc: '', status: 'in_service', notes: '' }
+  draft.value = { code: '', serial: '', rfid_epc: '', status: 'in_service', notes: '', enclosure_id: '' }
 }
 
 async function saveDraft() {
@@ -94,6 +94,7 @@ function startEdit(row: InstanceRow) {
     serial: row.serial,
     rfid_epc: row.rfid_epc,
     notes: row.notes,
+    enclosure_id: row.enclosure_id,
   }
 }
 
@@ -166,6 +167,7 @@ const hasRows = computed(() => rows.value.length > 0)
           <th class="px-2 py-2 font-medium">Code</th>
           <th class="px-2 py-2 font-medium">Serial</th>
           <th class="px-2 py-2 font-medium">RFID</th>
+          <th class="px-2 py-2 font-medium">Enclosure</th>
           <th class="px-2 py-2 font-medium">Status</th>
           <th class="px-2 py-2 font-medium">Out?</th>
           <th class="px-2 py-2"></th>
@@ -173,10 +175,10 @@ const hasRows = computed(() => rows.value.length > 0)
       </thead>
       <tbody class="divide-y divide-slate-800">
         <tr v-if="loading">
-          <td colspan="6" class="text-center text-slate-500 py-3">Loading…</td>
+          <td colspan="7" class="text-center text-slate-500 py-3">Loading…</td>
         </tr>
         <tr v-else-if="!hasRows && !draft">
-          <td colspan="6" class="text-center text-slate-500 py-3">
+          <td colspan="7" class="text-center text-slate-500 py-3">
             No instances yet. Add one to enable scanning.
           </td>
         </tr>
@@ -186,6 +188,7 @@ const hasRows = computed(() => rows.value.length > 0)
             <td class="px-2 py-2 font-mono text-slate-200">{{ row.code }}</td>
             <td class="px-2 py-2 font-mono text-slate-400">{{ row.serial || '—' }}</td>
             <td class="px-2 py-2 font-mono text-slate-400 truncate max-w-[10rem]">{{ row.rfid_epc || '—' }}</td>
+            <td class="px-2 py-2 font-mono text-slate-400">{{ row.enclosure_id || '—' }}</td>
             <td class="px-2 py-2">
               <span
                 class="inline-block px-2 py-0.5 rounded text-[10px]"
@@ -231,6 +234,9 @@ const hasRows = computed(() => rows.value.length > 0)
             <td class="px-2 py-2">
               <input v-model="editingDraft!.rfid_epc" type="text" class="w-full rounded bg-slate-800 border border-slate-700 px-2 py-1 text-sm" />
             </td>
+            <td class="px-2 py-2">
+              <input v-model="editingDraft!.enclosure_id" type="text" placeholder="cabinet" class="w-full rounded bg-slate-800 border border-slate-700 px-2 py-1 text-sm" />
+            </td>
             <td class="px-2 py-2 text-slate-500 text-[10px]" colspan="2">
               Status changes via the row actions.
             </td>
@@ -263,6 +269,9 @@ const hasRows = computed(() => rows.value.length > 0)
           </td>
           <td class="px-2 py-2">
             <input v-model="draft.rfid_epc" type="text" class="w-full rounded bg-slate-800 border border-slate-700 px-2 py-1 text-sm" />
+          </td>
+          <td class="px-2 py-2">
+            <input v-model="draft.enclosure_id" type="text" placeholder="cabinet" class="w-full rounded bg-slate-800 border border-slate-700 px-2 py-1 text-sm" />
           </td>
           <td class="px-2 py-2 text-slate-400 text-[10px]" colspan="2">new — in service</td>
           <td class="px-2 py-2 text-right whitespace-nowrap">

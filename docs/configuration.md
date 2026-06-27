@@ -56,17 +56,22 @@ nats:                          # Optional. Off by default.
   tls_insecure: false          # skip cert verification — dev only
 
 rfid:                          # Optional. Off by default.
-  enabled: false               # When true, the kiosk dials the LLRP reader at startup.
-  mode: ""                     # "counter_scan" | "enclosure_diff" (required when enabled)
-  reader:
-    host: ""                   # Reader IP/hostname (required when enabled)
-    port: 5084                 # Standard LLRP port
-    antennas: []               # Active reader ports + TX power. Empty = use reader baseline.
-                               # Each entry: {id: 1, tx_power_dbm: 25.0}. Ids must be >= 1
-                               # and unique; dBm resolved to nearest index via reader
-                               # capabilities at Connect.
-  read_window: "3s"            # How long one inventory cycle runs
-  door_id: ""                  # Required when mode=enclosure_diff
+  enabled: false               # When true, the kiosk dials each configured reader at startup.
+  read_window: "3s"            # One inventory cycle, shared across readers.
+  readers:                     # reader_id -> one physical reader. A node can host
+                               # several (a counter + enclosure cabinets); a single-
+                               # reader kiosk declares one entry, selection implicit.
+    front-counter:
+      mode: "counter_scan"     # "counter_scan" | "enclosure_diff" (required)
+      host: "10.0.0.50"        # Reader IP/hostname (required)
+      port: 5084               # Standard LLRP port
+      antennas: []             # Active reader ports + TX power. Empty = use reader baseline.
+                               # Each entry: {id: 1, tx_power_dbm: 25.0}. Ids >= 1 + unique.
+    cabinet-a:
+      mode: "enclosure_diff"
+      host: "10.0.0.51"
+      port: 5084
+      enclosure_id: "cabinet-a" # Required when mode=enclosure_diff (access-controlled cabinet id)
 
 timeclock:                     # Optional. Off by default.
   enabled: false               # Gates the whole feature: endpoints, splash button, events.
@@ -152,11 +157,10 @@ does without any reader on the network.
 
 Validation at startup:
 
-- `rfid.mode` is required when `rfid.enabled=true`.
-- `rfid.reader.host` and `rfid.reader.port` are required when
-  `rfid.enabled=true`.
-- `rfid.door_id` is required when `rfid.mode=enclosure_diff`.
-- `rfid.read_window` must be ≤ 3.5 s when `rfid.mode=enclosure_diff`
+- `rfid.readers` must have at least one entry when `rfid.enabled=true`.
+- Each reader needs `mode` (`counter_scan` | `enclosure_diff`), `host`, and `port`.
+- A reader's `enclosure_id` is required when its `mode=enclosure_diff`.
+- `rfid.read_window` (shared across readers) must be ≤ 3.5 s when any reader is `enclosure_diff`
   (`config.MaxEnclosureReadWindow`): the read runs synchronously inside the
   controller's ~5 s NATS command-reply window, so a larger window would push
   the reply past it and render the kiosk "offline" to the caller.
@@ -259,11 +263,10 @@ KIOSK_CONTROLLER_ENABLED=true
 KIOSK_CONTROLLER_CATALOG_ITEMS_BUCKET=catalog_items
 KIOSK_CONTROLLER_CATALOG_USERS_BUCKET=catalog_users
 KIOSK_RFID_ENABLED=true
-KIOSK_RFID_MODE=enclosure_diff
-KIOSK_RFID_READER_HOST=10.0.4.50
-KIOSK_RFID_READER_PORT=5084
 KIOSK_RFID_READ_WINDOW=3s
-KIOSK_RFID_DOOR_ID=cabinet-a
+# Per-reader RFID fields (mode/host/port/enclosure_id/antennas) live in the
+# rfid.readers map and are YAML-only — there is no flat env path into a map
+# entry. Only the top-level rfid.enabled / rfid.read_window have env overrides.
 KIOSK_TIMECLOCK_ENABLED=true
 KIOSK_TIMECLOCK_REQUIRE_CLOCK_IN_FOR_CHECKOUT=true
 KIOSK_TIMECLOCK_BLOCK_CLOCK_OUT_WITH_OPEN_CHECKOUTS=true

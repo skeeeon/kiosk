@@ -30,6 +30,9 @@ interface InstanceRow {
   // from the kiosk's instance snapshot.
   status: InstanceStatus
   notes: string
+  // Access-controlled cabinet the unit lives in — the enclosure_diff partition
+  // key. Empty = counter/crib or single-cabinet kiosk.
+  enclosure_id: string
   created: string
   updated: string
   // Derived by the controller from its projected ledger: is this unit
@@ -61,6 +64,7 @@ const form = ref({
   serial: '',
   rfid_epc: '',
   notes: '',
+  enclosure_id: '',
 })
 const submitting = ref(false)
 
@@ -130,6 +134,7 @@ function openCreate() {
     serial: '',
     rfid_epc: '',
     notes: '',
+    enclosure_id: '',
   }
   dialogMode.value = 'create'
 }
@@ -142,6 +147,7 @@ function openEdit(r: InstanceRow) {
     serial: r.serial,
     rfid_epc: r.rfid_epc,
     notes: r.notes,
+    enclosure_id: r.enclosure_id,
   }
   dialogMode.value = 'edit'
 }
@@ -167,6 +173,7 @@ async function submitForm() {
           serial: form.value.serial.trim() || undefined,
           rfid_epc: form.value.rfid_epc.trim() || undefined,
           notes: form.value.notes.trim() || undefined,
+          enclosure_id: form.value.enclosure_id.trim() || undefined,
         },
       )
       // Append + sort; snapshot refresh would also work but skips a round-trip.
@@ -183,6 +190,7 @@ async function submitForm() {
         serial: form.value.serial.trim(),
         rfid_epc: form.value.rfid_epc.trim(),
         notes: form.value.notes.trim(),
+        enclosure_id: form.value.enclosure_id.trim(),
       }
       const updated = await api.patch<InstanceRow>(
         `/api/controller/kiosks/${encodeURIComponent(props.kioskCode)}/instances/${encodeURIComponent(rowInstanceCode())}`,
@@ -228,6 +236,7 @@ function hydrateRow(r: Partial<InstanceRow>): InstanceRow {
     rfid_epc: r.rfid_epc ?? '',
     status: r.status ?? 'in_service',
     notes: r.notes ?? '',
+    enclosure_id: r.enclosure_id ?? '',
     created: r.created ?? '',
     updated: r.updated ?? '',
     // A just-created/edited unit's reply doesn't carry out-status; a fresh
@@ -278,6 +287,7 @@ const columns: ColumnDef[] = [
   { key: 'instance_code', label: 'Code' },
   { key: 'serial', label: 'Serial' },
   { key: 'rfid_epc', label: 'RFID' },
+  { key: 'enclosure_id', label: 'Enclosure' },
   { key: 'status', label: 'Status' },
   { key: 'out', label: 'Out?' },
   { key: '__actions', align: 'right' },
@@ -357,6 +367,9 @@ const columns: ColumnDef[] = [
       <template #cell-rfid_epc="{ row }">
         <span class="font-mono block break-all sm:truncate sm:max-w-[8rem]" :title="row.rfid_epc">{{ row.rfid_epc || '—' }}</span>
       </template>
+      <template #cell-enclosure_id="{ row }">
+        <span class="font-mono text-slate-400" :title="row.enclosure_id">{{ row.enclosure_id || '—' }}</span>
+      </template>
       <template #cell-status="{ row }">
         <span
           class="inline-block px-2 py-0.5 rounded text-[10px]"
@@ -434,6 +447,19 @@ const columns: ColumnDef[] = [
             type="text"
             class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 font-mono"
           />
+        </label>
+        <label class="flex flex-col gap-1">
+          <span class="text-sm text-slate-400">Enclosure</span>
+          <input
+            v-model="form.enclosure_id"
+            type="text"
+            placeholder="cabinet id — leave blank for counter/crib"
+            class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 font-mono"
+          />
+          <span class="text-xs text-slate-500">
+            The access-controlled cabinet this unit lives in. Only matters when
+            the kiosk hosts more than one cabinet.
+          </span>
         </label>
         <label class="flex flex-col gap-1">
           <span class="text-sm text-slate-400">Notes</span>

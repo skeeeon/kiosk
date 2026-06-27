@@ -51,6 +51,7 @@ type rfidScanSeed struct {
 	CartID           string
 	H                *handlers.Handlers
 	Reader           *fakeReader
+	Handle           *handlers.ReaderHandle
 }
 
 func seedRFIDScan(t *testing.T) (core.App, rfidScanSeed) {
@@ -109,7 +110,6 @@ func seedRFIDScan(t *testing.T) (core.App, rfidScanSeed) {
 	cfg := &config.Config{
 		RFID: config.RFIDConfig{
 			Enabled:    true,
-			Mode:       config.RFIDModeCounterScan,
 			ReadWindow: config.Duration(50 * time.Millisecond),
 		},
 	}
@@ -118,7 +118,8 @@ func seedRFIDScan(t *testing.T) (core.App, rfidScanSeed) {
 
 	reader := &fakeReader{}
 	h := handlers.New(app, cfg, store, notifications.New(app))
-	h.RFID = reader
+	rd := &handlers.ReaderHandle{Reader: reader, Mode: config.RFIDModeCounterScan}
+	h.Readers = map[string]*handlers.ReaderHandle{"counter": rd}
 
 	return app, rfidScanSeed{
 		WorkerID:         worker.Id,
@@ -129,6 +130,7 @@ func seedRFIDScan(t *testing.T) (core.App, rfidScanSeed) {
 		CartID:           c.ID,
 		H:                h,
 		Reader:           reader,
+		Handle:           rd,
 	}
 }
 
@@ -145,7 +147,7 @@ func TestPerformRFIDScan_HappyPath(t *testing.T) {
 		"deadbeefcafebabe00000001", // unknown
 	}
 
-	resp, err := s.H.PerformRFIDScan(context.Background(), s.CartID)
+	resp, err := s.H.PerformRFIDScan(context.Background(), s.CartID, s.Handle)
 	if err != nil {
 		t.Fatalf("PerformRFIDScan: %v", err)
 	}
@@ -170,7 +172,7 @@ func TestPerformRFIDScan_AllUnresolved(t *testing.T) {
 	_, s := seedRFIDScan(t)
 	s.Reader.epcs = []rfid.EPC{"aa", "bb"}
 
-	resp, err := s.H.PerformRFIDScan(context.Background(), s.CartID)
+	resp, err := s.H.PerformRFIDScan(context.Background(), s.CartID, s.Handle)
 	if err != nil {
 		t.Fatalf("PerformRFIDScan: %v", err)
 	}
@@ -190,7 +192,7 @@ func TestPerformRFIDScan_EmptyRead(t *testing.T) {
 	_, s := seedRFIDScan(t)
 	s.Reader.epcs = nil
 
-	resp, err := s.H.PerformRFIDScan(context.Background(), s.CartID)
+	resp, err := s.H.PerformRFIDScan(context.Background(), s.CartID, s.Handle)
 	if err != nil {
 		t.Fatalf("PerformRFIDScan: %v", err)
 	}
@@ -215,7 +217,7 @@ func TestPerformRFIDScan_DuplicateInScan(t *testing.T) {
 		rfid.EPC(s.ActiveEPC), // duplicate
 	}
 
-	resp, err := s.H.PerformRFIDScan(context.Background(), s.CartID)
+	resp, err := s.H.PerformRFIDScan(context.Background(), s.CartID, s.Handle)
 	if err != nil {
 		t.Fatalf("PerformRFIDScan: %v", err)
 	}
@@ -233,7 +235,7 @@ func TestPerformRFIDScan_DuplicateInScan(t *testing.T) {
 // that fast-fail is loud.
 func TestPerformRFIDScan_CartNotFound(t *testing.T) {
 	_, s := seedRFIDScan(t)
-	_, err := s.H.PerformRFIDScan(context.Background(), "no-such-cart")
+	_, err := s.H.PerformRFIDScan(context.Background(), "no-such-cart", s.Handle)
 	if err == nil {
 		t.Fatal("expected error for missing cart, got nil")
 	}
@@ -250,7 +252,7 @@ func TestPerformRFIDScan_ReaderError(t *testing.T) {
 	_, s := seedRFIDScan(t)
 	s.Reader.err = errors.New("reader is on fire")
 
-	_, err := s.H.PerformRFIDScan(context.Background(), s.CartID)
+	_, err := s.H.PerformRFIDScan(context.Background(), s.CartID, s.Handle)
 	if err == nil {
 		t.Fatal("expected error from ReadFor failure, got nil")
 	}
@@ -296,7 +298,7 @@ func TestPerformRFIDScan_AlreadyInCartUnresolved(t *testing.T) {
 	}
 
 	s.Reader.epcs = []rfid.EPC{rfid.EPC(s.ActiveEPC)}
-	resp, err := s.H.PerformRFIDScan(context.Background(), s.CartID)
+	resp, err := s.H.PerformRFIDScan(context.Background(), s.CartID, s.Handle)
 	if err != nil {
 		t.Fatalf("PerformRFIDScan: %v", err)
 	}

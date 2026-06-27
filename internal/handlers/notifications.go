@@ -17,14 +17,14 @@ import (
 // Mirrors the collection columns; `id` is included so the SPA can issue
 // further requests by primary key if needed (today it routes by event_type).
 type notificationTemplateDTO struct {
-	ID        string                   `json:"id"`
-	EventType string                   `json:"event_type"`
-	Name      string                   `json:"name"`
-	Enabled   bool                     `json:"enabled"`
-	Subject   string                   `json:"subject"`
-	Body      string                   `json:"body"`
-	Updated   string                   `json:"updated"`
-	UpdatedBy string                   `json:"updated_by"`
+	ID        string `json:"id"`
+	EventType string `json:"event_type"`
+	Name      string `json:"name"`
+	Enabled   bool   `json:"enabled"`
+	Subject   string `json:"subject"`
+	Body      string `json:"body"`
+	Updated   string `json:"updated"`
+	UpdatedBy string `json:"updated_by"`
 	// Recipients reflects the stored recipients spec. Empty/null persisted
 	// values are normalized to the event-type's default so the SPA always
 	// renders concrete checkbox state.

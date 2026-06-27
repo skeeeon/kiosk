@@ -68,8 +68,8 @@ present. The flow is event-driven and NATS-orchestrated:
    enclosure door, handled by an external system) publishes a
    `cart.start` NATS command at
    `<prefix>.<kiosk_code>.command.cart.start` carrying `user_code` and
-   `door_id`. The kiosk's command dispatcher creates or reuses a cart
-   keyed `(user_code, door_id)` — re-fires within the active window
+   `enclosure_id`. The kiosk's command dispatcher creates or reuses a cart
+   keyed `(user_code, enclosure_id)` — re-fires within the active window
    return the same cart_id. The cart is empty at this point.
 2. **Worker uses the enclosure.** Takes things out, puts things back.
    No kiosk involvement; the camera / occupancy system handles this
@@ -77,12 +77,19 @@ present. The flow is event-driven and NATS-orchestrated:
 3. **Read trigger.** When occupancy ends (worker has stepped out), the
    external system publishes a `read.trigger` NATS command at
    `<prefix>.<kiosk_code>.command.read.trigger` carrying the
-   `(user_code, door_id)` of the active cart, or the `cart_id` if
+   `(user_code, enclosure_id)` of the active cart, or the `cart_id` if
    known. The kiosk runs one LLRP inventory cycle.
 4. **In-process diff.** Pure function over (observed EPCs, expected
    set). Expected-present = non-retired serialized instances (in_service +
    maintenance) on this kiosk whose `id` is **not** currently in
-   `open_checkouts`. A maintenance unit is expected-present (it's
+   `open_checkouts`. When the node hosts **more than one cabinet**
+   (`enclosureCount() > 1`), that set is further scoped to instances whose
+   `item_instances.enclosure_id` matches the cabinet being read — so a read
+   of cabinet A never treats cabinet B's tools as missing. A single-cabinet
+   node (and any unassigned instance) keeps the whole-inventory set, so
+   nothing changes there. Assign a unit to a cabinet from the instance admin
+   UI (the "Enclosure" field, local or controller) or via CSV / the PB
+   superuser UI. A maintenance unit is expected-present (it's
    physically in the enclosure) but **not** checkout-eligible: if it
    leaves the enclosure it is skip-and-counted (recorded in a
    `SkippedIneligible` bucket, surfaced to the operator), never
@@ -146,7 +153,7 @@ internal/commands/
   dispatcher.go                 gains KioskHandlers field for those handlers to reach in
 
 internal/cart/
-  store.go                      gains StartByExternal + GetByUserDoor + secondary byUserDoor index
+  store.go                      gains StartByExternal + GetByUserEnclosure + secondary byUserEnclosure index
 
 internal/config/
   config.go                     RFIDConfig block + KIOSK_RFID_* env overrides + cross-field validation
@@ -176,7 +183,7 @@ re-exported from `internal/rfid`.
 No new collections. No migrations. `item_instances.rfid_epc` already
 exists; the diff is computed against existing PB tables. The cart
 remains in-memory; the in-memory store grows a secondary lookup key
-to support `(user_code, door_id)` cart resolution in `enclosure_diff`
+to support `(user_code, enclosure_id)` cart resolution in `enclosure_diff`
 mode, but the persistence story is unchanged.
 
 ## Config
@@ -187,33 +194,35 @@ the kiosk binary behaves exactly as it does today.
 ```yaml
 rfid:
   enabled: false
-  mode: ""                  # "counter_scan" | "enclosure_diff" (required when enabled)
-  reader:
-    host: ""                # reader IP / hostname (required when enabled)
-    port: 5084              # standard LLRP port
-    # antennas (optional): enumerate the active reader ports and the
-    # TX power each one should run at. Empty/omitted leaves the
-    # reader's own baseline alone — useful for sites that prefer to
-    # provision via the reader's web UI / IoT REST. When set, only
-    # the listed ports are inventoried and each runs at the given
-    # dBm (resolved to the reader's nearest available power index at
-    # Connect time).
-    # antennas:
-    #   - id: 1
-    #     tx_power_dbm: 25.0
-    #   - id: 3
-    #     tx_power_dbm: 20.0
-  read_window: "3s"         # one inventory cycle; enclosure_diff caps this at 3.5s
-  door_id: ""               # required when mode=enclosure_diff
+  read_window: "3s"         # one inventory cycle, shared across readers
+  # readers maps a reader_id to one physical reader. A node can host several —
+  # a counter plus one or more enclosure cabinets — each with its own mode.
+  # A single-reader kiosk declares exactly one entry (selection is implicit).
+  readers:
+    front-counter:
+      mode: "counter_scan"  # "counter_scan" | "enclosure_diff"
+      host: "10.0.0.50"     # reader IP / hostname
+      port: 5084            # standard LLRP port
+      # antennas (optional): active reader ports + the TX power each should run
+      # at. Empty/omitted leaves the reader's own baseline alone. When set, only
+      # the listed ports are inventoried, each at the given dBm (resolved to the
+      # reader's nearest available power index at Connect time).
+      # antennas:
+      #   - id: 1
+      #     tx_power_dbm: 25.0
+    cabinet-a:
+      mode: "enclosure_diff"
+      host: "10.0.0.51"
+      port: 5084
+      enclosure_id: "cabinet-a"  # required when mode=enclosure_diff
 ```
 
 Validation at startup:
 
-- When `rfid.enabled=true`, `rfid.mode` is required.
-- When `rfid.enabled=true`, `rfid.reader.host` and `rfid.reader.port`
-  are required.
-- When `rfid.mode=enclosure_diff`, `rfid.door_id` is required.
-- When `rfid.mode=enclosure_diff`, `rfid.read_window` must be ≤ 3.5 s
+- When `rfid.enabled=true`, `rfid.readers` must have at least one entry.
+- Each reader requires `mode` (`counter_scan` | `enclosure_diff`), `host`, and `port`.
+- A reader's `enclosure_id` is required when its `mode=enclosure_diff`.
+- When any reader is `enclosure_diff`, the shared `rfid.read_window` must be ≤ 3.5 s
   (`config.MaxEnclosureReadWindow`) — the read runs synchronously inside the
   controller's ~5 s command-reply window, so a larger window would push the
   reply past it. `counter_scan` is HTTP-driven and not capped. Defaults to
@@ -230,8 +239,9 @@ Validation at startup:
   the SPA) during any gap and recover transparently when the session
   is re-established.
 
-Env-var overrides follow the standard `KIOSK_*` pattern
-(`KIOSK_RFID_ENABLED`, `KIOSK_RFID_MODE`, etc.).
+Env-var overrides cover the top-level toggles only — `KIOSK_RFID_ENABLED`
+and `KIOSK_RFID_READ_WINDOW`. Per-reader fields live in the `rfid.readers`
+map and are YAML-only (there's no flat env path into a map entry).
 
 The identity payload served to the SPA grows `rfid_enabled` and
 `rfid_mode` so the frontend gates affordances appropriately.
@@ -241,12 +251,31 @@ fallback alongside the primary NATS-driven `read.trigger`. Both
 modes share the 3-second countdown styling; the button is hidden
 entirely when RFID is disabled.
 
+**Reader selection (multi-reader nodes).** `rfid_mode` in identity is the
+*sole* reader's mode — meaningful only when the node has exactly one reader.
+A node with more than one reader (e.g. two crib windows) wires each
+touchscreen to its reader with a `?reader=<reader_id>` URL param, alongside
+the existing `?terminal=` attribution param. The "RFID scan" button then
+posts `POST /api/kiosk/cart/rfid-scan?cart_id=…&reader=<id>` and the kiosk
+fires exactly that reader (`Handlers.ReaderByID`). With one reader the param
+is omitted and selection is implicit — N=1 needs no URL params at all. The
+button shows when the sole reader is `counter_scan` *or* a `?reader=` is
+present; the server validates the named reader is actually `counter_scan` and
+404s a misconfigured screen. (The `enclosure_diff` "Re-read" button needs no
+`?reader=` — it resolves the reader from the cart's `enclosure_id` via
+`ReaderForEnclosure`. Its visibility is gated on the **active cart** carrying
+an `enclosure_id` — i.e. a server-started enclosure_diff cart — rather than on
+the node's sole-reader `rfid_mode`, so it works even at a node that mixes
+`counter_scan` + `enclosure_diff` readers, where `rfid_mode` is blank.)
+
 ## Reader lifecycle
 
-The kiosk maintains one long-running LLRP TCP session to the reader,
-not a connect-per-read model. `internal/rfid/reader.go` owns the
-session through a supervisor goroutine started by `Connect` and
-cancelled by `Close`.
+The kiosk maintains one long-running LLRP TCP session per configured
+reader, not a connect-per-read model. Each entry in `rfid.readers` is
+its own `impinjReader` (`internal/rfid/reader.go`) owning a session
+through a supervisor goroutine started by `Connect` and cancelled by
+`Close`; the read lock (`readMu`) is therefore per-reader, so two
+enclosures on one node can read concurrently.
 
 **Supervisor loop.** On each iteration:
 
@@ -311,8 +340,8 @@ semantics already documented in CLAUDE.md.
 
 | Subject | Payload | Reply |
 |---|---|---|
-| `<prefix>.<code>.command.cart.start` | `{user_code, door_id, command_id}` | `{success, error, data: {cart_id, user_code, door_id, reused}}` |
-| `<prefix>.<code>.command.read.trigger` | `{cart_id}` *or* `{user_code, door_id}` (+ optional `command_id`) | `{success, error, data: {cart, added_lines, observed_epcs, unresolved_epcs, skipped_cross_user_count}}` |
+| `<prefix>.<code>.command.cart.start` | `{user_code, enclosure_id, command_id}` | `{success, error, data: {cart_id, user_code, enclosure_id, reused}}` |
+| `<prefix>.<code>.command.read.trigger` | `{cart_id}` *or* `{user_code, enclosure_id}` (+ optional `command_id`) | `{success, error, data: {cart, added_lines, observed_epcs, unresolved_epcs, skipped_cross_user_count}}` |
 
 Both commands MUST reply within the 5 s window even on error —
 silence renders "kiosk offline" at the caller. To hold that contract for
@@ -326,7 +355,7 @@ and replies with an error rather than hanging the caller. The `read_window`
 
 | Subject | When | Payload |
 |---|---|---|
-| `<prefix>.<code>.event.scan.rfid.observed` | After every completed read in either mode | `{kiosk_code, location_code, cart_id, door_id, mode, observed_epcs, observed_at}` |
+| `<prefix>.<code>.event.scan.rfid.observed` | After every completed read in either mode | `{kiosk_code, location_code, cart_id, enclosure_id, mode, observed_epcs, observed_at}` |
 
 The observed-EPCs event is cheap observability — it gives the
 controller (or any downstream consumer) a stream of "what tags have
@@ -443,7 +472,7 @@ fails soft (warn + continue, like NATS unreachability), but no
 endpoints or commands consume the reader yet.
 
 **Tests.** Config validation (enabled/disabled, mode requirements,
-door_id requirement when `mode=enclosure_diff`, env overrides).
+enclosure_id requirement when `mode=enclosure_diff`, env overrides).
 Wrapper construction from a `RFIDConfig` value. No LLRP-level
 integration tests in this phase — those land with Phase 2's `ReadFor`
 implementation against the EdgeX simulator, gated on an opt-in
@@ -490,13 +519,13 @@ mutate cart, assert tickle arrives.
 
 **Scope.** Two new commands on the kiosk-side `Dispatcher`:
 
-- `cart.start`: payload `{user_code, door_id, command_id}`.
+- `cart.start`: payload `{user_code, enclosure_id, command_id}`.
   Idempotency: the cart store grows a secondary index keyed
-  `(user_code, door_id)`; a re-fire within the cart's active window
+  `(user_code, enclosure_id)`; a re-fire within the cart's active window
   (governed by `session.idle_timeout`) returns the existing cart_id
   rather than creating a new one. After commit or idle expiry, the
   next `cart.start` for the same key creates a fresh cart.
-- `read.trigger`: payload `{cart_id}` or `{user_code, door_id}`.
+- `read.trigger`: payload `{cart_id}` or `{user_code, enclosure_id}`.
   Looks up the active cart; **rejects with error if no active cart
   exists for the key.** Runs `ReadFor`, computes the diff, synthesizes
   cart lines, fires the SSE tickle. We deliberately do not start an

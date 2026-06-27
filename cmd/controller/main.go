@@ -254,6 +254,7 @@ func main() {
 		e.Router.GET("/api/controller/kiosks/heartbeats", h.HeartbeatsEndpoint(hbRegistry))
 		e.Router.GET("/api/controller/kiosks/{code}/inventory", h.InventorySnapshot(nc, hbRegistry))
 		e.Router.GET("/api/controller/kiosks/{code}/metrics", h.Metrics(nc, hbRegistry))
+		e.Router.GET("/api/controller/kiosks/{code}/config", h.Config(nc, hbRegistry))
 		e.Router.POST("/api/controller/kiosks/{code}/inventory/adjust", h.InventoryAdjust(nc, hbRegistry))
 		e.Router.POST("/api/controller/kiosks/{code}/checkouts/{source_line_id}/close", h.CheckoutClose(nc, hbRegistry))
 

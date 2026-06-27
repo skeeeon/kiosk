@@ -17,12 +17,12 @@ import (
 	"github.com/skeeeon/kiosk/internal/notifications"
 )
 
-// TestCartCommit_StampsRequestDoorID covers the manual-flow seam: the cart
-// store's Start never sets DoorID (only the RFID enclosure_diff StartByExternal
-// path does), so a badge/scan terminal supplies its door on the commit request
-// and the handler injects it into the snapshot. commit_test proves cart.DoorID
-// reaches the ledger; this proves the request body reaches cart.DoorID (trimmed).
-func TestCartCommit_StampsRequestDoorID(t *testing.T) {
+// TestCartCommit_StampsRequestTerminalID covers the manual-flow seam: the cart
+// store's Start never sets TerminalID, so a badge/scan terminal supplies its
+// terminal on the commit request and the handler injects it into the snapshot.
+// commit_test proves cart.TerminalID reaches the ledger; this proves the
+// request body reaches cart.TerminalID (trimmed).
+func TestCartCommit_StampsRequestTerminalID(t *testing.T) {
 	app := setupApp(t)
 	// commit rejects a transaction with no kiosk identity; set the process-global.
 	kioskctx.Set(kioskctx.Identity{KioskCode: "TEST", LocationCode: "T"})
@@ -68,7 +68,7 @@ func TestCartCommit_StampsRequestDoorID(t *testing.T) {
 	}, store, notifications.New(app))
 
 	req := httptest.NewRequest(http.MethodPost, "/api/kiosk/cart/commit",
-		strings.NewReader(`{"cart_id":"`+c.ID+`","door_id":"  DOOR-B  "}`))
+		strings.NewReader(`{"cart_id":"`+c.ID+`","terminal_id":"  TERM-B  "}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	e := new(core.RequestEvent)
@@ -91,7 +91,7 @@ func TestCartCommit_StampsRequestDoorID(t *testing.T) {
 		t.Fatalf("transactions: want 1, got %d", len(txs))
 	}
 	// Surrounding whitespace is trimmed by the handler before stamping.
-	if got := txs[0].GetString("door_id"); got != "DOOR-B" {
-		t.Errorf("door_id: want DOOR-B, got %q", got)
+	if got := txs[0].GetString("terminal_id"); got != "TERM-B" {
+		t.Errorf("terminal_id: want TERM-B, got %q", got)
 	}
 }

@@ -14,7 +14,6 @@ import (
 	"github.com/skeeeon/kiosk/internal/cartevents"
 	"github.com/skeeeon/kiosk/internal/config"
 	"github.com/skeeeon/kiosk/internal/notifications"
-	"github.com/skeeeon/kiosk/internal/rfid"
 	"github.com/skeeeon/kiosk/internal/scan"
 	"github.com/skeeeon/kiosk/internal/timeclock"
 )
@@ -28,12 +27,12 @@ type Handlers struct {
 	// alongside Handlers in main.go so write paths can call Tickle /
 	// Close unconditionally without a nil check.
 	CartEvents *cartevents.Broker
-	// RFID is the optional LLRP reader wrapper. nil when rfid.enabled
-	// is false or when the startup connection failed — the RFID
-	// handler short-circuits with 503 in that case. Production wiring
-	// in cmd/kiosk/main.go sets this after the reader's first
-	// successful Connect.
-	RFID rfid.Reader
+	// Readers holds one ReaderHandle per configured LLRP reader, keyed by
+	// reader_id. Empty when rfid.enabled is false. A handle's Reader is nil
+	// when that reader's startup New() failed — the RFID handlers resolve the
+	// handle and short-circuit with 503 in that case. Production wiring in
+	// cmd/kiosk/main.go populates this and Connects each reader on serve.
+	Readers map[string]*ReaderHandle
 	// StartedAt is stamped at construction (once, at boot) and used to
 	// report process uptime in the metrics snapshot. Close enough to
 	// process start for an operational gauge.

@@ -169,7 +169,7 @@ func main() {
 		}
 	}
 
-	var rfidReader rfid.Reader
+	var rfidReaders []rfid.Reader
 
 	app.OnTerminate().BindFunc(func(e *core.TerminateEvent) error {
 		if catalogWatcher != nil {
@@ -186,8 +186,8 @@ func main() {
 		if commandSub != nil {
 			_ = commandSub.Unsubscribe()
 		}
-		if rfidReader != nil {
-			_ = rfidReader.Close()
+		for _, r := range rfidReaders {
+			_ = r.Close()
 		}
 		if p := events.CurrentPublisher(); p != nil {
 			p.Close()
@@ -227,19 +227,30 @@ func main() {
 	// any gaps — the SPA's RFID button then hits 503 gracefully
 	// instead of blocking boot.
 	if cfg.RFID.Enabled {
-		r, err := rfid.New(cfg.RFID)
-		if err != nil {
-			log.Printf("rfid: %v — kiosk will continue without RFID", err)
-		} else {
-			app.OnServe().BindFunc(func(e *core.ServeEvent) error {
-				_ = r.Connect()
-				rfidReader = r
-				h.RFID = r
-				log.Printf("rfid: supervisor started for %s:%d in %s mode",
-					cfg.RFID.Reader.Host, cfg.RFID.Reader.Port, cfg.RFID.Mode)
-				return e.Next()
-			})
+		h.Readers = make(map[string]*handlers.ReaderHandle, len(cfg.RFID.Readers))
+		for id, rc := range cfg.RFID.Readers {
+			hd := &handlers.ReaderHandle{Mode: rc.Mode, EnclosureID: rc.EnclosureID}
+			if r, err := rfid.New(rc); err != nil {
+				log.Printf("rfid: reader %q: %v — continuing without it", id, err)
+			} else {
+				hd.Reader = r
+				rfidReaders = append(rfidReaders, r)
+			}
+			h.Readers[id] = hd
 		}
+		// Connect each reader's supervisor on serve — it dials in the
+		// background and retries with backoff, so ReadFor returns
+		// ErrNotConnected (503 to the SPA) during any gap rather than
+		// blocking boot.
+		app.OnServe().BindFunc(func(e *core.ServeEvent) error {
+			for id, hd := range h.Readers {
+				if hd.Reader != nil {
+					_ = hd.Reader.Connect()
+					log.Printf("rfid: supervisor started for reader %q (%s mode)", id, hd.Mode)
+				}
+			}
+			return e.Next()
+		})
 	}
 
 	// PB record hooks on item_instances: create / decommission (active flip)

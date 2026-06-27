@@ -159,7 +159,7 @@ These started as deferred roadmap items and are now live in the binary:
   observed tag into the cart through the existing add path
   (`POST /api/kiosk/cart/rfid-scan`). **enclosure_diff** is
   NATS-orchestrated: external access-control fires `cart.start`
-  with `{user_code, door_id}` (idempotent on a secondary cart-store
+  with `{user_code, enclosure_id}` (idempotent on a secondary cart-store
   index keyed by that pair), then a camera/occupancy system fires
   `read.trigger`; the kiosk runs a pure diff against expected-present
   state via `rfid.Diff` and synthesizes self-return / checkout cart
@@ -236,6 +236,25 @@ subjects are in place to make them additive rather than rewrites.
   building; letting them physically return it at a *different* building is a
   separate, harder problem (the instance row would have to move) and stays
   deferred.
+- **Asset-tracker generalization (jobsite custody + RFID topology).**
+  *Foundation built on branch `asset-tracker-foundation`, not yet merged to
+  `main`.* Generalizes the single-cabinet kiosk toward a site-scoped tool &
+  asset platform: `transactions.door_id` split into `terminal_id` (accepting
+  screen) + `enclosure_id` (cabinet); a per-node **reader map** (several
+  readers, mode per-reader, so one node hosts `counter_scan` + `enclosure_diff`
+  at once); `enclosure_diff` reads **partitioned per cabinet** via
+  `item_instances.enclosure_id` (+ an admin assignment UI); a read-only
+  `config.snapshot` command surfacing each node's reader topology on the
+  controller's Readers tab; and `counter_scan` **multi-reader selection** via a
+  `?reader=` URL param. All additive and N=1-invisible. See
+  [asset-tracker plan](asset-tracker-plan.md).
+- **Location & sightings.** *Scoped, not started.* Coarse last-seen of assets
+  via RFID/BLE gateways around a site (static → zone, roaming → GPS), carried
+  on a new lossy `sighting` NATS family (advisory, last-write-wins, outside the
+  durable stream), projected to `item_instances.last_observed_*` and mirrored
+  fleet-wide like `punch_state`. The payoff is **custody-vs-location
+  reconciliation** (out-but-not-seen, seen-off-site, …). Phased L1 (node-local)
+  → L4 (reconciliation + BLE). See [location & sightings plan](location-sightings-plan.md).
 
 Each of these can be evaluated on demand. None should be built until
 there is a concrete user asking for it.

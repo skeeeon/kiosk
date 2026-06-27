@@ -50,16 +50,22 @@ type Cart struct {
 	// foreman-return endpoint, so a stale snapshot here is at worst a UI
 	// hint that fails late, never an auth bypass.
 	UserRole string `json:"user_role"`
-	// DoorID is non-empty when the cart was started via the
+	// TerminalID is the interaction / custody-acceptance point — the
+	// screen a worker accepted the cart at (the ?terminal= URL param on a
+	// manual commit). Pure attribution, stamped onto the transaction;
+	// never an auth boundary. Empty until supplied at commit.
+	TerminalID string `json:"terminal_id,omitempty"`
+	// EnclosureID is non-empty when the cart was started via the
 	// enclosure_diff path (an external access-control event firing
-	// cart.start). Combined with UserCode it forms the secondary
-	// index that makes cart.start idempotent — re-fires within the
-	// idle window return the existing cart rather than creating a
-	// new one. Empty on counter_scan / badge-driven carts.
-	DoorID    string    `json:"door_id,omitempty"`
-	StartedAt time.Time `json:"started_at"`
-	ExpiresAt time.Time `json:"expires_at"`
-	Lines     []*Line   `json:"lines"`
+	// cart.start) — the access-controlled cabinet the cart draws from.
+	// Combined with UserCode it forms the secondary index that makes
+	// cart.start idempotent — re-fires within the idle window return the
+	// existing cart rather than creating a new one. Empty on
+	// counter_scan / badge-driven carts.
+	EnclosureID string    `json:"enclosure_id,omitempty"`
+	StartedAt   time.Time `json:"started_at"`
+	ExpiresAt   time.Time `json:"expires_at"`
+	Lines       []*Line   `json:"lines"`
 }
 
 // MaxQty caps a single cart line's quantity. Scan stacking, the +/- buttons,
@@ -94,29 +100,29 @@ type Store struct {
 	idleTimeout time.Duration
 	now         func() time.Time // injectable for tests
 	carts       map[string]*Cart
-	// byUserDoor is the secondary index that makes cart.start
+	// byUserEnclosure is the secondary index that makes cart.start
 	// idempotent for the enclosure_diff path. Key:
-	// userDoorKey(userCode, doorID). Only populated for carts
+	// userEnclosureKey(userCode, enclosureID). Only populated for carts
 	// started via StartByExternal; the regular Start path doesn't
-	// touch it because counter_scan carts have no door identity.
+	// touch it because counter_scan carts have no enclosure identity.
 	// Cleaned up in Delete and on lazy expiry through Get.
-	byUserDoor map[string]*Cart
+	byUserEnclosure map[string]*Cart
 }
 
 func NewStore(idleTimeout time.Duration) *Store {
 	return &Store{
-		idleTimeout: idleTimeout,
-		now:         time.Now,
-		carts:       make(map[string]*Cart),
-		byUserDoor:  make(map[string]*Cart),
+		idleTimeout:     idleTimeout,
+		now:             time.Now,
+		carts:           make(map[string]*Cart),
+		byUserEnclosure: make(map[string]*Cart),
 	}
 }
 
-// userDoorKey is the secondary-index key. NUL byte as a separator
-// would collide with neither a valid user code nor a door ID
+// userEnclosureKey is the secondary-index key. NUL byte as a separator
+// would collide with neither a valid user code nor an enclosure ID
 // (both come from operator-managed config).
-func userDoorKey(userCode, doorID string) string {
-	return userCode + "\x00" + doorID
+func userEnclosureKey(userCode, enclosureID string) string {
+	return userCode + "\x00" + enclosureID
 }
 
 // Start returns the user's existing non-expired cart if one exists; otherwise
@@ -156,26 +162,26 @@ func (s *Store) Start(userID, userCode, userName, userRole string) *Cart {
 
 // StartByExternal is the enclosure_diff path's cart-start entry. The
 // access-control system fires a cart.start NATS command carrying
-// (user_code, door_id); we look up an existing cart for that key and
-// return it (refreshing the role snapshot like Start does), or
-// create a new one stamped with the door_id and indexed both ways.
+// (user_code, enclosure_id); we look up an existing cart for that key
+// and return it (refreshing the role snapshot like Start does), or
+// create a new one stamped with the enclosure_id and indexed both ways.
 //
 // Idempotency: repeat fires within the idle window collapse to the
 // same cart. After commit / cancel / expiry, the next call creates a
-// fresh cart. The (userCode, doorID) key — not the cart_id — is the
-// dedup contract callers rely on, since the access-control system
+// fresh cart. The (userCode, enclosureID) key — not the cart_id — is
+// the dedup contract callers rely on, since the access-control system
 // has no way to learn the cart_id we generated on the first fire.
 //
 // `reused` tells the caller whether this was a hit or a miss in the
 // secondary index, which they can surface to NATS callers as
 // command.cart.start's `{reused: bool}`.
-func (s *Store) StartByExternal(userID, userCode, userName, userRole, doorID string) (cart *Cart, reused bool) {
+func (s *Store) StartByExternal(userID, userCode, userName, userRole, enclosureID string) (cart *Cart, reused bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	now := s.now()
-	key := userDoorKey(userCode, doorID)
-	if existing, ok := s.byUserDoor[key]; ok {
+	key := userEnclosureKey(userCode, enclosureID)
+	if existing, ok := s.byUserEnclosure[key]; ok {
 		if now.After(existing.ExpiresAt) {
 			s.removeLocked(existing.ID)
 		} else {
@@ -189,30 +195,30 @@ func (s *Store) StartByExternal(userID, userCode, userName, userRole, doorID str
 	}
 
 	c := &Cart{
-		ID:        newID(),
-		UserID:    userID,
-		UserCode:  userCode,
-		UserName:  userName,
-		UserRole:  userRole,
-		DoorID:    doorID,
-		StartedAt: now,
-		ExpiresAt: now.Add(s.idleTimeout),
-		Lines:     []*Line{},
+		ID:          newID(),
+		UserID:      userID,
+		UserCode:    userCode,
+		UserName:    userName,
+		UserRole:    userRole,
+		EnclosureID: enclosureID,
+		StartedAt:   now,
+		ExpiresAt:   now.Add(s.idleTimeout),
+		Lines:       []*Line{},
 	}
 	s.carts[c.ID] = c
-	s.byUserDoor[key] = c
+	s.byUserEnclosure[key] = c
 	return c, false
 }
 
-// GetByUserDoor returns the active cart for an (userCode, doorID)
+// GetByUserEnclosure returns the active cart for an (userCode, enclosureID)
 // key, or ErrNotFound. The read.trigger command uses this when the
 // caller doesn't carry the cart_id from the original cart.start
-// reply — e.g. a camera/occupancy system that only knows which door
-// fired.
-func (s *Store) GetByUserDoor(userCode, doorID string) (*Cart, error) {
+// reply — e.g. a camera/occupancy system that only knows which
+// enclosure fired.
+func (s *Store) GetByUserEnclosure(userCode, enclosureID string) (*Cart, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	c, ok := s.byUserDoor[userDoorKey(userCode, doorID)]
+	c, ok := s.byUserEnclosure[userEnclosureKey(userCode, enclosureID)]
 	if !ok {
 		return nil, ErrNotFound
 	}
@@ -335,7 +341,7 @@ func (s *Store) UpdateLine(lineID string, qty *int, action *string, requestMaint
 		return nil, nil, ErrLineNotFound
 	}
 	if s.now().After(c.ExpiresAt) {
-		s.removeLocked(c.ID) // also clears the byUserDoor secondary index
+		s.removeLocked(c.ID) // also clears the byUserEnclosure secondary index
 		return nil, nil, ErrNotFound
 	}
 	if qty != nil {
@@ -366,7 +372,7 @@ func (s *Store) DeleteLine(lineID string) (*Cart, error) {
 		return nil, ErrLineNotFound
 	}
 	if s.now().After(c.ExpiresAt) {
-		s.removeLocked(c.ID) // also clears the byUserDoor secondary index
+		s.removeLocked(c.ID) // also clears the byUserEnclosure secondary index
 		return nil, ErrNotFound
 	}
 	for i, l := range c.Lines {
@@ -422,12 +428,12 @@ func (s *Store) removeLocked(cartID string) {
 		return
 	}
 	delete(s.carts, cartID)
-	if c.UserCode != "" && c.DoorID != "" {
-		// Only StartByExternal-created carts have a populated DoorID,
+	if c.UserCode != "" && c.EnclosureID != "" {
+		// Only StartByExternal-created carts have a populated EnclosureID,
 		// so the secondary index only ever holds those. UserCode is
 		// part of the key; we check it defensively in case of a
 		// future refactor that strips it.
-		delete(s.byUserDoor, userDoorKey(c.UserCode, c.DoorID))
+		delete(s.byUserEnclosure, userEnclosureKey(c.UserCode, c.EnclosureID))
 	}
 }
 

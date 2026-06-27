@@ -33,6 +33,7 @@ type instanceCreateRequest struct {
 	Serial            string `json:"serial,omitempty"`
 	RFIDEPC           string `json:"rfid_epc,omitempty"`
 	Notes             string `json:"notes,omitempty"`
+	EnclosureID       string `json:"enclosure_id,omitempty"`
 }
 
 func (d *Dispatcher) handleInstanceCreate(_ context.Context, payload []byte) Reply {
@@ -65,6 +66,7 @@ func (d *Dispatcher) handleInstanceCreate(_ context.Context, payload []byte) Rep
 		Serial:            req.Serial,
 		RFIDEPC:           req.RFIDEPC,
 		Notes:             req.Notes,
+		EnclosureID:       strings.TrimSpace(req.EnclosureID),
 		Source:            events.SourceController,
 		ControllerAdminID: req.ControllerAdminID,
 		CommandID:         req.CommandID,
@@ -87,6 +89,7 @@ type instanceEditRequest struct {
 	Serial       *string `json:"serial,omitempty"`
 	RFIDEPC      *string `json:"rfid_epc,omitempty"`
 	Notes        *string `json:"notes,omitempty"`
+	EnclosureID  *string `json:"enclosure_id,omitempty"`
 }
 
 func (d *Dispatcher) handleInstanceEdit(_ context.Context, payload []byte) Reply {
@@ -98,7 +101,7 @@ func (d *Dispatcher) handleInstanceEdit(_ context.Context, payload []byte) Reply
 	if req.InstanceCode == "" {
 		return Reply{Success: false, Error: "instance_code is required"}
 	}
-	if req.Code == nil && req.Serial == nil && req.RFIDEPC == nil && req.Notes == nil {
+	if req.Code == nil && req.Serial == nil && req.RFIDEPC == nil && req.Notes == nil && req.EnclosureID == nil {
 		return Reply{Success: false, Error: "at least one field is required"}
 	}
 	result, err := instances.PerformEdit(d.app, instances.EditInput{
@@ -107,6 +110,7 @@ func (d *Dispatcher) handleInstanceEdit(_ context.Context, payload []byte) Reply
 		Serial:       req.Serial,
 		RFIDEPC:      req.RFIDEPC,
 		Notes:        req.Notes,
+		EnclosureID:  req.EnclosureID,
 	})
 	if err != nil {
 		return Reply{Success: false, Error: "edit failed: " + err.Error()}

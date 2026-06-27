@@ -7,22 +7,22 @@ import (
 )
 
 // TestStartByExternal_NewCart creates a fresh cart on first fire,
-// stamps it with the door_id, and reports reused=false.
+// stamps it with the enclosure_id, and reports reused=false.
 func TestStartByExternal_NewCart(t *testing.T) {
 	s, _ := newTestStore()
 	c, reused := s.StartByExternal("u1", "EMP-1", "Alice", "worker", "BAY-A")
 	if reused {
 		t.Errorf("first call should report reused=false")
 	}
-	if c.DoorID != "BAY-A" {
-		t.Errorf("DoorID = %q, want BAY-A", c.DoorID)
+	if c.EnclosureID != "BAY-A" {
+		t.Errorf("EnclosureID = %q, want BAY-A", c.EnclosureID)
 	}
 	if c.UserID != "u1" || c.UserCode != "EMP-1" {
 		t.Errorf("user fields not populated: %+v", c)
 	}
 }
 
-// TestStartByExternal_Idempotent: same (user_code, door_id) within
+// TestStartByExternal_Idempotent: same (user_code, enclosure_id) within
 // the idle window returns the same cart_id. This is the contract
 // callers (the access-control system firing cart.start multiple
 // times) depend on.
@@ -38,32 +38,32 @@ func TestStartByExternal_Idempotent(t *testing.T) {
 	}
 }
 
-// TestStartByExternal_DifferentDoorsAreSeparate: same user at two
-// distinct doors gets two distinct carts. This is the case Phase 4's
+// TestStartByExternal_DifferentEnclosuresAreSeparate: same user at two
+// distinct enclosures gets two distinct carts. This is the case Phase 4's
 // design contemplates explicitly — two enclosures sharing a kiosk
-// are told apart by door_id.
-func TestStartByExternal_DifferentDoorsAreSeparate(t *testing.T) {
+// are told apart by enclosure_id.
+func TestStartByExternal_DifferentEnclosuresAreSeparate(t *testing.T) {
 	s, _ := newTestStore()
 	a, _ := s.StartByExternal("u1", "EMP-1", "Alice", "worker", "BAY-A")
 	b, _ := s.StartByExternal("u1", "EMP-1", "Alice", "worker", "BAY-B")
 	if a.ID == b.ID {
-		t.Errorf("different doors should yield different carts")
+		t.Errorf("different enclosures should yield different carts")
 	}
-	if a.DoorID == b.DoorID {
-		t.Errorf("DoorIDs should be distinct: %q vs %q", a.DoorID, b.DoorID)
+	if a.EnclosureID == b.EnclosureID {
+		t.Errorf("EnclosureIDs should be distinct: %q vs %q", a.EnclosureID, b.EnclosureID)
 	}
 }
 
-// TestStartByExternal_DifferentUsersAreSeparate: same door, two
-// different workers — distinct carts. The (user_code, door_id) key
+// TestStartByExternal_DifferentUsersAreSeparate: same enclosure, two
+// different workers — distinct carts. The (user_code, enclosure_id) key
 // makes this fall out for free, but lock it in so a future refactor
-// to door-only keying is caught.
+// to enclosure-only keying is caught.
 func TestStartByExternal_DifferentUsersAreSeparate(t *testing.T) {
 	s, _ := newTestStore()
 	a, _ := s.StartByExternal("u1", "EMP-1", "Alice", "worker", "BAY-A")
 	b, _ := s.StartByExternal("u2", "EMP-2", "Bob", "worker", "BAY-A")
 	if a.ID == b.ID {
-		t.Errorf("different users at same door should yield different carts")
+		t.Errorf("different users at same enclosure should yield different carts")
 	}
 }
 
@@ -87,40 +87,40 @@ func TestStartByExternal_ExpiredRecreates(t *testing.T) {
 	}
 }
 
-// TestGetByUserDoor_HappyPath returns the cart started under the
+// TestGetByUserEnclosure_HappyPath returns the cart started under the
 // same key.
-func TestGetByUserDoor_HappyPath(t *testing.T) {
+func TestGetByUserEnclosure_HappyPath(t *testing.T) {
 	s, _ := newTestStore()
 	c, _ := s.StartByExternal("u1", "EMP-1", "Alice", "worker", "BAY-A")
-	got, err := s.GetByUserDoor("EMP-1", "BAY-A")
+	got, err := s.GetByUserEnclosure("EMP-1", "BAY-A")
 	if err != nil {
-		t.Fatalf("GetByUserDoor: %v", err)
+		t.Fatalf("GetByUserEnclosure: %v", err)
 	}
 	if got.ID != c.ID {
 		t.Errorf("got %q, want %q", got.ID, c.ID)
 	}
 }
 
-// TestGetByUserDoor_NotFound: unknown key surfaces as ErrNotFound,
+// TestGetByUserEnclosure_NotFound: unknown key surfaces as ErrNotFound,
 // which read.trigger uses to reject anonymous reads.
-func TestGetByUserDoor_NotFound(t *testing.T) {
+func TestGetByUserEnclosure_NotFound(t *testing.T) {
 	s, _ := newTestStore()
-	_, err := s.GetByUserDoor("EMP-NONE", "BAY-A")
+	_, err := s.GetByUserEnclosure("EMP-NONE", "BAY-A")
 	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("want ErrNotFound, got %v", err)
 	}
 }
 
-// TestGetByUserDoor_ExpiredReturnsNotFound and removes the row, like
+// TestGetByUserEnclosure_ExpiredReturnsNotFound and removes the row, like
 // the primary index does. This is the lazy-expiry contract.
-func TestGetByUserDoor_ExpiredReturnsNotFound(t *testing.T) {
+func TestGetByUserEnclosure_ExpiredReturnsNotFound(t *testing.T) {
 	s, now := newTestStore()
 	c, _ := s.StartByExternal("u1", "EMP-1", "Alice", "worker", "BAY-A")
 	*now = now.Add(6 * time.Minute)
-	if _, err := s.GetByUserDoor("EMP-1", "BAY-A"); !errors.Is(err, ErrNotFound) {
+	if _, err := s.GetByUserEnclosure("EMP-1", "BAY-A"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("expected ErrNotFound after expiry, got %v", err)
 	}
-	if _, exists := s.byUserDoor[userDoorKey("EMP-1", "BAY-A")]; exists {
+	if _, exists := s.byUserEnclosure[userEnclosureKey("EMP-1", "BAY-A")]; exists {
 		t.Errorf("expired cart should be evicted from secondary index")
 	}
 	if _, exists := s.carts[c.ID]; exists {
@@ -137,7 +137,7 @@ func TestDelete_CleansSecondaryIndex(t *testing.T) {
 	if err := s.Delete(c.ID); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	if _, exists := s.byUserDoor[userDoorKey("EMP-1", "BAY-A")]; exists {
+	if _, exists := s.byUserEnclosure[userEnclosureKey("EMP-1", "BAY-A")]; exists {
 		t.Errorf("Delete should remove the secondary-index entry")
 	}
 	// New StartByExternal after Delete should give a fresh cart.
@@ -151,14 +151,14 @@ func TestDelete_CleansSecondaryIndex(t *testing.T) {
 }
 
 // TestStart_DoesNotPopulateSecondaryIndex: the regular Start path
-// must not write into byUserDoor. counter_scan carts have no door
-// identity and a future read.trigger lookup against them via
-// GetByUserDoor would be a bug.
+// must not write into byUserEnclosure. counter_scan carts have no
+// enclosure identity and a future read.trigger lookup against them via
+// GetByUserEnclosure would be a bug.
 func TestStart_DoesNotPopulateSecondaryIndex(t *testing.T) {
 	s, _ := newTestStore()
 	s.Start("u1", "EMP-1", "Alice", "worker")
-	if len(s.byUserDoor) != 0 {
-		t.Errorf("Start should not touch byUserDoor; got %d entries", len(s.byUserDoor))
+	if len(s.byUserEnclosure) != 0 {
+		t.Errorf("Start should not touch byUserEnclosure; got %d entries", len(s.byUserEnclosure))
 	}
 }
 

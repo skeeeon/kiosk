@@ -117,20 +117,21 @@ func TestAggregator_ProjectTransaction_Idempotent(t *testing.T) {
 	}
 }
 
-// TestAggregator_ProjectTransaction_StampsDoorID: the optional per-door
-// attribution tag rides transaction.complete and lands on the projected
-// fleet row, so controller-side reporting/CSV keep the same fidelity as the
-// local kiosk.
-func TestAggregator_ProjectTransaction_StampsDoorID(t *testing.T) {
+// TestAggregator_ProjectTransaction_StampsAttribution: the optional terminal_id
+// (accepting screen) and enclosure_id (enclosure_diff cabinet) attribution tags
+// ride transaction.complete and land on the projected fleet row, so
+// controller-side reporting/CSV keep the same fidelity as the local kiosk.
+func TestAggregator_ProjectTransaction_StampsAttribution(t *testing.T) {
 	app := setupApp(t)
 	seedUser(t, app, "WORKER-1", "Alice")
 
 	agg := NewAggregator(app, nil, "")
 	payload := EventPayload{
-		TransactionID: "src-tx-door",
+		TransactionID: "src-tx-attr",
 		KioskCode:     "KIOSK-A",
 		LocationCode:  "WEST",
-		DoorID:        "DOOR-A",
+		TerminalID:    "TERM-A",
+		EnclosureID:   "ENC-A",
 		UserCode:      "WORKER-1",
 		StartedAt:     time.Now().Add(-1 * time.Minute),
 		CompletedAt:   time.Now(),
@@ -142,7 +143,7 @@ func TestAggregator_ProjectTransaction_StampsDoorID(t *testing.T) {
 	}
 
 	rows, err := app.FindRecordsByFilter("transactions",
-		"source_kiosk_code = 'KIOSK-A' && source_transaction_id = 'src-tx-door'",
+		"source_kiosk_code = 'KIOSK-A' && source_transaction_id = 'src-tx-attr'",
 		"", 10, 0)
 	if err != nil {
 		t.Fatalf("find: %v", err)
@@ -150,8 +151,11 @@ func TestAggregator_ProjectTransaction_StampsDoorID(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("expected 1 row, got %d", len(rows))
 	}
-	if got := rows[0].GetString("door_id"); got != "DOOR-A" {
-		t.Errorf("projected door_id: want DOOR-A, got %q", got)
+	if got := rows[0].GetString("terminal_id"); got != "TERM-A" {
+		t.Errorf("projected terminal_id: want TERM-A, got %q", got)
+	}
+	if got := rows[0].GetString("enclosure_id"); got != "ENC-A" {
+		t.Errorf("projected enclosure_id: want ENC-A, got %q", got)
 	}
 }
 

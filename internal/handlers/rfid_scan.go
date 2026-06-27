@@ -9,11 +9,13 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/pocketbase/pocketbase/core"
 
 	"github.com/skeeeon/kiosk/internal/cart"
+	"github.com/skeeeon/kiosk/internal/config"
 	"github.com/skeeeon/kiosk/internal/events"
 	"github.com/skeeeon/kiosk/internal/kioskctx"
 )
@@ -38,7 +40,7 @@ type RFIDScanResponse struct {
 // PerformRFIDScan; this method handles request-shape concerns
 // (query-string parsing, config gating, status-code mapping).
 //
-// Endpoint: POST /api/kiosk/cart/rfid-scan?cart_id=<id>
+// Endpoint: POST /api/kiosk/cart/rfid-scan?cart_id=<id>&reader=<reader_id>
 func (h *Handlers) RFIDScan(re *core.RequestEvent) error {
 	cartID := re.Request.URL.Query().Get("cart_id")
 	if cartID == "" {
@@ -48,19 +50,28 @@ func (h *Handlers) RFIDScan(re *core.RequestEvent) error {
 	if !h.Cfg.RFID.Enabled {
 		return re.NotFoundError("rfid is not enabled on this kiosk", nil)
 	}
-	if h.Cfg.RFID.Mode != "" && h.Cfg.RFID.Mode != "counter_scan" {
-		// enclosure_diff has its own NATS-driven entry; the operator
-		// shouldn't be able to fire this from the touchscreen.
+	// Reader selection: an optional ?reader=<reader_id> picks which configured
+	// reader the button fires — needed when a node hosts more than one
+	// counter_scan reader (e.g. two crib windows, each screen carrying its own
+	// ?reader=). Omitted on a single-reader node, where selection is implicit
+	// (id=""). enclosure_diff has its own NATS-driven entry keyed by enclosure,
+	// so the counter button is gated to a counter_scan reader.
+	readerID := strings.TrimSpace(re.Request.URL.Query().Get("reader"))
+	rd, ok := h.ReaderByID(readerID)
+	if !ok {
+		return re.NotFoundError("no rfid reader for this terminal — set ?reader=<id> when the node has more than one reader", nil)
+	}
+	if rd.Mode != config.RFIDModeCounterScan {
 		return re.NotFoundError("rfid scan button is only available in counter_scan mode", nil)
 	}
-	if h.RFID == nil {
+	if rd.Reader == nil {
 		return re.JSON(http.StatusServiceUnavailable, map[string]any{
 			"error": "rfid_unavailable",
 			"hint":  "reader connection was not established at startup",
 		})
 	}
 
-	resp, err := h.PerformRFIDScan(re.Request.Context(), cartID)
+	resp, err := h.PerformRFIDScan(re.Request.Context(), cartID, rd)
 	switch {
 	case err == nil:
 		return re.JSON(http.StatusOK, resp)
@@ -92,9 +103,10 @@ var errRFIDReadFailed = errors.New("rfid read failed")
 // the full EPC array for downstream observability.
 //
 // Caller (the HTTP wrapper) is responsible for the config-enabled +
-// reader-connected pre-checks; this method assumes h.RFID is non-nil
-// and uses h.Cfg.RFID.ReadWindow as the inventory-cycle duration.
-func (h *Handlers) PerformRFIDScan(ctx context.Context, cartID string) (*RFIDScanResponse, error) {
+// reader-connected pre-checks and passes the resolved reader handle; this
+// method uses rd.Reader for the read and h.Cfg.RFID.ReadWindow (shared across
+// readers) as the inventory-cycle duration.
+func (h *Handlers) PerformRFIDScan(ctx context.Context, cartID string, rd *ReaderHandle) (*RFIDScanResponse, error) {
 	// Fail fast on a stale cart before burning a 3-second read window.
 	// addCodeToCart re-resolves per EPC anyway; this just turns a
 	// stale cart_id into a clean error without the round-trip.
@@ -107,7 +119,7 @@ func (h *Handlers) PerformRFIDScan(ctx context.Context, cartID string) (*RFIDSca
 		window = 3 * time.Second
 	}
 
-	observed, err := h.RFID.ReadFor(ctx, window)
+	observed, err := rd.Reader.ReadFor(ctx, window)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", errRFIDReadFailed, err)
 	}
@@ -145,7 +157,7 @@ func (h *Handlers) PerformRFIDScan(ctx context.Context, cartID string) (*RFIDSca
 		"kiosk_code":    id.KioskCode,
 		"location_code": id.LocationCode,
 		"cart_id":       cartID,
-		"mode":          h.Cfg.RFID.Mode,
+		"mode":          rd.Mode,
 		"observed_epcs": observedStrings,
 		"observed_at":   time.Now().UTC(),
 	})

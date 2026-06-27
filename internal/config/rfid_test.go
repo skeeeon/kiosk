@@ -6,11 +6,14 @@ import (
 	"time"
 )
 
-// TestValidateRFID covers the cross-field invariants on the RFID
-// config block. The cases mirror docs/rfid.md: when disabled,
-// everything is irrelevant; when enabled, mode + reader endpoint are
-// required; enclosure_diff additionally requires door_id;
-// read_window defaults to 3s.
+// readers is a tiny helper to build the rfid.readers map in test cases.
+func readers(m map[string]RFIDReaderConfig) map[string]RFIDReaderConfig { return m }
+
+// TestValidateRFID covers the cross-field invariants on the RFID config
+// block. When disabled, everything is irrelevant; when enabled, at least one
+// reader is required and each reader needs a valid mode + endpoint;
+// enclosure_diff readers additionally require an enclosure_id; the shared
+// read_window defaults to 3s and is capped when any reader is enclosure_diff.
 func TestValidateRFID(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -20,15 +23,16 @@ func TestValidateRFID(t *testing.T) {
 	}{
 		{
 			name: "disabled — everything else ignored",
-			in:   RFIDConfig{Enabled: false, Mode: "bogus"},
+			in:   RFIDConfig{Enabled: false, Readers: readers(map[string]RFIDReaderConfig{"x": {Mode: "bogus"}})},
 		},
 		{
-			name: "enabled, counter_scan, full config — ok, no defaults applied to set fields",
+			name: "enabled, one counter reader, read_window set — preserved",
 			in: RFIDConfig{
 				Enabled:    true,
-				Mode:       RFIDModeCounterScan,
-				Reader:     RFIDReaderConfig{Host: "10.0.0.50", Port: 5084},
 				ReadWindow: Duration(5 * time.Second),
+				Readers: readers(map[string]RFIDReaderConfig{
+					"counter": {Mode: RFIDModeCounterScan, Host: "10.0.0.50", Port: 5084},
+				}),
 			},
 			wantApply: func(t *testing.T, out RFIDConfig) {
 				if out.ReadWindow.AsDuration() != 5*time.Second {
@@ -37,11 +41,12 @@ func TestValidateRFID(t *testing.T) {
 			},
 		},
 		{
-			name: "enabled, counter_scan, read_window unset — defaults to 3s",
+			name: "enabled, counter reader, read_window unset — defaults to 3s",
 			in: RFIDConfig{
 				Enabled: true,
-				Mode:    RFIDModeCounterScan,
-				Reader:  RFIDReaderConfig{Host: "10.0.0.50", Port: 5084},
+				Readers: readers(map[string]RFIDReaderConfig{
+					"counter": {Mode: RFIDModeCounterScan, Host: "10.0.0.50", Port: 5084},
+				}),
 			},
 			wantApply: func(t *testing.T, out RFIDConfig) {
 				if out.ReadWindow.AsDuration() != 3*time.Second {
@@ -50,33 +55,43 @@ func TestValidateRFID(t *testing.T) {
 			},
 		},
 		{
-			name: "enabled, enclosure_diff with door_id — ok",
+			name: "enabled, enclosure reader with enclosure_id — ok",
 			in: RFIDConfig{
 				Enabled: true,
-				Mode:    RFIDModeEnclosureDiff,
-				Reader:  RFIDReaderConfig{Host: "10.0.0.50", Port: 5084},
-				DoorID:  "BAY-A",
+				Readers: readers(map[string]RFIDReaderConfig{
+					"cabinet": {Mode: RFIDModeEnclosureDiff, Host: "h", Port: 5084, EnclosureID: "BAY-A"},
+				}),
 			},
 		},
 		{
-			name: "enclosure_diff read_window over cap — error (would blow the 5s reply window)",
+			name: "mixed counter + enclosure on one node — ok",
+			in: RFIDConfig{
+				Enabled: true,
+				Readers: readers(map[string]RFIDReaderConfig{
+					"counter": {Mode: RFIDModeCounterScan, Host: "h", Port: 5084},
+					"cabinet": {Mode: RFIDModeEnclosureDiff, Host: "h2", Port: 5084, EnclosureID: "BAY-A"},
+				}),
+			},
+		},
+		{
+			name: "enclosure read_window over cap — error",
 			in: RFIDConfig{
 				Enabled:    true,
-				Mode:       RFIDModeEnclosureDiff,
-				Reader:     RFIDReaderConfig{Host: "h", Port: 5084},
-				DoorID:     "BAY-A",
 				ReadWindow: Duration(5 * time.Second),
+				Readers: readers(map[string]RFIDReaderConfig{
+					"cabinet": {Mode: RFIDModeEnclosureDiff, Host: "h", Port: 5084, EnclosureID: "BAY-A"},
+				}),
 			},
-			wantErr: "too long for",
+			wantErr: "too long with an enclosure_diff reader",
 		},
 		{
-			name: "enclosure_diff read_window at cap — ok",
+			name: "enclosure read_window at cap — ok",
 			in: RFIDConfig{
 				Enabled:    true,
-				Mode:       RFIDModeEnclosureDiff,
-				Reader:     RFIDReaderConfig{Host: "h", Port: 5084},
-				DoorID:     "BAY-A",
 				ReadWindow: Duration(MaxEnclosureReadWindow),
+				Readers: readers(map[string]RFIDReaderConfig{
+					"cabinet": {Mode: RFIDModeEnclosureDiff, Host: "h", Port: 5084, EnclosureID: "BAY-A"},
+				}),
 			},
 			wantApply: func(t *testing.T, out RFIDConfig) {
 				if out.ReadWindow.AsDuration() != MaxEnclosureReadWindow {
@@ -85,115 +100,106 @@ func TestValidateRFID(t *testing.T) {
 			},
 		},
 		{
-			name: "counter_scan long read_window — ok (HTTP-driven, not bound by the 5s reply)",
+			name: "counter-only long read_window — ok (not capped)",
 			in: RFIDConfig{
 				Enabled:    true,
-				Mode:       RFIDModeCounterScan,
-				Reader:     RFIDReaderConfig{Host: "h", Port: 5084},
 				ReadWindow: Duration(10 * time.Second),
+				Readers: readers(map[string]RFIDReaderConfig{
+					"counter": {Mode: RFIDModeCounterScan, Host: "h", Port: 5084},
+				}),
 			},
 		},
 		{
-			name:    "enabled with no mode — error",
-			in:      RFIDConfig{Enabled: true, Reader: RFIDReaderConfig{Host: "h", Port: 5084}},
-			wantErr: "rfid.mode is required",
+			name:    "enabled with no readers — error",
+			in:      RFIDConfig{Enabled: true},
+			wantErr: "rfid.readers must have at least one entry",
 		},
 		{
-			name:    "enabled with unknown mode — error",
-			in:      RFIDConfig{Enabled: true, Mode: "bulk_scan", Reader: RFIDReaderConfig{Host: "h", Port: 5084}},
-			wantErr: `rfid.mode must be "counter_scan" or "enclosure_diff"`,
-		},
-		{
-			name:    "enabled with no host — error",
-			in:      RFIDConfig{Enabled: true, Mode: RFIDModeCounterScan, Reader: RFIDReaderConfig{Port: 5084}},
-			wantErr: "rfid.reader.host is required",
-		},
-		{
-			name:    "enabled with no port — error",
-			in:      RFIDConfig{Enabled: true, Mode: RFIDModeCounterScan, Reader: RFIDReaderConfig{Host: "h"}},
-			wantErr: "rfid.reader.port is required",
-		},
-		{
-			name: "enabled enclosure_diff without door_id — error",
+			name: "reader with no mode — error",
 			in: RFIDConfig{
 				Enabled: true,
-				Mode:    RFIDModeEnclosureDiff,
-				Reader:  RFIDReaderConfig{Host: "h", Port: 5084},
+				Readers: readers(map[string]RFIDReaderConfig{"counter": {Host: "h", Port: 5084}}),
 			},
-			wantErr: "rfid.door_id is required",
+			wantErr: "mode is required",
 		},
 		{
-			name: "counter_scan without door_id — ok (door_id is enclosure-only)",
+			name: "reader with unknown mode — error",
 			in: RFIDConfig{
 				Enabled: true,
-				Mode:    RFIDModeCounterScan,
-				Reader:  RFIDReaderConfig{Host: "h", Port: 5084},
+				Readers: readers(map[string]RFIDReaderConfig{"counter": {Mode: "bulk_scan", Host: "h", Port: 5084}}),
 			},
+			wantErr: `mode must be "counter_scan" or "enclosure_diff"`,
 		},
 		{
-			name: "antennas list — multiple ports, distinct ids and powers — ok",
+			name: "reader with no host — error",
 			in: RFIDConfig{
 				Enabled: true,
-				Mode:    RFIDModeCounterScan,
-				Reader: RFIDReaderConfig{
-					Host: "h", Port: 5084,
-					Antennas: []RFIDAntennaConfig{
+				Readers: readers(map[string]RFIDReaderConfig{"counter": {Mode: RFIDModeCounterScan, Port: 5084}}),
+			},
+			wantErr: "host is required",
+		},
+		{
+			name: "reader with no port — error",
+			in: RFIDConfig{
+				Enabled: true,
+				Readers: readers(map[string]RFIDReaderConfig{"counter": {Mode: RFIDModeCounterScan, Host: "h"}}),
+			},
+			wantErr: "port is required",
+		},
+		{
+			name: "enclosure reader without enclosure_id — error",
+			in: RFIDConfig{
+				Enabled: true,
+				Readers: readers(map[string]RFIDReaderConfig{
+					"cabinet": {Mode: RFIDModeEnclosureDiff, Host: "h", Port: 5084},
+				}),
+			},
+			wantErr: "enclosure_id is required",
+		},
+		{
+			name: "antennas — distinct ids and powers — ok",
+			in: RFIDConfig{
+				Enabled: true,
+				Readers: readers(map[string]RFIDReaderConfig{
+					"counter": {Mode: RFIDModeCounterScan, Host: "h", Port: 5084, Antennas: []RFIDAntennaConfig{
 						{ID: 1, TxPowerDBm: 25.0},
 						{ID: 3, TxPowerDBm: 20.5},
-					},
-				},
+					}},
+				}),
 			},
 		},
 		{
-			name: "antennas list — zero id — error",
+			name: "antennas — zero id — error",
 			in: RFIDConfig{
 				Enabled: true,
-				Mode:    RFIDModeCounterScan,
-				Reader: RFIDReaderConfig{
-					Host: "h", Port: 5084,
-					Antennas: []RFIDAntennaConfig{{ID: 0, TxPowerDBm: 25.0}},
-				},
+				Readers: readers(map[string]RFIDReaderConfig{
+					"counter": {Mode: RFIDModeCounterScan, Host: "h", Port: 5084, Antennas: []RFIDAntennaConfig{{ID: 0, TxPowerDBm: 25.0}}},
+				}),
 			},
-			wantErr: "rfid.reader.antennas[0].id must be >= 1",
+			wantErr: "antennas[0].id must be >= 1",
 		},
 		{
-			name: "antennas list — negative id — error",
+			name: "antennas — duplicate id — error",
 			in: RFIDConfig{
 				Enabled: true,
-				Mode:    RFIDModeCounterScan,
-				Reader: RFIDReaderConfig{
-					Host: "h", Port: 5084,
-					Antennas: []RFIDAntennaConfig{{ID: -1, TxPowerDBm: 25.0}},
-				},
-			},
-			wantErr: "rfid.reader.antennas[0].id must be >= 1",
-		},
-		{
-			name: "antennas list — duplicate id — error",
-			in: RFIDConfig{
-				Enabled: true,
-				Mode:    RFIDModeCounterScan,
-				Reader: RFIDReaderConfig{
-					Host: "h", Port: 5084,
-					Antennas: []RFIDAntennaConfig{
+				Readers: readers(map[string]RFIDReaderConfig{
+					"counter": {Mode: RFIDModeCounterScan, Host: "h", Port: 5084, Antennas: []RFIDAntennaConfig{
 						{ID: 1, TxPowerDBm: 25.0},
 						{ID: 1, TxPowerDBm: 20.0},
-					},
-				},
+					}},
+				}),
 			},
 			wantErr: "duplicate id 1",
 		},
 		{
-			name: "antennas list — non-positive tx_power_dbm — error",
+			name: "antennas — non-positive tx_power_dbm — error",
 			in: RFIDConfig{
 				Enabled: true,
-				Mode:    RFIDModeCounterScan,
-				Reader: RFIDReaderConfig{
-					Host: "h", Port: 5084,
-					Antennas: []RFIDAntennaConfig{{ID: 1, TxPowerDBm: 0}},
-				},
+				Readers: readers(map[string]RFIDReaderConfig{
+					"counter": {Mode: RFIDModeCounterScan, Host: "h", Port: 5084, Antennas: []RFIDAntennaConfig{{ID: 1, TxPowerDBm: 0}}},
+				}),
 			},
-			wantErr: "rfid.reader.antennas[0].tx_power_dbm must be > 0",
+			wantErr: "tx_power_dbm must be > 0",
 		},
 	}
 
@@ -220,10 +226,10 @@ func TestValidateRFID(t *testing.T) {
 	}
 }
 
-// TestRFIDEnvOverrides verifies KIOSK_RFID_* env vars override file
-// values. Each override is tested in isolation so a regression in one
-// override path is easy to localize. We use t.Setenv so the test
-// harness restores the prior environment automatically.
+// TestRFIDEnvOverrides verifies the top-level KIOSK_RFID_* env vars override
+// file values. Per-reader fields live in the rfid.readers map and are
+// YAML-only — there's no flat env path into a map entry — so only Enabled and
+// ReadWindow have env overrides.
 func TestRFIDEnvOverrides(t *testing.T) {
 	t.Run("KIOSK_RFID_ENABLED=true flips disabled to enabled", func(t *testing.T) {
 		c := &Config{}
@@ -234,60 +240,12 @@ func TestRFIDEnvOverrides(t *testing.T) {
 		}
 	})
 
-	t.Run("KIOSK_RFID_MODE sets mode", func(t *testing.T) {
-		c := &Config{}
-		t.Setenv("KIOSK_RFID_MODE", RFIDModeEnclosureDiff)
-		applyEnvOverrides(c)
-		if c.RFID.Mode != RFIDModeEnclosureDiff {
-			t.Errorf("expected Mode=%q, got %q", RFIDModeEnclosureDiff, c.RFID.Mode)
-		}
-	})
-
-	t.Run("KIOSK_RFID_READER_HOST sets host", func(t *testing.T) {
-		c := &Config{}
-		t.Setenv("KIOSK_RFID_READER_HOST", "192.168.1.50")
-		applyEnvOverrides(c)
-		if c.RFID.Reader.Host != "192.168.1.50" {
-			t.Errorf("expected Host=192.168.1.50, got %q", c.RFID.Reader.Host)
-		}
-	})
-
-	t.Run("KIOSK_RFID_READER_PORT sets port", func(t *testing.T) {
-		c := &Config{}
-		t.Setenv("KIOSK_RFID_READER_PORT", "5084")
-		applyEnvOverrides(c)
-		if c.RFID.Reader.Port != 5084 {
-			t.Errorf("expected Port=5084, got %d", c.RFID.Reader.Port)
-		}
-	})
-
-	t.Run("KIOSK_RFID_READER_PORT garbage is silently ignored (matches existing pattern)", func(t *testing.T) {
-		c := &Config{RFID: RFIDConfig{Reader: RFIDReaderConfig{Port: 9999}}}
-		t.Setenv("KIOSK_RFID_READER_PORT", "not-a-number")
-		applyEnvOverrides(c)
-		// Matches how KIOSK_SERVER_PORT etc. handle bad input: leave the
-		// existing value alone rather than zeroing it. Surfacing the
-		// error is config.Load's job, not applyEnvOverrides'.
-		if c.RFID.Reader.Port != 9999 {
-			t.Errorf("garbage port value should leave existing value alone, got %d", c.RFID.Reader.Port)
-		}
-	})
-
 	t.Run("KIOSK_RFID_READ_WINDOW parses durations", func(t *testing.T) {
 		c := &Config{}
 		t.Setenv("KIOSK_RFID_READ_WINDOW", "7s")
 		applyEnvOverrides(c)
 		if c.RFID.ReadWindow.AsDuration() != 7*time.Second {
 			t.Errorf("expected ReadWindow=7s, got %v", c.RFID.ReadWindow.AsDuration())
-		}
-	})
-
-	t.Run("KIOSK_RFID_DOOR_ID sets door id", func(t *testing.T) {
-		c := &Config{}
-		t.Setenv("KIOSK_RFID_DOOR_ID", "BAY-B")
-		applyEnvOverrides(c)
-		if c.RFID.DoorID != "BAY-B" {
-			t.Errorf("expected DoorID=BAY-B, got %q", c.RFID.DoorID)
 		}
 	})
 }

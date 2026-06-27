@@ -35,11 +35,11 @@ const ReadTriggerBudget = 4500 * time.Millisecond
 // cartStartRequest is the payload external systems publish on
 // <prefix>.<kiosk_code>.command.cart.start. command_id is for
 // caller-side traceability; the kiosk doesn't use it for dedup —
-// the (user_code, door_id) key in the cart store does that.
+// the (user_code, enclosure_id) key in the cart store does that.
 type cartStartRequest struct {
-	UserCode  string `json:"user_code"`
-	DoorID    string `json:"door_id"`
-	CommandID string `json:"command_id"`
+	UserCode    string `json:"user_code"`
+	EnclosureID string `json:"enclosure_id"`
+	CommandID   string `json:"command_id"`
 }
 
 // cartStartReply is the {data} payload returned to the caller. Reused
@@ -48,10 +48,10 @@ type cartStartRequest struct {
 // debugging when several access-control fires arrive in close
 // succession.
 type cartStartReply struct {
-	CartID    string `json:"cart_id"`
-	UserCode  string `json:"user_code"`
-	DoorID    string `json:"door_id"`
-	Reused    bool   `json:"reused"`
+	CartID      string `json:"cart_id"`
+	UserCode    string `json:"user_code"`
+	EnclosureID string `json:"enclosure_id"`
+	Reused      bool   `json:"reused"`
 }
 
 func (d *Dispatcher) handleCartStart(_ context.Context, payload []byte) Reply {
@@ -65,8 +65,8 @@ func (d *Dispatcher) handleCartStart(_ context.Context, payload []byte) Reply {
 	if req.UserCode == "" {
 		return Reply{Success: false, Error: "user_code is required"}
 	}
-	if req.DoorID == "" {
-		return Reply{Success: false, Error: "door_id is required"}
+	if req.EnclosureID == "" {
+		return Reply{Success: false, Error: "enclosure_id is required"}
 	}
 
 	user, err := d.app.FindFirstRecordByFilter("users",
@@ -80,7 +80,7 @@ func (d *Dispatcher) handleCartStart(_ context.Context, payload []byte) Reply {
 
 	c, reused := d.KioskHandlers.Carts.StartByExternal(
 		user.Id, user.GetString("code"), user.GetString("name"), user.GetString("role"),
-		req.DoorID,
+		req.EnclosureID,
 	)
 
 	// SSE tickle: a fresh cart needs the SPA to refetch so the cart
@@ -93,29 +93,29 @@ func (d *Dispatcher) handleCartStart(_ context.Context, payload []byte) Reply {
 	d.logger.Info("kiosk.commands.cart_start",
 		"command_id", req.CommandID,
 		"user_code", req.UserCode,
-		"door_id", req.DoorID,
+		"enclosure_id", req.EnclosureID,
 		"cart_id", c.ID,
 		"reused", reused)
 
 	return Reply{Success: true, Data: cartStartReply{
-		CartID:   c.ID,
-		UserCode: req.UserCode,
-		DoorID:   req.DoorID,
-		Reused:   reused,
+		CartID:      c.ID,
+		UserCode:    req.UserCode,
+		EnclosureID: req.EnclosureID,
+		Reused:      reused,
 	}}
 }
 
-// readTriggerRequest accepts either CartID or (UserCode + DoorID).
+// readTriggerRequest accepts either CartID or (UserCode + EnclosureID).
 // External systems will typically know one or the other depending
 // on which event fired — camera/occupancy systems may not have the
 // cart_id from the original cart.start reply but will know the
-// door, while a fully-coordinated controller might track cart_ids
+// enclosure, while a fully-coordinated controller might track cart_ids
 // directly.
 type readTriggerRequest struct {
-	CartID    string `json:"cart_id"`
-	UserCode  string `json:"user_code"`
-	DoorID    string `json:"door_id"`
-	CommandID string `json:"command_id"`
+	CartID      string `json:"cart_id"`
+	UserCode    string `json:"user_code"`
+	EnclosureID string `json:"enclosure_id"`
+	CommandID   string `json:"command_id"`
 }
 
 func (d *Dispatcher) handleReadTrigger(ctx context.Context, payload []byte) Reply {
@@ -135,7 +135,8 @@ func (d *Dispatcher) handleReadTrigger(ctx context.Context, payload []byte) Repl
 		return Reply{Success: false, Error: err.Error()}
 	}
 
-	if d.KioskHandlers.RFID == nil {
+	rd, ok := d.KioskHandlers.ReaderForEnclosure(c.EnclosureID)
+	if !ok || rd.Reader == nil {
 		return Reply{Success: false, Error: "rfid reader is not connected"}
 	}
 
@@ -145,7 +146,7 @@ func (d *Dispatcher) handleReadTrigger(ctx context.Context, payload []byte) Repl
 	ctx, cancel := context.WithTimeout(ctx, ReadTriggerBudget)
 	defer cancel()
 
-	result, err := d.KioskHandlers.PerformReadTrigger(ctx, c)
+	result, err := d.KioskHandlers.PerformReadTrigger(ctx, c, rd)
 	if err != nil {
 		return Reply{Success: false, Error: err.Error()}
 	}
@@ -153,7 +154,7 @@ func (d *Dispatcher) handleReadTrigger(ctx context.Context, payload []byte) Repl
 	d.logger.Info("kiosk.commands.read_trigger",
 		"command_id", req.CommandID,
 		"cart_id", c.ID,
-		"door_id", c.DoorID,
+		"enclosure_id", c.EnclosureID,
 		"observed", len(result.ObservedEPCs),
 		"added", len(result.AddedLines),
 		"unresolved", len(result.UnresolvedEPCs),
@@ -164,7 +165,7 @@ func (d *Dispatcher) handleReadTrigger(ctx context.Context, payload []byte) Repl
 
 // resolveTriggerCart picks the right lookup based on the payload.
 // Prefers explicit cart_id when set; falls back to (user_code,
-// door_id) otherwise. Either path that doesn't find an active cart
+// enclosure_id) otherwise. Either path that doesn't find an active cart
 // returns an error so callers don't silently start anonymous reads.
 func (d *Dispatcher) resolveTriggerCart(req readTriggerRequest) (*cart.Cart, error) {
 	if req.CartID != "" {
@@ -174,12 +175,12 @@ func (d *Dispatcher) resolveTriggerCart(req readTriggerRequest) (*cart.Cart, err
 		}
 		return c, nil
 	}
-	if req.UserCode == "" || req.DoorID == "" {
-		return nil, errors.New("either cart_id or (user_code + door_id) is required")
+	if req.UserCode == "" || req.EnclosureID == "" {
+		return nil, errors.New("either cart_id or (user_code + enclosure_id) is required")
 	}
-	c, err := d.KioskHandlers.Carts.GetByUserDoor(req.UserCode, req.DoorID)
+	c, err := d.KioskHandlers.Carts.GetByUserEnclosure(req.UserCode, req.EnclosureID)
 	if err != nil {
-		return nil, errors.New("no active cart for user_code=" + req.UserCode + " door_id=" + req.DoorID)
+		return nil, errors.New("no active cart for user_code=" + req.UserCode + " enclosure_id=" + req.EnclosureID)
 	}
 	return c, nil
 }
