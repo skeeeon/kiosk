@@ -45,6 +45,15 @@ const terminalId = computed(() => {
   return (Array.isArray(t) ? t[0] : t) || null
 })
 
+// Optional reader selection: a screen wired to a specific counter_scan reader
+// carries ?reader=<reader_id>. The scan button fires that reader instead of
+// the node's sole reader — the only setup needed when a node has more than one
+// reader (e.g. two crib windows). Absent on single-reader nodes (implicit).
+const readerId = computed(() => {
+  const r = route.query.reader
+  return (Array.isArray(r) ? r[0] : r) || null
+})
+
 const splashLogoBroken = ref(false)
 const splashLogoUrl = computed(() =>
   !splashLogoBroken.value && identity.value?.branding?.logo_url
@@ -247,8 +256,15 @@ useCartEvents(activeCartId, {
 //     diff path that the NATS-driven read.trigger normally fires
 //     when door-occupancy ends. Same backend window, same countdown
 //     style, different semantics (diff vs scan).
+// The scan button shows when the node's sole reader is counter_scan (single
+// reader, mode known from identity) OR this screen names a specific reader via
+// ?reader= (a multi-reader node, where identity's sole-reader mode is blank).
+// The server validates the named reader is actually counter_scan and 404s a
+// misconfigured screen.
 const rfidScanButtonVisible = computed(
-  () => identity.value?.rfid_enabled && identity.value?.rfid_mode === 'counter_scan',
+  () =>
+    !!identity.value?.rfid_enabled &&
+    (identity.value?.rfid_mode === 'counter_scan' || !!readerId.value),
 )
 const rfidReReadButtonVisible = computed(
   () => identity.value?.rfid_enabled && identity.value?.rfid_mode === 'enclosure_diff',
@@ -277,7 +293,7 @@ async function onRFIDScan() {
     rfidProgress.value = Math.min(1, elapsed / RFID_READ_WINDOW_MS)
   }, 50)
   try {
-    const result = await c.rfidScan()
+    const result = await c.rfidScan(readerId.value)
     const added = result.added_lines.length
     const observed = result.observed_epcs.length
     const unresolved = result.unresolved_epcs.length

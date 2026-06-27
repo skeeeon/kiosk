@@ -251,6 +251,22 @@ fallback alongside the primary NATS-driven `read.trigger`. Both
 modes share the 3-second countdown styling; the button is hidden
 entirely when RFID is disabled.
 
+**Reader selection (multi-reader nodes).** `rfid_mode` in identity is the
+*sole* reader's mode — meaningful only when the node has exactly one reader.
+A node with more than one reader (e.g. two crib windows) wires each
+touchscreen to its reader with a `?reader=<reader_id>` URL param, alongside
+the existing `?terminal=` attribution param. The "RFID scan" button then
+posts `POST /api/kiosk/cart/rfid-scan?cart_id=…&reader=<id>` and the kiosk
+fires exactly that reader (`Handlers.ReaderByID`). With one reader the param
+is omitted and selection is implicit — N=1 needs no URL params at all. The
+button shows when the sole reader is `counter_scan` *or* a `?reader=` is
+present; the server validates the named reader is actually `counter_scan` and
+404s a misconfigured screen. (The `enclosure_diff` "Re-read" button needs no
+`?reader=` — it resolves the reader from the cart's `enclosure_id` via
+`ReaderForEnclosure`. A manual re-read button at a node that mixes
+`counter_scan` + `enclosure_diff` readers is a known gap — the automatic
+`read.trigger` flow is unaffected — deferred to Phase 5 hardening.)
+
 ## Reader lifecycle
 
 The kiosk maintains one long-running LLRP TCP session per configured

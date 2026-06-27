@@ -9,11 +9,13 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/pocketbase/pocketbase/core"
 
 	"github.com/skeeeon/kiosk/internal/cart"
+	"github.com/skeeeon/kiosk/internal/config"
 	"github.com/skeeeon/kiosk/internal/events"
 	"github.com/skeeeon/kiosk/internal/kioskctx"
 )
@@ -38,7 +40,7 @@ type RFIDScanResponse struct {
 // PerformRFIDScan; this method handles request-shape concerns
 // (query-string parsing, config gating, status-code mapping).
 //
-// Endpoint: POST /api/kiosk/cart/rfid-scan?cart_id=<id>
+// Endpoint: POST /api/kiosk/cart/rfid-scan?cart_id=<id>&reader=<reader_id>
 func (h *Handlers) RFIDScan(re *core.RequestEvent) error {
 	cartID := re.Request.URL.Query().Get("cart_id")
 	if cartID == "" {
@@ -48,12 +50,18 @@ func (h *Handlers) RFIDScan(re *core.RequestEvent) error {
 	if !h.Cfg.RFID.Enabled {
 		return re.NotFoundError("rfid is not enabled on this kiosk", nil)
 	}
-	// Phase 2: single-reader selection is implicit (id=""); per-terminal
-	// reader selection via a URL param arrives with the terminal work.
-	// enclosure_diff has its own NATS-driven entry, so the counter button
-	// is gated to a counter_scan reader.
-	rd, ok := h.ReaderByID("")
-	if !ok || rd.Mode != "counter_scan" {
+	// Reader selection: an optional ?reader=<reader_id> picks which configured
+	// reader the button fires — needed when a node hosts more than one
+	// counter_scan reader (e.g. two crib windows, each screen carrying its own
+	// ?reader=). Omitted on a single-reader node, where selection is implicit
+	// (id=""). enclosure_diff has its own NATS-driven entry keyed by enclosure,
+	// so the counter button is gated to a counter_scan reader.
+	readerID := strings.TrimSpace(re.Request.URL.Query().Get("reader"))
+	rd, ok := h.ReaderByID(readerID)
+	if !ok {
+		return re.NotFoundError("no rfid reader for this terminal — set ?reader=<id> when the node has more than one reader", nil)
+	}
+	if rd.Mode != config.RFIDModeCounterScan {
 		return re.NotFoundError("rfid scan button is only available in counter_scan mode", nil)
 	}
 	if rd.Reader == nil {

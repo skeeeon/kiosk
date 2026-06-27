@@ -125,12 +125,24 @@ empty — unchanged.
   each reader's mode / enclosure / endpoint / antenna-count + live connected status. Edited
   locally in the kiosk's YAML; the tab is observability only.
 
-### Phase 3 — `counter_scan` multi-reader + terminals first-class  *(additive)*
+### Phase 3 — `counter_scan` multi-reader + terminals first-class  *(additive)* — **DONE**
 
-- Terminal identity from URL param; node config binds terminal → enclosure/reader/mode.
-  Handler fires `h.Readers[reader_id]`. Zero-config variant: URL carries `reader` directly.
-- Enclosure_diff accept now stamps `terminal_id` (the accepting door's screen).
-- At N=1, no param needed (implicit).
+- **Reader selection via URL param (zero-config variant chosen).** `RFIDScan` reads
+  `?reader=<reader_id>` and fires `h.ReaderByID(readerID)`; the SPA threads it from
+  `?reader=` → `useCart.rfidScan(readerId)` → the endpoint query string. At N=1 the param is
+  omitted and the sole reader resolves implicitly — **N=1 needs no URL params**. Button shows
+  when the sole reader is `counter_scan` *or* a `?reader=` is present; the server validates the
+  named reader's mode and 404s a misconfig. Covered by `TestReaderByID_*`.
+- **The `terminals:` config map was deliberately NOT built** (grug): binding terminal → reader
+  in config is pure convenience over carrying `?reader=` directly, and adds a whole config
+  schema + validation. The zero-config URL variant delivers the capability with no new config.
+  Revisit only if a real deployment wants the indirection.
+- **Enclosure_diff accept already stamps `terminal_id`** — Phase 1's commit plumbing does it:
+  the confirm screen carries `?terminal=`, `CartCommit` stamps it, and the cart's `enclosure_id`
+  (from `StartByExternal`) rides alongside. No new code. Both columns land per D5.
+- **Known gap → Phase 5:** the *manual* "Re-read" button at a node mixing `counter_scan` +
+  `enclosure_diff` readers (sole-reader `rfid_mode` is blank there, so the button hides). The
+  automatic NATS `read.trigger` flow is unaffected; mixed nodes are rare.
 
 ### Phase 4 — `enclosure_diff` partition  *(additive — the capability)* — **DONE**
 
@@ -163,6 +175,12 @@ empty — unchanged.
 - Verify the cart store handles N concurrent terminals (already mutex-guarded + keyed by
   `cart_id`, likely fine) and scrub any single-active-user assumptions in SPA/session.
   Confirm the accept-cart UI works at a per-door terminal. Verify, don't redesign.
+- **Mixed-node manual "Re-read" button** (carried from Phase 3): at a node hosting both
+  `counter_scan` and `enclosure_diff` readers, identity's sole-reader `rfid_mode` is blank, so
+  the `enclosure_diff` manual Re-read button hides. The automatic NATS `read.trigger` flow
+  still works. Fix when needed by gating Re-read on the active cart carrying an `enclosure_id`
+  (a server-started enclosure_diff cart) rather than on `rfid_mode` — drives the button off
+  cart state instead of node-global mode.
 
 ## Deferred (shaped-for, not in this plan)
 
