@@ -1,12 +1,14 @@
 package controller
 
 import (
+	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/pocketbase/pocketbase/core"
 
 	"github.com/skeeeon/kiosk/internal/ledger"
+	"github.com/skeeeon/kiosk/internal/notifications"
 	"github.com/skeeeon/kiosk/internal/reconcile"
 )
 
@@ -25,12 +27,28 @@ func (h *Handlers) Reconciliation(re *core.RequestEvent) error {
 		return err
 	}
 	now := time.Now().UTC()
+	disc, staleHrs, err := h.computeReconciliation(now)
+	if err != nil {
+		return re.InternalServerError("reconcile", err)
+	}
+	return re.JSON(http.StatusOK, map[string]any{
+		"discrepancies":   disc,
+		"generated_at":    now,
+		"stale_after_hrs": staleHrs,
+	})
+}
 
+// computeReconciliation gathers fleet-wide location (the site-wide
+// instance_location view) and custody (replaying each kiosk's projected ledger)
+// and runs the pure reconcile join. Shared by the HTTP endpoint and the
+// scheduled digest runner so the on-demand view and the emailed report can't
+// diverge. Returns the discrepancies and the configured stale threshold (hrs).
+func (h *Handlers) computeReconciliation(now time.Time) ([]reconcile.Discrepancy, float64, error) {
 	// Location: the whole site-wide view. Also build a (kiosk,instance_id) →
 	// display-meta map so custody rows can show a code/name.
 	locRows, err := h.App.FindRecordsByFilter("instance_location", "", "", 0, 0)
 	if err != nil {
-		return re.InternalServerError("load instance_location", err)
+		return nil, 0, fmt.Errorf("load instance_location: %w", err)
 	}
 	type meta struct{ code, name string }
 	metaByKey := make(map[string]meta, len(locRows))
@@ -53,7 +71,7 @@ func (h *Handlers) Reconciliation(re *core.RequestEvent) error {
 	// Custody: replay each kiosk's projected ledger for its open serialized rows.
 	kioskRecs, err := h.App.FindRecordsByFilter("kiosks", "", "kiosk_code", 0, 0)
 	if err != nil {
-		return re.InternalServerError("load kiosks", err)
+		return nil, 0, fmt.Errorf("load kiosks: %w", err)
 	}
 	var custody []reconcile.CustodyState
 	userCache := map[string]string{}
@@ -64,7 +82,7 @@ func (h *Handlers) Reconciliation(re *core.RequestEvent) error {
 		}
 		rows, err := ledger.ReplayOpenRows(h.App, code)
 		if err != nil {
-			return re.InternalServerError("replay ledger for "+code, err)
+			return nil, 0, fmt.Errorf("replay ledger for %s: %w", code, err)
 		}
 		for _, row := range rows {
 			if row.ItemInstance == "" {
@@ -93,11 +111,28 @@ func (h *Handlers) Reconciliation(re *core.RequestEvent) error {
 		StaleAfter:   h.Cfg.Location.StaleAfter.AsDuration(),
 		CustodyZones: reconcile.CustodyZoneSet(h.Cfg.Location.CustodyZones),
 	}
-	disc := reconcile.Reconcile(custody, location, cfg, now)
+	return reconcile.Reconcile(custody, location, cfg, now), cfg.StaleAfter.Hours(), nil
+}
 
-	return re.JSON(http.StatusOK, map[string]any{
-		"discrepancies":   disc,
-		"generated_at":    now,
-		"stale_after_hrs": cfg.StaleAfter.Hours(),
-	})
+// ReconciliationDigestRunner is the controller's override for the scheduler's
+// "reconciliation" report (wired in cmd/controller/main.go via
+// scheduler.RegisterRunner). Unlike the maintenance/open-checkouts overrides it
+// needs no NATS fan-out: the controller's reconciliation reads its own DB (the
+// projected ledger + instance_location), so it just reuses computeReconciliation.
+//
+// computeReconciliation is whole-fleet, so we deliberately do NOT honor the
+// row's kiosk_code — leaving Kiosk.Code empty keeps the subject honest (the
+// fleet-wide convention, same as a kiosk_code-less maintenance digest) rather
+// than falsely scoping it; per-kiosk reconciliation scoping is deferred. Each
+// row still carries its own kiosk via the body's "@ <code>" annotation.
+func (h *Handlers) ReconciliationDigestRunner() func(core.App, *core.Record) (string, any, error) {
+	return func(_ core.App, _ *core.Record) (string, any, error) {
+		now := time.Now().UTC()
+		disc, staleHrs, err := h.computeReconciliation(now)
+		if err != nil {
+			return "", nil, err
+		}
+		return notifications.EventTypeReconciliationDigest,
+			notifications.BuildReconciliationDigest(notifications.KioskInfo{}, disc, staleHrs, now), nil
+	}
 }

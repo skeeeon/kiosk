@@ -605,6 +605,10 @@ func (a *Aggregator) upsertInstanceEPCIndex(p EventPayload) {
 	rec.Set("instance_id", p.InstanceID)
 	rec.Set("instance_code", p.InstanceCode)
 	rec.Set("kiosk_code", p.KioskCode)
+	// Item identity rides the same payload (the lifecycle event carries it);
+	// stamping it here lets the fleet location report name the seen unit.
+	rec.Set("item_code", p.ItemCode)
+	rec.Set("item_name", p.ItemName)
 	if err := a.app.Save(rec); err != nil {
 		if isUniqueViolation(err) {
 			return // concurrent insert won the race; the row exists, good enough

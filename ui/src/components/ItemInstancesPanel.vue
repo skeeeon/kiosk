@@ -12,6 +12,7 @@
 import { computed, ref, watch } from 'vue'
 import { pb } from '../lib/pb'
 import { useToast } from '../composables/useToast'
+import { useKioskIdentity } from '../composables/useKioskIdentity'
 import type { ItemInstance } from '../types'
 import {
   instanceActions,
@@ -24,6 +25,12 @@ import {
 const props = defineProps<{ itemId: string }>()
 
 const toast = useToast()
+const { identity } = useKioskIdentity()
+
+// Cabinets this node's enclosure_diff readers cover — suggested when assigning
+// a unit's enclosure, so it isn't typo'd into a cabinet no reader reads. Empty
+// on nodes without enclosure_diff readers (then it's a plain free-text field).
+const enclosureOptions = computed(() => identity.value?.rfid_enclosure_ids ?? [])
 
 interface InstanceRow extends ItemInstance {
   out: boolean // true when at least one open_checkouts row references this instance
@@ -179,6 +186,10 @@ function relativeAge(iso: string): string {
       {{ error }}
     </p>
 
+    <datalist id="instance-enclosure-options">
+      <option v-for="e in enclosureOptions" :key="e" :value="e" />
+    </datalist>
+
     <table class="w-full text-left text-xs">
       <thead class="text-slate-500">
         <tr>
@@ -261,7 +272,7 @@ function relativeAge(iso: string): string {
               <input v-model="editingDraft!.rfid_epc" type="text" class="w-full rounded bg-slate-800 border border-slate-700 px-2 py-1 text-sm" />
             </td>
             <td class="px-2 py-2">
-              <input v-model="editingDraft!.enclosure_id" type="text" placeholder="cabinet" class="w-full rounded bg-slate-800 border border-slate-700 px-2 py-1 text-sm" />
+              <input v-model="editingDraft!.enclosure_id" type="text" list="instance-enclosure-options" placeholder="cabinet" class="w-full rounded bg-slate-800 border border-slate-700 px-2 py-1 text-sm" />
             </td>
             <td class="px-2 py-2 text-slate-500 text-[10px]" :colspan="hasLastSeen ? 3 : 2">
               Status changes via the row actions.
@@ -297,7 +308,7 @@ function relativeAge(iso: string): string {
             <input v-model="draft.rfid_epc" type="text" class="w-full rounded bg-slate-800 border border-slate-700 px-2 py-1 text-sm" />
           </td>
           <td class="px-2 py-2">
-            <input v-model="draft.enclosure_id" type="text" placeholder="cabinet" class="w-full rounded bg-slate-800 border border-slate-700 px-2 py-1 text-sm" />
+            <input v-model="draft.enclosure_id" type="text" list="instance-enclosure-options" placeholder="cabinet" class="w-full rounded bg-slate-800 border border-slate-700 px-2 py-1 text-sm" />
           </td>
           <td class="px-2 py-2 text-slate-400 text-[10px]" :colspan="hasLastSeen ? 3 : 2">new — in service</td>
           <td class="px-2 py-2 text-right whitespace-nowrap">

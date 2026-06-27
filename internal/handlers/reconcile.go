@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
 	"time"
 
@@ -8,6 +9,7 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 
 	"github.com/skeeeon/kiosk/internal/kioskctx"
+	"github.com/skeeeon/kiosk/internal/notifications"
 	"github.com/skeeeon/kiosk/internal/reconcile"
 )
 
@@ -22,30 +24,58 @@ func (h *Handlers) Reconciliation(re *core.RequestEvent) error {
 	if err := h.requireAdmin(re); err != nil {
 		return err
 	}
-
 	now := time.Now().UTC()
-	kioskCode := kioskctx.Get().KioskCode
+	disc, staleHrs, err := h.computeReconciliation(now)
+	if err != nil {
+		return re.InternalServerError("reconcile", err)
+	}
+	return re.JSON(http.StatusOK, map[string]any{
+		"discrepancies":   disc,
+		"generated_at":    now,
+		"stale_after_hrs": staleHrs,
+	})
+}
 
+// computeReconciliation gathers this node's custody (open_checkouts) and
+// location (item_instances.last_observed_*) and runs the pure reconcile join.
+// Shared by the HTTP endpoint and the scheduled digest runner so the on-demand
+// view and the emailed report can't diverge. Returns the discrepancies and the
+// configured stale threshold in hours (for the report header).
+func (h *Handlers) computeReconciliation(now time.Time) ([]reconcile.Discrepancy, float64, error) {
+	kioskCode := kioskctx.Get().KioskCode
 	custody, err := h.localCustodyStates(kioskCode)
 	if err != nil {
-		return re.InternalServerError("load custody", err)
+		return nil, 0, fmt.Errorf("load custody: %w", err)
 	}
 	location, err := h.localLocationStates(kioskCode)
 	if err != nil {
-		return re.InternalServerError("load location", err)
+		return nil, 0, fmt.Errorf("load location: %w", err)
 	}
-
 	cfg := reconcile.Config{
 		StaleAfter:   h.Cfg.Location.StaleAfter.AsDuration(),
 		CustodyZones: reconcile.CustodyZoneSet(h.Cfg.CustodyZoneSet()),
 	}
-	disc := reconcile.Reconcile(custody, location, cfg, now)
+	return reconcile.Reconcile(custody, location, cfg, now), cfg.StaleAfter.Hours(), nil
+}
 
-	return re.JSON(http.StatusOK, map[string]any{
-		"discrepancies":   disc,
-		"generated_at":    now,
-		"stale_after_hrs": cfg.StaleAfter.Hours(),
-	})
+// ReconciliationDigestRunner is the STANDALONE reconciliation-digest runner,
+// registered from cmd/kiosk via scheduler.RegisterRunner("reconciliation", …).
+// It can't be a bare scheduler runner because it needs config (stale threshold
+// + custody zones), which the (app, row) signature can't carry — so it's a
+// handler-method closure capturing h, the same pattern as the controller's
+// MaintenanceDigestRunner. The controller overrides it with a fleet runner.
+func (h *Handlers) ReconciliationDigestRunner() func(core.App, *core.Record) (string, any, error) {
+	return func(_ core.App, _ *core.Record) (string, any, error) {
+		now := time.Now().UTC()
+		disc, staleHrs, err := h.computeReconciliation(now)
+		if err != nil {
+			return "", nil, err
+		}
+		id := kioskctx.Get()
+		kiosk := notifications.KioskInfo{Code: id.KioskCode, LocationCode: id.LocationCode}
+		return notifications.EventTypeReconciliationDigest,
+			notifications.BuildReconciliationDigest(kiosk, disc, staleHrs, now), nil
+	}
 }
 
 // localCustodyStates reads the live open_checkouts view for serialized units

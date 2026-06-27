@@ -187,6 +187,7 @@ function onSubmitAndAdd() {
             <option value="open_checkouts">Currently checked out</option>
             <option value="daily_activity">Daily activity</option>
             <option value="maintenance">Items in maintenance</option>
+            <option value="reconciliation">Reconciliation (custody vs location)</option>
             <option value="timeclock">Timeclock</option>
             <option value="timeclock_self">Timeclock (per worker)</option>
           </select>

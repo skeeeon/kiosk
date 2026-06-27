@@ -52,6 +52,12 @@ type identityPayload struct {
 	// is wired with the terminal work. The SPA gates the counter_scan button
 	// on it.
 	RFIDMode string `json:"rfid_mode,omitempty"`
+	// RFIDEnclosureIDs are the distinct cabinets this node's enclosure_diff
+	// readers cover (cfg.RFID.EnclosureIDs). The admin SPA offers them as
+	// suggestions when assigning item_instances.enclosure_id, so a unit isn't
+	// typo'd into a cabinet no reader reads. Empty/absent on nodes without
+	// enclosure_diff readers — the SPA then shows a plain free-text field.
+	RFIDEnclosureIDs []string `json:"rfid_enclosure_ids,omitempty"`
 	// Timeclock flags mirror cfg.Timeclock. Enabled gates the splash-screen
 	// Time clock button + admin tab; the interlock flags let the SPA shape
 	// copy (e.g. warn that clock-out is blocked by open tools) without
@@ -82,6 +88,7 @@ func (h *Handlers) Identity(re *core.RequestEvent) error {
 		Managed:                 h.Cfg.Controller.Enabled,
 		RFIDEnabled:             h.Cfg.RFID.Enabled,
 		RFIDMode:                h.Cfg.RFID.SoleReaderMode(),
+		RFIDEnclosureIDs:        h.Cfg.RFID.EnclosureIDs(),
 		TimeclockEnabled:        h.Cfg.Timeclock.Enabled,
 		TimeclockRequireClockIn: h.Cfg.Timeclock.Enabled && h.Cfg.Timeclock.RequireClockInForCheckout,
 		TimeclockBlockClockOut:  h.Cfg.Timeclock.Enabled && h.Cfg.Timeclock.BlockClockOutWithOpenCheckouts,

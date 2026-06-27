@@ -208,6 +208,13 @@ func main() {
 		// heartbeat registry, same as the maintenance override.
 		scheduler.RegisterRunner("open_checkouts", h.OpenCheckoutsDigestRunner(nc, hbRegistry))
 
+		// Override the standalone reconciliation digest with the controller's
+		// fleet compute. Unlike the two overrides above this needs no NATS
+		// fan-out — the controller's reconciliation reads its own DB (projected
+		// ledger + instance_location), so the runner just reuses
+		// computeReconciliation. Registered here for symmetry / fire-time resolve.
+		scheduler.RegisterRunner("reconciliation", h.ReconciliationDigestRunner())
+
 		app.OnTerminate().BindFunc(func(te *core.TerminateEvent) error {
 			agg.Stop()
 			if hbSub != nil {
@@ -265,6 +272,7 @@ func main() {
 		// the SPA's source of truth for the online/stale/offline badge; the
 		// inventory endpoints proxy controller→kiosk commands over NATS.
 		e.Router.GET("/api/controller/reconciliation", h.Reconciliation)
+		e.Router.GET("/api/controller/locations", h.Locations)
 		e.Router.GET("/api/controller/kiosks/heartbeats", h.HeartbeatsEndpoint(hbRegistry))
 		e.Router.GET("/api/controller/kiosks/{code}/inventory", h.InventorySnapshot(nc, hbRegistry))
 		e.Router.GET("/api/controller/kiosks/{code}/metrics", h.Metrics(nc, hbRegistry))

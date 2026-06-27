@@ -318,6 +318,11 @@ func main() {
 	// detour goes away. The kiosk's SPA hides the view in managed mode
 	// (see AdminScheduledReportsView's role gate).
 	if !cfg.Controller.Enabled {
+		// The reconciliation digest needs config (stale threshold + custody
+		// zones), which the scheduler's (app, row) runner signature can't carry,
+		// so it's a handler-method closure registered here — same pattern the
+		// controller uses for its maintenance/open-checkouts overrides.
+		scheduler.RegisterRunner("reconciliation", h.ReconciliationDigestRunner())
 		scheduler.BindRecordHooks(app, notifier.SendTo)
 		app.OnServe().BindFunc(func(e *core.ServeEvent) error {
 			scheduler.RegisterEnabled(app, notifier.SendTo)
@@ -367,6 +372,7 @@ func main() {
 		e.Router.GET("/api/kiosk/integrity", h.Integrity)
 		e.Router.POST("/api/kiosk/integrity/rebuild", h.RebuildOpenCheckouts)
 		e.Router.GET("/api/kiosk/reconciliation", h.Reconciliation)
+		e.Router.GET("/api/kiosk/locations", h.Locations)
 		e.Router.GET("/api/kiosk/metrics", h.Metrics)
 		e.Router.GET("/api/kiosk/reports/open-checkouts", h.ReportOpenCheckouts)
 		e.Router.GET("/api/kiosk/reports/open-checkouts.csv", h.ReportOpenCheckoutsCSV)

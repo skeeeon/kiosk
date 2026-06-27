@@ -20,7 +20,12 @@ const (
 	EventTypeOpenChecksDigest   = "digest.open_checkouts"
 	EventTypeDailyActivity      = "digest.daily_activity"
 	EventTypeMaintenanceDigest  = "digest.maintenance"
-	EventTypeTimeclockDigest    = "digest.timeclock"
+	// EventTypeReconciliationDigest is the scheduled custody-vs-location report
+	// (docs/location-sightings-plan.md, L4): a periodic push of the same
+	// discrepancies the Reconciliation view shows on demand. Standalone reads
+	// local custody+location; the controller reuses its fleet compute.
+	EventTypeReconciliationDigest = "digest.reconciliation"
+	EventTypeTimeclockDigest      = "digest.timeclock"
 	// EventTypeTimeclockSelfDigest is the per-worker timesheet digest. Unlike
 	// EventTypeTimeclockDigest (one admin email listing every worker), this is
 	// fanned out one private email per worker by the scheduler — see
@@ -130,6 +135,24 @@ Could not be reached, excluded from this digest: {{range .UnavailableKiosks}}{{.
 {{end}}This is an automated digest. Adjust its schedule or recipients in the kiosk admin SPA.
 `
 
+// DefaultReconciliationDigestSubject and DefaultReconciliationDigestBody render
+// against ReconciliationDigestContext (see internal/notifications/context.go).
+// The scheduled report lists every custody-vs-location discrepancy — standalone
+// reads its own data, the controller its fleet projection. Empty renders the
+// "nothing to reconcile" branch, same pattern as the other digests. Advisory:
+// each row is a hint to investigate, never an action.
+const DefaultReconciliationDigestSubject = `Reconciliation digest from {{.Kiosk.Code}} — {{.RowsCount}} flagged`
+
+const DefaultReconciliationDigestBody = `Custody-vs-location discrepancies as of {{formatTime .GeneratedAt}}{{if .Kiosk.Code}} at kiosk {{.Kiosk.Code}}{{end}}:
+
+{{if eq .RowsCount 0}}Nothing to reconcile — custody and location agree (or no location data has been reported yet).
+{{else}}{{range .Rows}}- [{{.KindLabel}}] unit {{.InstanceCode}}{{if .ItemName}} ({{.ItemName}}){{end}}{{if .KioskCode}} @ {{.KioskCode}}{{end}}{{if .Holder}} — held by {{.Holder}}{{end}}{{if .Zone}} — last seen {{.Zone}}{{end}}
+{{end}}
+Summary: {{.NotTakenCount}} likely-not-taken, {{.StaleCount}} possibly-lost, {{.UnaccountedCount}} unaccounted.
+{{end}}Each row is advisory — a hint to investigate, never an automatic action. Stale threshold: {{.StaleAfterHrs}}h.
+This is an automated digest. Adjust its schedule or recipients in the admin SPA.
+`
+
 // DefaultTimeclockDigestSubject and DefaultTimeclockDigestBody render
 // against TimeclockDigestContext (see internal/notifications/context.go).
 // Totals are display approximations from punch pairing — the raw-punch CSV
@@ -189,6 +212,8 @@ func Defaults(eventType string) (subject, body string, ok bool) {
 		return DefaultDailyActivitySubject, DefaultDailyActivityBody, true
 	case EventTypeMaintenanceDigest:
 		return DefaultMaintenanceDigestSubject, DefaultMaintenanceDigestBody, true
+	case EventTypeReconciliationDigest:
+		return DefaultReconciliationDigestSubject, DefaultReconciliationDigestBody, true
 	case EventTypeTimeclockDigest:
 		return DefaultTimeclockDigestSubject, DefaultTimeclockDigestBody, true
 	case EventTypeTimeclockSelfDigest:
@@ -212,6 +237,8 @@ func DefaultName(eventType string) string {
 		return "Daily activity digest"
 	case EventTypeMaintenanceDigest:
 		return "Maintenance digest"
+	case EventTypeReconciliationDigest:
+		return "Reconciliation digest"
 	case EventTypeTimeclockDigest:
 		return "Timeclock digest"
 	case EventTypeTimeclockSelfDigest:
@@ -231,6 +258,7 @@ func SeededEventTypes() []string {
 		EventTypeOpenChecksDigest,
 		EventTypeDailyActivity,
 		EventTypeMaintenanceDigest,
+		EventTypeReconciliationDigest,
 		EventTypeTimeclockDigest,
 		EventTypeTimeclockSelfDigest,
 	}
@@ -278,6 +306,8 @@ func DefaultRecipients(eventType string) Recipients {
 	case EventTypeDailyActivity:
 		return Recipients{AllAdmins: true, Extras: []string{}}
 	case EventTypeMaintenanceDigest:
+		return Recipients{AllAdmins: true, Extras: []string{}}
+	case EventTypeReconciliationDigest:
 		return Recipients{AllAdmins: true, Extras: []string{}}
 	case EventTypeTimeclockDigest:
 		return Recipients{AllAdmins: true, Extras: []string{}}

@@ -130,7 +130,43 @@ async function loadSnapshot() {
   }
 }
 
-watch(() => props.kioskCode, (c) => { if (c) void loadSnapshot() }, { immediate: true })
+// Enclosure suggestions come from the kiosk's actual reader topology
+// (config.snapshot), so an admin assigns a unit only to a cabinet a reader
+// reads. Best-effort: if the kiosk is offline / config unavailable, we just
+// show a plain free-text field (no suggestions) rather than blocking edits.
+const enclosureOptions = ref<string[]>([])
+async function loadEnclosureOptions() {
+  if (!props.kioskCode) return
+  try {
+    const cfg = await api.get<{ readers?: { mode: string; enclosure_id?: string }[] }>(
+      `/api/controller/kiosks/${encodeURIComponent(props.kioskCode)}/config`,
+    )
+    const set = new Set<string>()
+    for (const r of cfg.readers ?? []) {
+      if (r.mode === 'enclosure_diff' && r.enclosure_id) set.add(r.enclosure_id)
+    }
+    enclosureOptions.value = [...set].sort()
+  } catch {
+    enclosureOptions.value = []
+  }
+}
+
+// Flag a value that matches no reader's cabinet — likely a typo that would
+// silently drop the unit from that cabinet's enclosure_diff set. Advisory only
+// (we still allow saving: a cabinet may be configured before its reader is).
+const enclosureUnknown = computed(
+  () =>
+    !!form.value.enclosure_id.trim() &&
+    enclosureOptions.value.length > 0 &&
+    !enclosureOptions.value.includes(form.value.enclosure_id.trim()),
+)
+
+watch(() => props.kioskCode, (c) => {
+  if (c) {
+    void loadSnapshot()
+    void loadEnclosureOptions()
+  }
+}, { immediate: true })
 
 function openCreate() {
   form.value = {
@@ -487,10 +523,18 @@ function relativeAge(iso: string): string {
           <input
             v-model="form.enclosure_id"
             type="text"
+            list="kiosk-enclosure-options"
             placeholder="cabinet id — leave blank for counter/crib"
             class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 font-mono"
           />
-          <span class="text-xs text-slate-500">
+          <datalist id="kiosk-enclosure-options">
+            <option v-for="e in enclosureOptions" :key="e" :value="e" />
+          </datalist>
+          <span v-if="enclosureUnknown" class="text-xs text-amber-400">
+            No reader on this kiosk covers “{{ form.enclosure_id.trim() }}” — the unit
+            won't be diffed in any cabinet until a reader is configured for it.
+          </span>
+          <span v-else class="text-xs text-slate-500">
             The access-controlled cabinet this unit lives in. Only matters when
             the kiosk hosts more than one cabinet.
           </span>

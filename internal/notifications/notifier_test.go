@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/skeeeon/kiosk/internal/reconcile"
 )
 
 // TestDefaultsRenderAgainstReceiptContext is the regression test that
@@ -252,6 +254,61 @@ func TestDefaultsRenderAgainstDailyActivityContext(t *testing.T) {
 		}
 		if strings.Contains(body, "Top items:") {
 			t.Errorf("empty-window body should not include Top items header: %q", body)
+		}
+	})
+}
+
+// TestBuildAndRenderReconciliationDigest catches drift between the
+// reconciliation-digest template, its context, and the BuildReconciliationDigest
+// mapping (rows + per-kind tallies + kind labels). Both the populated and the
+// empty branch are exercised.
+func TestBuildAndRenderReconciliationDigest(t *testing.T) {
+	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
+
+	t.Run("populated", func(t *testing.T) {
+		disc := []reconcile.Discrepancy{
+			{Kind: reconcile.KindNotTaken, KioskCode: "BAY-01", InstanceCode: "DR-1", ItemName: "Drill", Holder: "Bob", Zone: "Cabinet A"},
+			{Kind: reconcile.KindStale, KioskCode: "BAY-01", InstanceCode: "DR-2", ItemName: "Driver", Holder: "Al", Zone: "Cabinet A"},
+			{Kind: reconcile.KindUnaccounted, KioskCode: "BAY-02", InstanceCode: "SW-9", ItemName: "Saw", Zone: "Gate"},
+		}
+		ctx := BuildReconciliationDigest(KioskInfo{Code: "BAY-01"}, disc, 72, now)
+		if ctx.RowsCount != 3 {
+			t.Fatalf("RowsCount = %d; want 3", ctx.RowsCount)
+		}
+		if ctx.NotTakenCount != 1 || ctx.StaleCount != 1 || ctx.UnaccountedCount != 1 {
+			t.Errorf("kind counts = %d/%d/%d; want 1/1/1",
+				ctx.NotTakenCount, ctx.StaleCount, ctx.UnaccountedCount)
+		}
+
+		subject, body, err := Render(DefaultReconciliationDigestSubject, DefaultReconciliationDigestBody, ctx)
+		if err != nil {
+			t.Fatalf("Render failed: %v", err)
+		}
+		if !strings.Contains(subject, "3 flagged") {
+			t.Errorf("subject missing count: %q", subject)
+		}
+		for _, want := range []string{
+			"Likely not taken", "Possibly lost", "Unaccounted movement",
+			"DR-1", "Drill", "held by Bob", "last seen Cabinet A", "@ BAY-02",
+			"1 likely-not-taken", "1 possibly-lost", "1 unaccounted", "72h",
+		} {
+			if !strings.Contains(body, want) {
+				t.Errorf("body missing %q in:\n%s", want, body)
+			}
+		}
+	})
+
+	t.Run("empty short-circuits", func(t *testing.T) {
+		ctx := BuildReconciliationDigest(KioskInfo{Code: "BAY-01"}, nil, 72, now)
+		if ctx.RowsCount != 0 {
+			t.Fatalf("RowsCount = %d; want 0", ctx.RowsCount)
+		}
+		_, body, err := Render(DefaultReconciliationDigestSubject, DefaultReconciliationDigestBody, ctx)
+		if err != nil {
+			t.Fatalf("Render failed: %v", err)
+		}
+		if !strings.Contains(body, "Nothing to reconcile") {
+			t.Errorf("empty branch missing in body: %q", body)
 		}
 	})
 }
