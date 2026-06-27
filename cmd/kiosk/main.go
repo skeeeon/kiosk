@@ -83,6 +83,7 @@ func main() {
 		punchWatcher    *timeclock.Watcher
 		checkoutFleet   *timeclock.CheckoutFleet
 		checkoutWatcher *timeclock.CheckoutWatcher
+		mirrorWatcher   *sightings.MirrorWatcher
 	)
 	watcherCtx, watcherCancel := context.WithCancel(context.Background())
 	if cfg.Controller.Enabled {
@@ -130,6 +131,20 @@ func main() {
 					return e.Next()
 				})
 			}
+
+			// Fleet last-observed mirror (location/sightings L3): hydrates this
+			// node's OWN slice of the controller's last_observed_state bucket into
+			// its item_instances.last_observed_* columns, so a unit owned here but
+			// seen by another site's gateway shows its true last-seen locally.
+			// Best-effort, same posture as the catalog watcher.
+			mirrorWatcher = sightings.NewMirrorWatcher(app, js, cfg.Kiosk.Code, "")
+			app.OnServe().BindFunc(func(e *core.ServeEvent) error {
+				if err := mirrorWatcher.Start(watcherCtx); err != nil {
+					log.Printf("sighting mirror watcher: %v — kiosk will continue with local-gateway data only", err)
+					mirrorWatcher = nil
+				}
+				return e.Next()
+			})
 		}
 	}
 
@@ -175,6 +190,9 @@ func main() {
 	app.OnTerminate().BindFunc(func(e *core.TerminateEvent) error {
 		if catalogWatcher != nil {
 			catalogWatcher.Stop()
+		}
+		if mirrorWatcher != nil {
+			mirrorWatcher.Stop()
 		}
 		if punchWatcher != nil {
 			punchWatcher.Stop()

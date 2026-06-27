@@ -377,6 +377,12 @@ func PublishLifecycle(app core.App, out *MutationOutcome) {
 	}
 	id := kioskctx.Get()
 	source, adminID, controllerAdminID, commandID := readAttribution(app, out.AuditRecordID)
+	// Look up the current EPC so the controller's instance_epc_index (L3) stays
+	// current. Best-effort — a missing/retired row just omits it.
+	rfidEPC := ""
+	if rec, err := app.FindRecordById("item_instances", out.Result.InstanceID); err == nil {
+		rfidEPC = rec.GetString("rfid_epc")
+	}
 	payload := events.BuildInstanceLifecyclePayload(events.InstanceLifecycleInput{
 		InstanceID:        out.Result.InstanceID,
 		InstanceCode:      out.Result.InstanceCode,
@@ -394,6 +400,7 @@ func PublishLifecycle(app core.App, out *MutationOutcome) {
 		CommandID:         commandID,
 		SourceAuditID:     out.AuditRecordID,
 		CompletedAt:       time.Now().UTC(),
+		RFIDEPC:           rfidEPC,
 	})
 	events.Publish(events.InstanceLifecycleSubject(id.KioskCode), payload)
 }
@@ -413,6 +420,15 @@ type SnapshotRow struct {
 	EnclosureID  string `json:"enclosure_id"`
 	Created      string `json:"created"`
 	Updated      string `json:"updated"`
+	// Advisory last-observed location (location/sightings). Rides the
+	// instance.snapshot reply so the controller's KioskInstancesPanel shows the
+	// same "Last seen" the local panel does — kept current by the L3 mirror
+	// watcher in managed mode. Empty until something is observed.
+	LastObservedAt      string  `json:"last_observed_at"`
+	LastObservedZone    string  `json:"last_observed_zone"`
+	LastObservedGateway string  `json:"last_observed_gateway"`
+	LastObservedLat     float64 `json:"last_observed_lat"`
+	LastObservedLon     float64 `json:"last_observed_lon"`
 	// Out reports whether this instance is currently checked out, derived
 	// from open_checkouts. Snapshot leaves it false (it has no checkout
 	// context); the command handler that ships this over the wire fills it
@@ -459,6 +475,12 @@ func Snapshot(app core.App, itemCode string) ([]SnapshotRow, error) {
 			EnclosureID:  r.GetString("enclosure_id"),
 			Created:      r.GetDateTime("created").String(),
 			Updated:      r.GetDateTime("updated").String(),
+
+			LastObservedAt:      r.GetDateTime("last_observed_at").String(),
+			LastObservedZone:    r.GetString("last_observed_zone"),
+			LastObservedGateway: r.GetString("last_observed_gateway"),
+			LastObservedLat:     r.GetFloat("last_observed_lat"),
+			LastObservedLon:     r.GetFloat("last_observed_lon"),
 		}
 		if item != nil {
 			row.ItemCode = item.GetString("code")

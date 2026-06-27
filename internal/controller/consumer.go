@@ -106,6 +106,8 @@ type EventPayload struct {
 	PrevStatus    string `json:"prev_status,omitempty"`
 	NewStatus     string `json:"new_status,omitempty"`
 	SourceAuditID string `json:"source_audit_id,omitempty"`
+	// RFIDEPC feeds the controller's instance_epc_index (location/sightings L3).
+	RFIDEPC string `json:"rfid_epc,omitempty"`
 
 	// timeclock.punch fields. PunchID is the kiosk-side time_punches.id —
 	// the idempotency anchor (projected as source_punch_id). Source here is
@@ -507,6 +509,13 @@ func (a *Aggregator) handleInstanceLifecycle(msg jetstream.Msg, p EventPayload) 
 // event. Idempotent via the unique source_audit_id index — a JetStream
 // redelivery finds the existing row and returns projectAck without writing.
 func (a *Aggregator) ProjectInstanceLifecycle(p EventPayload) projectOutcome {
+	// Keep the EPC → owning-unit index current (location/sightings L3). Done
+	// first and unconditionally (even on redelivery / missing source_audit_id)
+	// because it's an idempotent upsert and the SightingIngest depends on it.
+	// Best-effort — a failure logs and never changes the audit projection's
+	// outcome.
+	a.upsertInstanceEPCIndex(p)
+
 	if p.SourceAuditID == "" {
 		// Older kiosks (pre source_audit_id) don't carry the idempotency
 		// anchor. Without it we can't safely dedupe redeliveries, so ack
@@ -566,6 +575,42 @@ func (a *Aggregator) ProjectInstanceLifecycle(p EventPayload) projectOutcome {
 		return projectRetry
 	}
 	return projectAck
+}
+
+// upsertInstanceEPCIndex keeps instance_epc_index current so the SightingIngest
+// can resolve a raw gateway sighting to its owning (instance, kiosk). Upsert by
+// rfid_epc (the unique key). Best-effort: logs and returns on any error — it
+// must never affect the lifecycle audit projection's outcome. No-op for an
+// untagged unit.
+func (a *Aggregator) upsertInstanceEPCIndex(p EventPayload) {
+	epc := strings.ToLower(strings.TrimSpace(p.RFIDEPC))
+	if epc == "" || p.KioskCode == "" {
+		return
+	}
+	col, err := a.app.FindCollectionByNameOrId("instance_epc_index")
+	if err != nil {
+		slog.Warn("controller.aggregator.epc_index.collection_missing", "error", err)
+		return
+	}
+	rec, err := a.app.FindFirstRecordByFilter("instance_epc_index",
+		"rfid_epc = {:epc}", dbx.Params{"epc": epc})
+	if err != nil {
+		if !isNotFound(err) {
+			slog.Warn("controller.aggregator.epc_index.lookup_failed", "epc", epc, "error", err)
+			return
+		}
+		rec = core.NewRecord(col)
+		rec.Set("rfid_epc", epc)
+	}
+	rec.Set("instance_id", p.InstanceID)
+	rec.Set("instance_code", p.InstanceCode)
+	rec.Set("kiosk_code", p.KioskCode)
+	if err := a.app.Save(rec); err != nil {
+		if isUniqueViolation(err) {
+			return // concurrent insert won the race; the row exists, good enough
+		}
+		slog.Warn("controller.aggregator.epc_index.save_failed", "epc", epc, "error", err)
+	}
 }
 
 func (a *Aggregator) findInstanceLifecycleAuditBySourceID(sourceAuditID string) (*core.Record, error) {

@@ -4,6 +4,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/skeeeon/kiosk/internal/kioskctx"
 	"github.com/skeeeon/kiosk/internal/rfid"
 	"github.com/skeeeon/kiosk/internal/sightings"
 )
@@ -36,6 +37,8 @@ func (h *Handlers) stampObservedSighting(observed []rfid.EPC, zone, gateway stri
 		return
 	}
 	now := time.Now().UTC()
+
+	// Local stamp for every resolvable tag (L1 — works with zero NATS).
 	for _, epc := range observed {
 		m, err := h.scanInstanceByRFID(string(epc))
 		if err != nil || m == nil || m.Instance == nil {
@@ -44,5 +47,18 @@ func (h *Handlers) stampObservedSighting(observed []rfid.EPC, zone, gateway stri
 		if err := sightings.StampLastObserved(h.App, m.Instance.ID, zone, gateway, nil, nil, now); err != nil {
 			log.Printf("sighting: stamp instance %s: %v", m.Instance.ID, err)
 		}
+	}
+
+	// Managed mode: also publish each observed tag as a raw sighting so the
+	// controller aggregates custody-derived location and mirrors it fleet-wide
+	// (L3). Same raw wire shape as an external gateway; the controller resolves
+	// via its EPC index. The local stamp above already covered this node, so
+	// the mirror-back is an idempotent monotonic no-op.
+	if h.Cfg.Controller.Enabled {
+		tags := make([]string, len(observed))
+		for i, epc := range observed {
+			tags[i] = string(epc)
+		}
+		sightings.PublishCustodyReads(kioskctx.Get().KioskCode, zone, gateway, tags, now)
 	}
 }

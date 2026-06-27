@@ -183,6 +183,16 @@ func main() {
 			return fmt.Errorf("subscribe heartbeats: %w", err)
 		}
 
+		// Sighting ingest: plain core-NATS fleet-wide subscriber for the lossy
+		// `sighting` family (location/sightings L3). Provisions last_observed_state,
+		// resolves via instance_epc_index, upserts instance_location, mirrors down.
+		sightingIngest := controller.NewSightingIngest(aggCtx, app, js)
+		sightingSub, err := sightingIngest.Subscribe(nc)
+		if err != nil {
+			aggCancel()
+			return fmt.Errorf("subscribe sightings: %w", err)
+		}
+
 		// Override the standalone maintenance digest with the controller's
 		// fleet-wide snapshot fan-out. The standalone runner reads the local
 		// item_instances table, which is empty on the controller (instances
@@ -202,6 +212,9 @@ func main() {
 			agg.Stop()
 			if hbSub != nil {
 				_ = hbSub.Unsubscribe()
+			}
+			if sightingSub != nil {
+				_ = sightingSub.Unsubscribe()
 			}
 			aggCancel()
 			if p := events.CurrentPublisher(); p != nil {

@@ -324,6 +324,11 @@ type InstanceLifecycleInput struct {
 	CommandID         string
 	SourceAuditID     string
 	CompletedAt       time.Time
+	// RFIDEPC is the unit's current tag id, threaded so the controller can build
+	// its EPC → owning-unit index (location/sightings L3). Empty for untagged
+	// units. Advisory: a bare cosmetic EPC change emits no lifecycle event, so
+	// the index refreshes on the next create/status transition.
+	RFIDEPC string
 }
 
 // BuildInstanceLifecyclePayload renders the input into the map shape the
@@ -347,6 +352,7 @@ func BuildInstanceLifecyclePayload(in InstanceLifecycleInput) map[string]any {
 		"command_id":          in.CommandID,
 		"source_audit_id":     in.SourceAuditID,
 		"completed_at":        in.CompletedAt,
+		"rfid_epc":            in.RFIDEPC,
 	}
 }
 
