@@ -50,16 +50,20 @@ const KIND_META: Record<DiscrepancyKind, { label: string; hint: string; cls: str
 }
 const ORDER: DiscrepancyKind[] = ['unaccounted', 'not_taken', 'stale']
 
-const groups = computed(() => {
-  const all = result.value?.discrepancies ?? []
-  return ORDER.map((kind) => ({
+// The API's `discrepancies` is a Go slice that marshals to `null` (not `[]`)
+// when empty, so funnel every read through one null-safe accessor — otherwise
+// a bare `.length`/`.filter` on the null crashes the view.
+const discrepancies = computed(() => result.value?.discrepancies ?? [])
+
+const groups = computed(() =>
+  ORDER.map((kind) => ({
     kind,
     meta: KIND_META[kind],
-    rows: all.filter((d) => d.kind === kind),
-  })).filter((g) => g.rows.length > 0)
-})
+    rows: discrepancies.value.filter((d) => d.kind === kind),
+  })).filter((g) => g.rows.length > 0),
+)
 
-const total = computed(() => result.value?.discrepancies.length ?? 0)
+const total = computed(() => discrepancies.value.length)
 
 function relativeAge(iso?: string): string {
   if (!iso) return '—'
@@ -75,7 +79,7 @@ function relativeAge(iso?: string): string {
 }
 
 function rowsOf(kind: DiscrepancyKind): Discrepancy[] {
-  return result.value?.discrepancies.filter((d) => d.kind === kind) ?? []
+  return discrepancies.value.filter((d) => d.kind === kind)
 }
 </script>
 

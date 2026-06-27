@@ -9,6 +9,7 @@ import (
 	"github.com/skeeeon/kiosk/internal/cart"
 	"github.com/skeeeon/kiosk/internal/commit"
 	"github.com/skeeeon/kiosk/internal/kioskctx"
+	"github.com/skeeeon/kiosk/internal/reconcile"
 )
 
 // WorkerEmail implements WorkerEmailProvider so the notifier's recipient
@@ -176,6 +177,82 @@ type KioskProvenance struct {
 // send log.
 func (c MaintenanceDigestContext) PayloadSummary() string {
 	return c.Kiosk.Code + " · " + strconv.Itoa(c.RowsCount) + " in maintenance"
+}
+
+// ReconciliationDigestRow is one custody-vs-location discrepancy in the
+// digest.reconciliation report. KindLabel is the human-readable form of Kind
+// (reconcile.KindLabel), pre-resolved so the template stays logic-free.
+// KioskCode is set on the controller's fleet run, empty standalone.
+type ReconciliationDigestRow struct {
+	Kind         string
+	KindLabel    string
+	KioskCode    string
+	InstanceCode string
+	ItemName     string
+	Holder       string
+	Zone         string
+}
+
+// ReconciliationDigestContext drives the digest.reconciliation template. Built
+// by the scheduler runner: standalone reads local custody+location, the
+// controller reuses its fleet compute (projected ledger + instance_location).
+// Per-kind counts back the summary line. Does not implement WorkerEmailProvider
+// — the digest targets admins. RowsCount is duplicated from len(Rows) per the
+// other digests' convention.
+type ReconciliationDigestContext struct {
+	Kiosk            KioskInfo
+	GeneratedAt      time.Time
+	Rows             []ReconciliationDigestRow
+	RowsCount        int
+	StaleAfterHrs    float64
+	NotTakenCount    int
+	StaleCount       int
+	UnaccountedCount int
+}
+
+// PayloadSummary surfaces a compact "kiosk · N discrepancies" line in the
+// send log.
+func (c ReconciliationDigestContext) PayloadSummary() string {
+	return c.Kiosk.Code + " · " + strconv.Itoa(c.RowsCount) + " discrepancies"
+}
+
+// BuildReconciliationDigest assembles the digest context from a computed
+// discrepancy set. Shared by both binaries' reconciliation digest runners
+// (kiosk: local compute; controller: fleet compute) so the row mapping and
+// per-kind tallies can't drift — the single-source-of-truth stance the other
+// digests get from their shared runners.
+func BuildReconciliationDigest(kiosk KioskInfo, disc []reconcile.Discrepancy, staleAfterHrs float64, now time.Time) ReconciliationDigestContext {
+	rows := make([]ReconciliationDigestRow, 0, len(disc))
+	var notTaken, stale, unaccounted int
+	for _, d := range disc {
+		rows = append(rows, ReconciliationDigestRow{
+			Kind:         d.Kind,
+			KindLabel:    reconcile.KindLabel(d.Kind),
+			KioskCode:    d.KioskCode,
+			InstanceCode: d.InstanceCode,
+			ItemName:     d.ItemName,
+			Holder:       d.Holder,
+			Zone:         d.Zone,
+		})
+		switch d.Kind {
+		case reconcile.KindNotTaken:
+			notTaken++
+		case reconcile.KindStale:
+			stale++
+		case reconcile.KindUnaccounted:
+			unaccounted++
+		}
+	}
+	return ReconciliationDigestContext{
+		Kiosk:            kiosk,
+		GeneratedAt:      now,
+		Rows:             rows,
+		RowsCount:        len(rows),
+		StaleAfterHrs:    staleAfterHrs,
+		NotTakenCount:    notTaken,
+		StaleCount:       stale,
+		UnaccountedCount: unaccounted,
+	}
 }
 
 // TimeclockDigestRow is one user-day total in the timeclock digest. Total is

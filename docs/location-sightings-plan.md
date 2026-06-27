@@ -1,7 +1,8 @@
 # Location & Sightings — plan
 
 Status: **L1–L4 landed** on branch `location-sightings` (2026-06-27), green (`go test ./...` +
-`vue-tsc`). Deferred within L4: the scheduled `digest.reconciliation` email + controller-side
+`vue-tsc`). The scheduled `digest.reconciliation` email + a location-first **Locations view**
+(both binaries) landed in a follow-up (2026-06-27). Still deferred within L4: controller-side
 fleet BLE + the GPS-polygon flag (see Phasing / Deferred). Living doc; update as phases land.
 Sibling of [`docs/asset-tracker-plan.md`](asset-tracker-plan.md) (custody foundation),
 which is done through Phase 5. This is the deferred **second half** of that vision:
@@ -253,11 +254,18 @@ the gateway interface (standalone-capable). L3 adds the fleet. L4 is the value.
   as no-billing-math). **Shipped:** the pure `internal/reconcile` compute (stale / not_taken /
   unaccounted; the GPS-polygon flag is deferred — needs site-polygon config), the two admin
   endpoints (`GET /api/kiosk/reconciliation`, `GET /api/controller/reconciliation`), and the admin
-  SPA view (`AdminReconciliationView`; controller: site-wide, node: its own). **Deferred:** the
-  scheduled `digest.reconciliation` email — a push channel over data already queryable + visible;
-  it needs the notifications-template vertical (a new event type + template bodies + a
-  controller-side runner override, mirroring `digest.maintenance`). Add it when an operator wants
-  the email push.
+  SPA view (`AdminReconciliationView`; controller: site-wide, node: its own). **Also shipped (the
+  follow-up):**
+  - the scheduled `digest.reconciliation` email — `EventTypeReconciliationDigest` + template +
+    `notifications.BuildReconciliationDigest`, a standalone runner
+    (`handlers.ReconciliationDigestRunner`, reusing the on-demand compute via the extracted
+    `computeReconciliation`) and a controller override (`controller.ReconciliationDigestRunner`,
+    no NATS fan-out — the controller reconciliation already reads its own DB), wired through
+    `scheduler.RegisterRunner` exactly like `digest.maintenance`;
+  - a location-first **Locations view** (`AdminLocationsView`, `GET /api/{kiosk,controller}/locations`)
+    — the inverse of reconciliation: every seen unit with last-seen zone/age + holder, filterable.
+    Item identity on the controller comes from `instance_epc_index` (now carrying `item_code`/
+    `item_name`, populated by the aggregator's existing EPC-index upsert).
 - **BLE as an alternate sighting source:** a BLE gateway publishes the **same** sighting shape
   with `tag_id` = a BLE beacon id, resolved against a new `item_instances.ble_id` (parallel to
   `rfid_epc`, added to the scan resolver chain). Everything downstream (ingest, dedup, projection,

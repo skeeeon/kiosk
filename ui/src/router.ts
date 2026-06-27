@@ -21,6 +21,7 @@ import AdminKioskDetailView from './views/AdminKioskDetailView.vue'
 import AdminTransactionsView from './views/AdminTransactionsView.vue'
 import AdminCatalogSyncView from './views/AdminCatalogSyncView.vue'
 import AdminReconciliationView from './views/AdminReconciliationView.vue'
+import AdminLocationsView from './views/AdminLocationsView.vue'
 
 export const router = createRouter({
   history: createWebHistory(),
@@ -52,6 +53,7 @@ export const router = createRouter({
         { path: 'transactions', name: 'admin-transactions', component: AdminTransactionsView },
         { path: 'metrics', name: 'admin-metrics', component: AdminMetricsView },
         { path: 'reconciliation', name: 'admin-reconciliation', component: AdminReconciliationView },
+        { path: 'locations', name: 'admin-locations', component: AdminLocationsView },
         { path: 'notifications', name: 'admin-notifications', component: AdminNotificationsView },
         { path: 'notifications/scheduled', name: 'admin-notifications-scheduled', component: AdminScheduledReportsView },
         { path: 'notifications/log', name: 'admin-notifications-log', component: AdminNotificationsLogView },

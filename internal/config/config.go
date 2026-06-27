@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -212,6 +213,25 @@ func (c RFIDConfig) SoleReaderMode() string {
 		return r.Mode
 	}
 	return ""
+}
+
+// EnclosureIDs returns the distinct, sorted enclosure ids this node's
+// enclosure_diff readers cover — the authoritative set of cabinets a serialized
+// unit's item_instances.enclosure_id can be assigned to. The admin SPA surfaces
+// these as suggestions so a unit isn't typo'd into a cabinet no reader reads
+// (which would silently drop it from that cabinet's enclosure_diff set). Empty
+// for a node with no enclosure_diff readers.
+func (c RFIDConfig) EnclosureIDs() []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, r := range c.Readers {
+		if r.Mode == RFIDModeEnclosureDiff && r.EnclosureID != "" && !seen[r.EnclosureID] {
+			seen[r.EnclosureID] = true
+			out = append(out, r.EnclosureID)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // RFIDReaderConfig is one physical reader's config. Mode and EnclosureID are

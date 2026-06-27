@@ -119,6 +119,21 @@ func Reconcile(custody []CustodyState, location []LocationState, cfg Config, now
 	return out
 }
 
+// KindLabel maps a discrepancy kind to the human-readable label used in the
+// digest email and the SPA badge (kept in sync with the SPA's KIND_META), so
+// callers don't print the raw enum value at users. Unknown kinds pass through.
+func KindLabel(kind string) string {
+	switch kind {
+	case KindNotTaken:
+		return "Likely not taken"
+	case KindStale:
+		return "Possibly lost"
+	case KindUnaccounted:
+		return "Unaccounted movement"
+	}
+	return kind
+}
+
 // CustodyZoneSet builds a normalized set from a slice of zone labels.
 func CustodyZoneSet(zones []string) map[string]bool {
 	set := make(map[string]bool, len(zones))

@@ -249,3 +249,26 @@ func TestRFIDEnvOverrides(t *testing.T) {
 		}
 	})
 }
+
+// TestEnclosureIDs verifies the distinct-sorted cabinet set the admin SPA uses
+// for enclosure-assignment suggestions: only enclosure_diff readers with a
+// non-empty enclosure_id count, dedup'd and sorted; counter_scan readers and
+// empty ids are ignored.
+func TestEnclosureIDs(t *testing.T) {
+	cfg := RFIDConfig{Readers: readers(map[string]RFIDReaderConfig{
+		"counter": {Mode: RFIDModeCounterScan},
+		"cab-b":   {Mode: RFIDModeEnclosureDiff, EnclosureID: "BAY-B"},
+		"cab-a":   {Mode: RFIDModeEnclosureDiff, EnclosureID: "BAY-A"},
+		"cab-a2":  {Mode: RFIDModeEnclosureDiff, EnclosureID: "BAY-A"}, // dup
+		"cab-x":   {Mode: RFIDModeEnclosureDiff, EnclosureID: ""},      // empty ignored
+	})}
+	got := cfg.EnclosureIDs()
+	want := []string{"BAY-A", "BAY-B"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("EnclosureIDs() = %v; want %v", got, want)
+	}
+
+	if ids := (RFIDConfig{}).EnclosureIDs(); len(ids) != 0 {
+		t.Errorf("empty config EnclosureIDs() = %v; want none", ids)
+	}
+}

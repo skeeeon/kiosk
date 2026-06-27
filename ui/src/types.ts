@@ -26,6 +26,10 @@ export interface KioskIdentity {
   // expose a button — its reads are NATS-command-driven.
   rfid_enabled?: boolean
   rfid_mode?: 'counter_scan' | 'enclosure_diff'
+  // Distinct cabinets this node's enclosure_diff readers cover. The admin SPA
+  // offers them as suggestions when assigning item_instances.enclosure_id.
+  // Absent on nodes without enclosure_diff readers.
+  rfid_enclosure_ids?: string[]
   // Timeclock gating. timeclock_enabled drives the splash "Time clock"
   // button (kiosk) / the Timeclock report tab (both binaries); the interlock
   // flags shape copy only — the server enforces them.
@@ -263,9 +267,33 @@ export interface Discrepancy {
 }
 
 export interface ReconciliationResult {
-  discrepancies: Discrepancy[]
+  // null (not []) when there are no discrepancies — a Go nil slice on the wire.
+  discrepancies: Discrepancy[] | null
   generated_at: string
   stale_after_hrs: number
+}
+
+// Advisory location report (docs/location-sightings-plan.md, L4) — the inverse
+// of reconciliation: every serialized unit that's been seen, with last-seen
+// zone/age and (if out) its holder. Both binaries return the same shape.
+export interface LocationRow {
+  kiosk_code: string
+  instance_code: string
+  item_code?: string
+  item_name?: string
+  zone?: string
+  gateway?: string
+  lat?: number
+  lon?: number
+  observed_at: string
+  holder?: string
+  status?: string
+}
+
+export interface LocationReport {
+  // null (not []) when nothing has been observed — a Go nil slice on the wire.
+  locations: LocationRow[] | null
+  generated_at: string
 }
 
 export type ScanResult =
