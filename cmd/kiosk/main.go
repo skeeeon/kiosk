@@ -25,6 +25,7 @@ import (
 	"github.com/skeeeon/kiosk/internal/notifications"
 	"github.com/skeeeon/kiosk/internal/rfid"
 	"github.com/skeeeon/kiosk/internal/scheduler"
+	"github.com/skeeeon/kiosk/internal/sightings"
 	"github.com/skeeeon/kiosk/internal/timeclock"
 	"github.com/skeeeon/kiosk/internal/ui"
 
@@ -251,6 +252,34 @@ func main() {
 			}
 			return e.Next()
 		})
+	}
+
+	// Standalone sighting ingest: a node with NATS but no controller subscribes
+	// to its OWN sighting subject and resolves each raw sighting locally via the
+	// scan resolver, stamping advisory last-observed (docs/location-sightings-
+	// plan.md, L2). Gated on !Controller.Enabled — in managed mode the controller
+	// is the sole sighting subscriber and mirrors last-observed back via KV (L3).
+	var sightingSub interface{ Unsubscribe() error }
+	if pub != nil && cfg.NATS.Enabled && !cfg.Controller.Enabled && cfg.Kiosk.Code != "" {
+		if nc, err := events.Conn(pub); err != nil {
+			log.Printf("sightings: nats connection unavailable: %v", err)
+		} else {
+			app.OnServe().BindFunc(func(e *core.ServeEvent) error {
+				sub, err := sightings.Subscribe(nc, app, cfg.Kiosk.Code, h.LookupInstanceIDByEPC)
+				if err != nil {
+					log.Printf("sightings: subscribe failed — %v", err)
+				} else {
+					sightingSub = sub
+				}
+				return e.Next()
+			})
+			app.OnTerminate().BindFunc(func(e *core.TerminateEvent) error {
+				if sightingSub != nil {
+					_ = sightingSub.Unsubscribe()
+				}
+				return e.Next()
+			})
+		}
 	}
 
 	// PB record hooks on item_instances: create / decommission (active flip)

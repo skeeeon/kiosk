@@ -19,6 +19,18 @@ import (
 // Advisory + best-effort: a resolve/stamp error is logged and skipped, never
 // failing the read. Does NOT tickle the cart SSE — the read path already
 // tickles once, and a silent side-effect shouldn't trigger a refetch.
+// LookupInstanceIDByEPC resolves a raw EPC to a local item_instances id for the
+// standalone sighting subscriber (sightings.EPCLookup). Reuses the exact lookup
+// the scan resolver uses — node-side resolution is reuse, not new code. Returns
+// ok=false on miss / empty / error (advisory: an unknown tag is dropped).
+func (h *Handlers) LookupInstanceIDByEPC(epc string) (string, bool) {
+	m, err := h.scanInstanceByRFID(epc)
+	if err != nil || m == nil || m.Instance == nil {
+		return "", false
+	}
+	return m.Instance.ID, true
+}
+
 func (h *Handlers) stampObservedSighting(observed []rfid.EPC, zone, gateway string) {
 	if zone == "" || len(observed) == 0 {
 		return

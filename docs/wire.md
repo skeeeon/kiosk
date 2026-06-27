@@ -26,10 +26,11 @@ transaction.
 | `event.<...>` | kiosk → world | JetStream-bound | Stream (`KIOSK_EVENTS`, 7 d default retention) |
 | `command.<name>` | controller / external → kiosk | Core NATS request/reply | None (synchronous) |
 | `heartbeat` | kiosk → world | Core NATS pub/sub | Last-write-wins, no history |
+| `sighting.raw` | gateway → world | Core NATS pub/sub | Lossy, last-write-wins, no history |
 
-The stream binds to `<prefix>.*.event.>` and nothing else, so commands
-and heartbeats are outside its filter space **by construction** rather
-than by exclusion-list discipline.
+The stream binds to `<prefix>.*.event.>` and nothing else, so commands,
+heartbeats, and sightings are outside its filter space **by construction**
+rather than by exclusion-list discipline.
 
 ## Reply envelope
 
@@ -779,6 +780,39 @@ by design — durability would mask the very signal we care about.
 First beat from a previously-unknown kiosk also triggers
 auto-registration of a `kiosks` row on the controller side, parallel
 to the aggregator's `touchKiosk` path.
+
+## Sightings
+
+```
+<prefix>.<node_code>.sighting.raw
+```
+
+Core NATS publish (not JetStream). The lossy `sighting` family for advisory
+asset location (see [location-sightings](location-sightings-plan.md)). Gateways
+are **external publishers** (off-platform — RFID-over-MQTT straight into NATS's
+MQTT interface, or an HTTP→NATS bridge); the platform only consumes. The wire
+shape is always **raw** (carries `tag_id`, never a resolved instance code);
+resolution happens subscriber-side. A standalone node subscribes to its own
+subject and resolves locally via the scan resolver; the controller subscribes
+fleet-wide (`<prefix>.*.sighting.raw`) and resolves via an EPC index. A dropped
+sighting self-heals on the next read — never authoritative, never gates custody.
+
+**Payload.**
+```json
+{
+  "tag_id": "e2801168200082c0a3b400a1",
+  "gateway_id": "yard-gw-1",
+  "zone": "Yard",
+  "lat": 47.6062,
+  "lon": -122.3321,
+  "observed_at": "RFC3339",
+  "rssi": -52
+}
+```
+
+`zone`/`lat`/`lon`/`rssi` are optional (a roaming gateway sends GPS and no zone;
+a static gateway sends a zone and no GPS). An omitted `observed_at` defaults to
+now at ingest.
 
 ## Subscribing for ad-hoc inspection
 
