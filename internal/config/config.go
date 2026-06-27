@@ -189,6 +189,13 @@ type RFIDReaderConfig struct {
 	Port        int    `yaml:"port"`
 	EnclosureID string `yaml:"enclosure_id"` // required when mode=enclosure_diff
 
+	// Zone is an optional coarse location label for this reader. When set, a
+	// custody read at this reader also stamps every observed unit's advisory
+	// last-observed location at this zone (docs/location-sightings-plan.md, L1)
+	// — free location data from custody activity. Empty = no location stamping
+	// (N=1 invisible).
+	Zone string `yaml:"zone"`
+
 	// Antennas enumerates the reader's active antenna ports and the TX
 	// power each one should run at. Empty list means "leave the reader's
 	// own baseline alone" — useful for sites that prefer to provision

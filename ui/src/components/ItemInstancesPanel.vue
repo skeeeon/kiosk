@@ -138,6 +138,24 @@ async function changeStatus(row: InstanceRow, target: InstanceStatus) {
 }
 
 const hasRows = computed(() => rows.value.length > 0)
+
+// The "Last seen" column is advisory location (docs/location-sightings-plan.md):
+// shown only when at least one unit has been observed, so a node with no
+// gateways / no reader zone configured never sees the column (N=1 invisible).
+const hasLastSeen = computed(() => rows.value.some((r) => !!r.last_observed_at))
+
+function relativeAge(iso: string): string {
+  const t = new Date(iso).getTime()
+  if (!Number.isFinite(t)) return ''
+  const diffMs = Date.now() - t
+  if (diffMs < 60_000) return 'just now'
+  const minutes = Math.floor(diffMs / 60_000)
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  const days = Math.floor(hours / 24)
+  return `${days}d ago`
+}
 </script>
 
 <template>
@@ -170,15 +188,16 @@ const hasRows = computed(() => rows.value.length > 0)
           <th class="px-2 py-2 font-medium">Enclosure</th>
           <th class="px-2 py-2 font-medium">Status</th>
           <th class="px-2 py-2 font-medium">Out?</th>
+          <th v-if="hasLastSeen" class="px-2 py-2 font-medium">Last seen</th>
           <th class="px-2 py-2"></th>
         </tr>
       </thead>
       <tbody class="divide-y divide-slate-800">
         <tr v-if="loading">
-          <td colspan="7" class="text-center text-slate-500 py-3">Loading…</td>
+          <td :colspan="hasLastSeen ? 8 : 7" class="text-center text-slate-500 py-3">Loading…</td>
         </tr>
         <tr v-else-if="!hasRows && !draft">
-          <td colspan="7" class="text-center text-slate-500 py-3">
+          <td :colspan="hasLastSeen ? 8 : 7" class="text-center text-slate-500 py-3">
             No instances yet. Add one to enable scanning.
           </td>
         </tr>
@@ -201,6 +220,13 @@ const hasRows = computed(() => rows.value.length > 0)
                 class="inline-block px-2 py-0.5 rounded text-[10px] bg-amber-900/60 text-amber-200"
               >currently out</span>
               <span v-else class="text-slate-500 text-[10px]">in</span>
+            </td>
+            <td v-if="hasLastSeen" class="px-2 py-2 text-slate-400">
+              <template v-if="row.last_observed_at">
+                <span class="text-slate-300">{{ row.last_observed_zone || '—' }}</span>
+                <span class="text-slate-500" :title="row.last_observed_at"> · {{ relativeAge(row.last_observed_at) }}</span>
+              </template>
+              <span v-else class="text-slate-600">—</span>
             </td>
             <td class="px-2 py-2 text-right whitespace-nowrap">
               <div class="inline-flex flex-wrap justify-end gap-1">
@@ -237,7 +263,7 @@ const hasRows = computed(() => rows.value.length > 0)
             <td class="px-2 py-2">
               <input v-model="editingDraft!.enclosure_id" type="text" placeholder="cabinet" class="w-full rounded bg-slate-800 border border-slate-700 px-2 py-1 text-sm" />
             </td>
-            <td class="px-2 py-2 text-slate-500 text-[10px]" colspan="2">
+            <td class="px-2 py-2 text-slate-500 text-[10px]" :colspan="hasLastSeen ? 3 : 2">
               Status changes via the row actions.
             </td>
             <td class="px-2 py-2 text-right whitespace-nowrap">
@@ -273,7 +299,7 @@ const hasRows = computed(() => rows.value.length > 0)
           <td class="px-2 py-2">
             <input v-model="draft.enclosure_id" type="text" placeholder="cabinet" class="w-full rounded bg-slate-800 border border-slate-700 px-2 py-1 text-sm" />
           </td>
-          <td class="px-2 py-2 text-slate-400 text-[10px]" colspan="2">new — in service</td>
+          <td class="px-2 py-2 text-slate-400 text-[10px]" :colspan="hasLastSeen ? 3 : 2">new — in service</td>
           <td class="px-2 py-2 text-right whitespace-nowrap">
             <button
               type="button"

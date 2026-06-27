@@ -145,6 +145,10 @@ rfid:
     #   mode: "counter_scan"      # "counter_scan" | "enclosure_diff" (required)
     #   host: "10.0.0.50"         # reader IP / hostname (required)
     #   port: 5084                # standard LLRP port
+    #   zone: "Main Crib"         # optional coarse location label — a read here also
+    #                             # stamps each observed unit's advisory "last seen"
+    #                             # at this zone (docs/location-sightings-plan.md, L1).
+    #                             # Omit for no location stamping (N=1 invisible).
     #   # antennas (optional): active reader ports + TX power in dBm. Empty = let
     #   # the reader's own baseline stand. When set, only the listed ports are
     #   # inventoried, each at the given power (resolved to the reader's nearest

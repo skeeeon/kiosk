@@ -229,7 +229,7 @@ func main() {
 	if cfg.RFID.Enabled {
 		h.Readers = make(map[string]*handlers.ReaderHandle, len(cfg.RFID.Readers))
 		for id, rc := range cfg.RFID.Readers {
-			hd := &handlers.ReaderHandle{Mode: rc.Mode, EnclosureID: rc.EnclosureID}
+			hd := &handlers.ReaderHandle{ID: id, Mode: rc.Mode, EnclosureID: rc.EnclosureID, Zone: rc.Zone}
 			if r, err := rfid.New(rc); err != nil {
 				log.Printf("rfid: reader %q: %v — continuing without it", id, err)
 			} else {

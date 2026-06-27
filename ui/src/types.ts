@@ -230,6 +230,14 @@ export interface ItemInstance {
   // partition key when a node hosts more than one cabinet. Empty = counter/crib
   // stock or a single-cabinet node (which doesn't partition).
   enclosure_id?: string
+  // Advisory "last seen" location (docs/location-sightings-plan.md). Lossy,
+  // last-write-wins — never authoritative, never gates custody. Empty until a
+  // gateway / custody read reports.
+  last_observed_at?: string
+  last_observed_zone?: string
+  last_observed_gateway?: string
+  last_observed_lat?: number
+  last_observed_lon?: number
 }
 
 export interface InstanceMatch {

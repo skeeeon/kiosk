@@ -150,6 +150,11 @@ func (h *Handlers) PerformRFIDScan(ctx context.Context, cartID string, rd *Reade
 		}
 	}
 
+	// A custody read is also a location signal: stamp advisory last-observed
+	// for everything the reader saw, at this reader's zone. No-op when the
+	// reader has no zone configured (N=1 invisible).
+	h.stampObservedSighting(observed, rd.Zone, rd.ID)
+
 	// Always publish, even on zero tags — "operator hit the button and
 	// the antenna saw nothing" is itself a useful signal.
 	id := kioskctx.Get()
