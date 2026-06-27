@@ -263,9 +263,10 @@ button shows when the sole reader is `counter_scan` *or* a `?reader=` is
 present; the server validates the named reader is actually `counter_scan` and
 404s a misconfigured screen. (The `enclosure_diff` "Re-read" button needs no
 `?reader=` — it resolves the reader from the cart's `enclosure_id` via
-`ReaderForEnclosure`. A manual re-read button at a node that mixes
-`counter_scan` + `enclosure_diff` readers is a known gap — the automatic
-`read.trigger` flow is unaffected — deferred to Phase 5 hardening.)
+`ReaderForEnclosure`. Its visibility is gated on the **active cart** carrying
+an `enclosure_id` — i.e. a server-started enclosure_diff cart — rather than on
+the node's sole-reader `rfid_mode`, so it works even at a node that mixes
+`counter_scan` + `enclosure_diff` readers, where `rfid_mode` is blank.)
 
 ## Reader lifecycle
 

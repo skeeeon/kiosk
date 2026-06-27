@@ -1,6 +1,9 @@
 # Asset-tracker generalization — plan
 
-Status: **in design / not yet started** (2026-06-27). Living doc; update as phases land.
+Status: **Phases 1–5 landed** on branch `asset-tracker-foundation` (2026-06-27), green
+(`go test ./...` + `vue-tsc`), not yet merged to `main`. Living doc; update as phases land.
+The foundation (custody + per-cabinet RFID partition + multi-reader/terminal topology) is in;
+location/sightings remain deferred (see below).
 
 ## North-star
 
@@ -67,7 +70,7 @@ Isolated commits on one branch; each keeps `go test ./...` green and leaves sing
 behavior identical. Land Phases 1–2 early (behavior-preserving); Phases 3–4 are the
 capability and land together. Not one mega-diff.
 
-### Phase 1 — Decompose `door_id` → `terminal_id` + `enclosure_id`  *(behavior-preserving)*
+### Phase 1 — Decompose `door_id` → `terminal_id` + `enclosure_id`  *(behavior-preserving)* — **DONE**
 
 `door_id` does two unrelated jobs; split along the existing seam.
 
@@ -140,9 +143,8 @@ empty — unchanged.
 - **Enclosure_diff accept already stamps `terminal_id`** — Phase 1's commit plumbing does it:
   the confirm screen carries `?terminal=`, `CartCommit` stamps it, and the cart's `enclosure_id`
   (from `StartByExternal`) rides alongside. No new code. Both columns land per D5.
-- **Known gap → Phase 5:** the *manual* "Re-read" button at a node mixing `counter_scan` +
-  `enclosure_diff` readers (sole-reader `rfid_mode` is blank there, so the button hides). The
-  automatic NATS `read.trigger` flow is unaffected; mixed nodes are rare.
+- **Mixed-node manual "Re-read" button** was a follow-on here, **fixed in Phase 5**: gated on
+  the active cart's `enclosure_id` rather than the node-global `rfid_mode`.
 
 ### Phase 4 — `enclosure_diff` partition  *(additive — the capability)* — **DONE**
 
@@ -170,17 +172,23 @@ empty — unchanged.
   wrong enclosure and missing in its home — same class of issue the single-enclosure model
   already has at the node boundary.
 
-### Phase 5 — Multi-terminal hardening
+### Phase 5 — Multi-terminal hardening — **DONE (verified; no redesign needed)**
 
-- Verify the cart store handles N concurrent terminals (already mutex-guarded + keyed by
-  `cart_id`, likely fine) and scrub any single-active-user assumptions in SPA/session.
-  Confirm the accept-cart UI works at a per-door terminal. Verify, don't redesign.
-- **Mixed-node manual "Re-read" button** (carried from Phase 3): at a node hosting both
-  `counter_scan` and `enclosure_diff` readers, identity's sole-reader `rfid_mode` is blank, so
-  the `enclosure_diff` manual Re-read button hides. The automatic NATS `read.trigger` flow
-  still works. Fix when needed by gating Re-read on the active cart carrying an `enclosure_id`
-  (a server-started enclosure_diff cart) rather than on `rfid_mode` — drives the button off
-  cart state instead of node-global mode.
+- **Cart store is already multi-terminal-safe.** Every mutating method takes the store mutex;
+  carts are keyed by `cart_id` and the `byUserEnclosure` index by `(user_code, enclosure_id)`.
+  Concurrent carts at different terminals/doors are safe by construction: distinct users → distinct
+  carts; same user + enclosure → idempotent reuse (the intended dedup). The badge `Start` path
+  resolves one cart per `UserID` across the store, so the same worker badging at a second screen
+  resumes their one cart rather than forking — correct for the "one worker, one cart" model. No
+  concurrency primitives added (the grug note in CLAUDE.md stands).
+- **No shared single-active-user state across terminals.** Each terminal is its own SPA client
+  with its own Pinia session store + `cart` ref; there is nothing shared to scrub. Within one
+  screen it's one cart at a time, which is correct.
+- **Mixed-node manual "Re-read" button — FIXED.** Gated on the active cart carrying an
+  `enclosure_id` (a server-started enclosure_diff cart) OR the sole-reader `rfid_mode`, so it
+  shows at a node mixing `counter_scan` + `enclosure_diff` readers (where `rfid_mode` is blank).
+  Required exposing `enclosure_id`/`terminal_id` on the SPA `Cart` type (the Go cart already
+  serialized them).
 
 ## Deferred (shaped-for, not in this plan)
 

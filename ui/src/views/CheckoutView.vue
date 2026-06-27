@@ -266,8 +266,16 @@ const rfidScanButtonVisible = computed(
     !!identity.value?.rfid_enabled &&
     (identity.value?.rfid_mode === 'counter_scan' || !!readerId.value),
 )
+// The Re-read button is a manual fallback for the NATS-driven read.trigger;
+// it's meaningful only for an enclosure_diff cart (one started server-side for
+// a cabinet, so it carries an enclosure_id). Gating on the cart's enclosure_id
+// — rather than only the node's sole-reader rfid_mode — makes it work at a
+// node that mixes counter_scan + enclosure_diff readers, where rfid_mode is
+// blank. The sole-reader clause stays for back-compat on single-reader nodes.
 const rfidReReadButtonVisible = computed(
-  () => identity.value?.rfid_enabled && identity.value?.rfid_mode === 'enclosure_diff',
+  () =>
+    !!identity.value?.rfid_enabled &&
+    (identity.value?.rfid_mode === 'enclosure_diff' || !!cart.value?.enclosure_id),
 )
 
 // rfidReadWindowMs is what we draw the "Reading… 3s" countdown over.

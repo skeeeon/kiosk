@@ -277,6 +277,14 @@ export interface Cart {
   // button). Server re-reads role from the DB at commit time, so a stale
   // value here is at worst a UI hint that fails late.
   user_role: 'worker' | 'foreman'
+  // The interaction/custody-acceptance terminal (?terminal= URL param),
+  // stamped on the transaction at commit. Optional attribution.
+  terminal_id?: string
+  // Non-empty when the cart was started server-side for an enclosure_diff
+  // cabinet (cart.start over NATS). Its presence is what tells the SPA this
+  // is an enclosure_diff cart — used to gate the manual "Re-read" button so
+  // it works even at a node that mixes counter_scan + enclosure_diff readers.
+  enclosure_id?: string
   started_at: string
   expires_at: string
   lines: CartLine[]
