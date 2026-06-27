@@ -1,6 +1,8 @@
 # Location & Sightings — plan
 
-Status: **scoped / not yet started** (2026-06-27). Living doc; update as phases land.
+Status: **L1–L4 landed** on branch `location-sightings` (2026-06-27), green (`go test ./...` +
+`vue-tsc`). Deferred within L4: the scheduled `digest.reconciliation` email + controller-side
+fleet BLE + the GPS-polygon flag (see Phasing / Deferred). Living doc; update as phases land.
 Sibling of [`docs/asset-tracker-plan.md`](asset-tracker-plan.md) (custody foundation),
 which is done through Phase 5. This is the deferred **second half** of that vision:
 coarse location / last-sighting of assets, and the reconciliation of custody vs location
@@ -248,10 +250,14 @@ the gateway interface (standalone-capable). L3 adds the fleet. L4 is the value.
   - **not** in custody but observed moving / off-site → unaccounted movement;
   - GPS outside a configured site polygon → theft signal.
   Pure read/derive — **no enforcement, no geofence hard-stops** (observability only, same stance
-  as no-billing-math). Delivered as (a) a scheduled `digest.reconciliation` report via the
-  existing scheduler fan-out (`report_key` + template, runs on whichever binary owns the schedule
-  — controller fleet-wide, standalone node-local) and (b) an admin SPA view (controller:
-  site-wide; node: its own instances).
+  as no-billing-math). **Shipped:** the pure `internal/reconcile` compute (stale / not_taken /
+  unaccounted; the GPS-polygon flag is deferred — needs site-polygon config), the two admin
+  endpoints (`GET /api/kiosk/reconciliation`, `GET /api/controller/reconciliation`), and the admin
+  SPA view (`AdminReconciliationView`; controller: site-wide, node: its own). **Deferred:** the
+  scheduled `digest.reconciliation` email — a push channel over data already queryable + visible;
+  it needs the notifications-template vertical (a new event type + template bodies + a
+  controller-side runner override, mirroring `digest.maintenance`). Add it when an operator wants
+  the email push.
 - **BLE as an alternate sighting source:** a BLE gateway publishes the **same** sighting shape
   with `tag_id` = a BLE beacon id, resolved against a new `item_instances.ble_id` (parallel to
   `rfid_epc`, added to the scan resolver chain). Everything downstream (ingest, dedup, projection,
