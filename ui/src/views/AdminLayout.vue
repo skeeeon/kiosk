@@ -104,6 +104,7 @@ const navItems = computed<NavItem[]>(() => [
   { name: 'admin-transactions', label: 'Transactions', section: 'ops', visible: () => !isTimeclockVirtual.value },
   { name: 'admin-reports', label: 'Reports', section: 'ops' },
   { name: 'admin-metrics', label: 'Metrics', section: 'ops', visible: () => !isController.value && !isTimeclockVirtual.value },
+  { name: 'admin-reconciliation', label: 'Reconciliation', section: 'ops', visible: () => !isTimeclockVirtual.value },
   { name: 'admin-notifications', label: 'Notifications', section: 'ops' },
   { name: 'admin-catalog-sync', label: 'Catalog sync', section: 'ops', visible: () => isController.value },
   { name: 'admin-import', label: 'Import', section: 'ops', visible: () => isController.value || !managed.value },

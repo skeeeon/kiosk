@@ -120,6 +120,11 @@ func (h *Handlers) PerformReadTrigger(ctx context.Context, c *cart.Cart, rd *Rea
 		}
 	}
 
+	// A custody read is also a location signal: stamp advisory last-observed
+	// for everything the reader saw, at this reader's zone. No-op when the
+	// reader has no zone configured (N=1 invisible).
+	h.stampObservedSighting(observed, rd.Zone, rd.ID)
+
 	// Tickle the broker — exactly once per read, regardless of how
 	// many cart lines landed. Subscribers refetch and see the merged
 	// state.

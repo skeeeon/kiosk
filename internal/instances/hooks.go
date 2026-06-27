@@ -304,6 +304,7 @@ func (h *Hooks) writeAudit(app core.App, in auditInput) {
 		AdminID:       in.AdminID,
 		SourceAuditID: rec.Id,
 		CompletedAt:   time.Now().UTC(),
+		RFIDEPC:       in.Record.GetString("rfid_epc"),
 	})
 	h.pub.Publish(events.InstanceLifecycleSubject(id.KioskCode), payload)
 }

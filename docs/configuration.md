@@ -65,6 +65,9 @@ rfid:                          # Optional. Off by default.
       mode: "counter_scan"     # "counter_scan" | "enclosure_diff" (required)
       host: "10.0.0.50"        # Reader IP/hostname (required)
       port: 5084               # Standard LLRP port
+      zone: "Main Crib"        # Optional location label. A read here also stamps each
+                               # observed unit's advisory "last seen" at this zone
+                               # (location/sightings). Omit = no location stamping.
       antennas: []             # Active reader ports + TX power. Empty = use reader baseline.
                                # Each entry: {id: 1, tx_power_dbm: 25.0}. Ids >= 1 + unique.
     cabinet-a:
@@ -72,6 +75,11 @@ rfid:                          # Optional. Off by default.
       host: "10.0.0.51"
       port: 5084
       enclosure_id: "cabinet-a" # Required when mode=enclosure_diff (access-controlled cabinet id)
+
+location:                      # Optional. Tunes the L4 reconciliation report.
+  stale_after: "72h"           # Flag an out-but-unseen unit older than this. 0 disables.
+  custody_zones: []            # Zone labels that count as "in storage". Empty defaults to the
+                               # node's reader zones; set explicitly on the controller.
 
 timeclock:                     # Optional. Off by default.
   enabled: false               # Gates the whole feature: endpoints, splash button, events.
@@ -172,6 +180,29 @@ Validation at startup:
 The identity payload served to the SPA grows `rfid_enabled` and
 `rfid_mode` so the frontend gates affordances appropriately. See
 [RFID](rfid.md) for the full design.
+
+A reader's optional `zone` opts it into location stamping: a custody read
+also records each observed unit's advisory "last seen" at that zone — free
+location data from custody activity, with no separate location reader (gateways
+are external publishers, see below).
+
+### Location
+
+The `location.*` block tunes the L4 custody-vs-location reconciliation report —
+**observability only**, it never enforces anything.
+
+- **`stale_after`** flags a checked-out unit not seen by any gateway in this
+  long ("possibly lost"). `0`/omitted disables that flag.
+- **`custody_zones`** are the zone labels that count as "still in storage"
+  (cabinet/counter); a checked-out unit last seen in one is flagged "not taken."
+  On a kiosk, an empty list defaults to the zones declared on the node's RFID
+  readers, so you usually don't set it. The controller has no reader zones, so
+  set it explicitly there to enable the not-taken flag (the stale and
+  unaccounted flags work without it).
+
+Sightings themselves arrive from **external gateways** that publish to NATS —
+they are configured and operated outside the platform, not in this file. See
+[Location & Sightings](location-sightings-plan.md).
 
 ### Timeclock
 

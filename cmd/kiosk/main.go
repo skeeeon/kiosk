@@ -25,6 +25,7 @@ import (
 	"github.com/skeeeon/kiosk/internal/notifications"
 	"github.com/skeeeon/kiosk/internal/rfid"
 	"github.com/skeeeon/kiosk/internal/scheduler"
+	"github.com/skeeeon/kiosk/internal/sightings"
 	"github.com/skeeeon/kiosk/internal/timeclock"
 	"github.com/skeeeon/kiosk/internal/ui"
 
@@ -82,6 +83,7 @@ func main() {
 		punchWatcher    *timeclock.Watcher
 		checkoutFleet   *timeclock.CheckoutFleet
 		checkoutWatcher *timeclock.CheckoutWatcher
+		mirrorWatcher   *sightings.MirrorWatcher
 	)
 	watcherCtx, watcherCancel := context.WithCancel(context.Background())
 	if cfg.Controller.Enabled {
@@ -129,6 +131,20 @@ func main() {
 					return e.Next()
 				})
 			}
+
+			// Fleet last-observed mirror (location/sightings L3): hydrates this
+			// node's OWN slice of the controller's last_observed_state bucket into
+			// its item_instances.last_observed_* columns, so a unit owned here but
+			// seen by another site's gateway shows its true last-seen locally.
+			// Best-effort, same posture as the catalog watcher.
+			mirrorWatcher = sightings.NewMirrorWatcher(app, js, cfg.Kiosk.Code, "")
+			app.OnServe().BindFunc(func(e *core.ServeEvent) error {
+				if err := mirrorWatcher.Start(watcherCtx); err != nil {
+					log.Printf("sighting mirror watcher: %v — kiosk will continue with local-gateway data only", err)
+					mirrorWatcher = nil
+				}
+				return e.Next()
+			})
 		}
 	}
 
@@ -174,6 +190,9 @@ func main() {
 	app.OnTerminate().BindFunc(func(e *core.TerminateEvent) error {
 		if catalogWatcher != nil {
 			catalogWatcher.Stop()
+		}
+		if mirrorWatcher != nil {
+			mirrorWatcher.Stop()
 		}
 		if punchWatcher != nil {
 			punchWatcher.Stop()
@@ -229,7 +248,7 @@ func main() {
 	if cfg.RFID.Enabled {
 		h.Readers = make(map[string]*handlers.ReaderHandle, len(cfg.RFID.Readers))
 		for id, rc := range cfg.RFID.Readers {
-			hd := &handlers.ReaderHandle{Mode: rc.Mode, EnclosureID: rc.EnclosureID}
+			hd := &handlers.ReaderHandle{ID: id, Mode: rc.Mode, EnclosureID: rc.EnclosureID, Zone: rc.Zone}
 			if r, err := rfid.New(rc); err != nil {
 				log.Printf("rfid: reader %q: %v — continuing without it", id, err)
 			} else {
@@ -251,6 +270,34 @@ func main() {
 			}
 			return e.Next()
 		})
+	}
+
+	// Standalone sighting ingest: a node with NATS but no controller subscribes
+	// to its OWN sighting subject and resolves each raw sighting locally via the
+	// scan resolver, stamping advisory last-observed (docs/location-sightings-
+	// plan.md, L2). Gated on !Controller.Enabled — in managed mode the controller
+	// is the sole sighting subscriber and mirrors last-observed back via KV (L3).
+	var sightingSub interface{ Unsubscribe() error }
+	if pub != nil && cfg.NATS.Enabled && !cfg.Controller.Enabled && cfg.Kiosk.Code != "" {
+		if nc, err := events.Conn(pub); err != nil {
+			log.Printf("sightings: nats connection unavailable: %v", err)
+		} else {
+			app.OnServe().BindFunc(func(e *core.ServeEvent) error {
+				sub, err := sightings.Subscribe(nc, app, cfg.Kiosk.Code, h.LookupInstanceIDByTag)
+				if err != nil {
+					log.Printf("sightings: subscribe failed — %v", err)
+				} else {
+					sightingSub = sub
+				}
+				return e.Next()
+			})
+			app.OnTerminate().BindFunc(func(e *core.TerminateEvent) error {
+				if sightingSub != nil {
+					_ = sightingSub.Unsubscribe()
+				}
+				return e.Next()
+			})
+		}
 	}
 
 	// PB record hooks on item_instances: create / decommission (active flip)
@@ -319,6 +366,7 @@ func main() {
 		e.Router.POST("/api/kiosk/cart/read-trigger", h.ReadTrigger)
 		e.Router.GET("/api/kiosk/integrity", h.Integrity)
 		e.Router.POST("/api/kiosk/integrity/rebuild", h.RebuildOpenCheckouts)
+		e.Router.GET("/api/kiosk/reconciliation", h.Reconciliation)
 		e.Router.GET("/api/kiosk/metrics", h.Metrics)
 		e.Router.GET("/api/kiosk/reports/open-checkouts", h.ReportOpenCheckouts)
 		e.Router.GET("/api/kiosk/reports/open-checkouts.csv", h.ReportOpenCheckoutsCSV)

@@ -220,6 +220,10 @@ export interface ItemInstance {
   code: string
   serial?: string
   rfid_epc?: string
+  // BLE beacon id — the BLE analog of rfid_epc, resolved by the scan chain for
+  // BLE-sourced sightings (location/sightings L4). Assignable via PB superuser /
+  // CSV; instance-only, like rfid_epc.
+  ble_id?: string
   // Lifecycle state. Replaces the old `active` boolean: in_service is
   // checkout-eligible, maintenance is owned-but-parked (counts toward on-hand,
   // not available), retired absorbs the old active=false + the removed hard
@@ -230,11 +234,38 @@ export interface ItemInstance {
   // partition key when a node hosts more than one cabinet. Empty = counter/crib
   // stock or a single-cabinet node (which doesn't partition).
   enclosure_id?: string
+  // Advisory "last seen" location (docs/location-sightings-plan.md). Lossy,
+  // last-write-wins — never authoritative, never gates custody. Empty until a
+  // gateway / custody read reports.
+  last_observed_at?: string
+  last_observed_zone?: string
+  last_observed_gateway?: string
+  last_observed_lat?: number
+  last_observed_lon?: number
 }
 
 export interface InstanceMatch {
   instance: ItemInstance
   item: Item
+}
+
+// Custody-vs-location reconciliation (docs/location-sightings-plan.md, L4).
+export type DiscrepancyKind = 'not_taken' | 'stale' | 'unaccounted'
+
+export interface Discrepancy {
+  kind: DiscrepancyKind
+  kiosk_code: string
+  instance_code: string
+  item_name?: string
+  holder?: string
+  zone?: string
+  observed_at?: string
+}
+
+export interface ReconciliationResult {
+  discrepancies: Discrepancy[]
+  generated_at: string
+  stale_after_hrs: number
 }
 
 export type ScanResult =

@@ -193,12 +193,14 @@ empty — unchanged.
 ## Deferred (shaped-for, not in this plan)
 
 - **Location / sightings — now scoped: see [`docs/location-sightings-plan.md`](location-sightings-plan.md).**
-  Sighting `{tag_id, zone?, lat?, lon?, time}` (static gateway → zone; roaming gateway → GPS),
-  carried on a new lossy `sighting` NATS family (outside the durable stream). Advisory
-  `last_observed_*` projection mirrored to the owning node like
-  `punch_state`/`open_checkouts_state`. Reconciliation (custody vs location diff) = the real
-  value. Phased L1 (node-local) → L2 (controller aggregation) → L3 (standalone/roaming + GPS)
-  → L4 (reconciliation + BLE).
+  Gateways are **external publishers** (off-platform; RFID-over-MQTT or an HTTP→NATS bridge) —
+  **not** a kiosk reader mode. One raw sighting shape `{tag_id, gateway_id, zone?, lat?, lon?,
+  observed_at, rssi?}` on a new lossy `sighting` NATS family (outside the durable stream),
+  resolved subscriber-side (standalone node via the scan resolver; controller via an EPC index).
+  Advisory `last_observed_*` projection mirrored to the owning node sliced like `catalog_items`
+  (`Watch(<code>.>)`, not WatchAll). Reconciliation (custody vs location diff) = the real value.
+  Phased L1 (node-local custody-read stamp, zero transport) → L2 (gateway wire contract,
+  standalone+NATS) → L3 (controller aggregation + fleet mirror) → L4 (reconciliation + BLE).
 - **Access-control vendor integration.** Wire a real lock/badge system as the publisher of
   `cart.start`/`read.trigger`. Lock→enclosure + badge→worker resolution in an adapter (or
   node-side via the scan resolver).

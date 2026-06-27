@@ -210,6 +210,10 @@ rfid:
       # antennas:
       #   - id: 1
       #     tx_power_dbm: 25.0
+      # zone (optional): a coarse location label. When set, a read here also
+      # stamps each observed unit's advisory "last seen" at this zone — free
+      # location data from custody activity. See docs/location-sightings-plan.md.
+      # zone: "Main Crib"
     cabinet-a:
       mode: "enclosure_diff"
       host: "10.0.0.51"
@@ -222,6 +226,7 @@ Validation at startup:
 - When `rfid.enabled=true`, `rfid.readers` must have at least one entry.
 - Each reader requires `mode` (`counter_scan` | `enclosure_diff`), `host`, and `port`.
 - A reader's `enclosure_id` is required when its `mode=enclosure_diff`.
+- A reader's `zone` is optional (location/sightings); empty = no location stamping.
 - When any reader is `enclosure_diff`, the shared `rfid.read_window` must be ≤ 3.5 s
   (`config.MaxEnclosureReadWindow`) — the read runs synchronously inside the
   controller's ~5 s command-reply window, so a larger window would push the

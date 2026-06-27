@@ -38,6 +38,12 @@ interface InstanceRow {
   // Derived by the controller from its projected ledger: is this unit
   // currently checked out? Orthogonal to status.
   out: boolean
+  // Advisory "last seen" location, carried through the kiosk's instance
+  // snapshot (kept current by the node's L3 mirror watcher). Empty until
+  // observed.
+  last_observed_at?: string
+  last_observed_zone?: string
+  last_observed_gateway?: string
 }
 
 const props = defineProps<{ kioskCode: string }>()
@@ -282,16 +288,37 @@ async function confirmStatus() {
   }
 }
 
-const columns: ColumnDef[] = [
-  { key: 'item_name', label: 'Item' },
-  { key: 'instance_code', label: 'Code' },
-  { key: 'serial', label: 'Serial' },
-  { key: 'rfid_epc', label: 'RFID' },
-  { key: 'enclosure_id', label: 'Enclosure' },
-  { key: 'status', label: 'Status' },
-  { key: 'out', label: 'Out?' },
-  { key: '__actions', align: 'right' },
-]
+// "Last seen" is advisory location: shown only when some unit at this kiosk has
+// been observed, so a kiosk with no gateways / no reader zone never sees it.
+const hasLastSeen = computed(() => rows.value.some((r) => !!r.last_observed_at))
+
+const columns = computed<ColumnDef[]>(() => {
+  const cols: ColumnDef[] = [
+    { key: 'item_name', label: 'Item' },
+    { key: 'instance_code', label: 'Code' },
+    { key: 'serial', label: 'Serial' },
+    { key: 'rfid_epc', label: 'RFID' },
+    { key: 'enclosure_id', label: 'Enclosure' },
+    { key: 'status', label: 'Status' },
+    { key: 'out', label: 'Out?' },
+  ]
+  if (hasLastSeen.value) cols.push({ key: 'last_seen', label: 'Last seen' })
+  cols.push({ key: '__actions', align: 'right' })
+  return cols
+})
+
+function relativeAge(iso: string): string {
+  const t = new Date(iso).getTime()
+  if (!Number.isFinite(t)) return ''
+  const diffMs = Date.now() - t
+  if (diffMs < 60_000) return 'just now'
+  const minutes = Math.floor(diffMs / 60_000)
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  const days = Math.floor(hours / 24)
+  return `${days}d ago`
+}
 </script>
 
 <template>
@@ -379,6 +406,13 @@ const columns: ColumnDef[] = [
       <template #cell-out="{ row }">
         <span v-if="row.out" class="text-amber-300 text-xs">currently out</span>
         <span v-else class="text-slate-500 text-xs">in</span>
+      </template>
+      <template #cell-last_seen="{ row }">
+        <template v-if="row.last_observed_at">
+          <span class="text-slate-300">{{ row.last_observed_zone || '—' }}</span>
+          <span class="text-slate-500 text-xs" :title="row.last_observed_at"> · {{ relativeAge(row.last_observed_at) }}</span>
+        </template>
+        <span v-else class="text-slate-600">—</span>
       </template>
       <template #cell-__actions="{ row }">
         <div class="inline-flex flex-wrap justify-end gap-2">

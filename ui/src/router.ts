@@ -20,6 +20,7 @@ import AdminKiosksView from './views/AdminKiosksView.vue'
 import AdminKioskDetailView from './views/AdminKioskDetailView.vue'
 import AdminTransactionsView from './views/AdminTransactionsView.vue'
 import AdminCatalogSyncView from './views/AdminCatalogSyncView.vue'
+import AdminReconciliationView from './views/AdminReconciliationView.vue'
 
 export const router = createRouter({
   history: createWebHistory(),
@@ -50,6 +51,7 @@ export const router = createRouter({
         // terminal. The route is always registered so deep-links resolve.
         { path: 'transactions', name: 'admin-transactions', component: AdminTransactionsView },
         { path: 'metrics', name: 'admin-metrics', component: AdminMetricsView },
+        { path: 'reconciliation', name: 'admin-reconciliation', component: AdminReconciliationView },
         { path: 'notifications', name: 'admin-notifications', component: AdminNotificationsView },
         { path: 'notifications/scheduled', name: 'admin-notifications-scheduled', component: AdminScheduledReportsView },
         { path: 'notifications/log', name: 'admin-notifications-log', component: AdminNotificationsLogView },

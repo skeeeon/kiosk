@@ -26,6 +26,40 @@ type Config struct {
 	Controller ControllerConfig `yaml:"controller"`
 	RFID       RFIDConfig       `yaml:"rfid"`
 	Timeclock  TimeclockConfig  `yaml:"timeclock"`
+	Location   LocationConfig   `yaml:"location"`
+}
+
+// LocationConfig tunes the L4 reconciliation report (docs/location-sightings-
+// plan.md). Both fields are optional; the report is observability-only and
+// never enforces anything.
+type LocationConfig struct {
+	// StaleAfter flags an out-but-unseen unit. Zero disables the stale flag.
+	StaleAfter Duration `yaml:"stale_after"`
+	// CustodyZones are the zone labels that count as "still in storage"
+	// (cabinet/counter). On a node, an empty list defaults to the zones of the
+	// node's own RFID readers (see CustodyZoneSet). On the controller — which
+	// has no reader config — set this explicitly to enable the not-taken flag.
+	CustodyZones []string `yaml:"custody_zones"`
+}
+
+// CustodyZoneSet returns the configured custody zones, defaulting to the set of
+// distinct zones declared on this node's RFID readers when none are configured.
+// Node-local convenience: a custody reader's zone IS a custody zone. Empty on a
+// controller with no readers + no explicit list (the not-taken flag is then
+// inert, the other flags still work).
+func (c *Config) CustodyZoneSet() []string {
+	if len(c.Location.CustodyZones) > 0 {
+		return c.Location.CustodyZones
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, r := range c.RFID.Readers {
+		if r.Zone != "" && !seen[r.Zone] {
+			seen[r.Zone] = true
+			out = append(out, r.Zone)
+		}
+	}
+	return out
 }
 
 type KioskConfig struct {
@@ -188,6 +222,13 @@ type RFIDReaderConfig struct {
 	Host        string `yaml:"host"`
 	Port        int    `yaml:"port"`
 	EnclosureID string `yaml:"enclosure_id"` // required when mode=enclosure_diff
+
+	// Zone is an optional coarse location label for this reader. When set, a
+	// custody read at this reader also stamps every observed unit's advisory
+	// last-observed location at this zone (docs/location-sightings-plan.md, L1)
+	// — free location data from custody activity. Empty = no location stamping
+	// (N=1 invisible).
+	Zone string `yaml:"zone"`
 
 	// Antennas enumerates the reader's active antenna ports and the TX
 	// power each one should run at. Empty list means "leave the reader's

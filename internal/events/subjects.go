@@ -13,6 +13,7 @@ import (
 //	event.<...>     kiosk -> controller, durable, JetStream
 //	command.<...>   controller -> kiosk, core NATS request/reply
 //	heartbeat       kiosk -> world, core NATS pub/sub, last-write-wins
+//	sighting.raw    gateway -> world, core NATS pub/sub, lossy last-write-wins
 //
 // The family segment is what makes "is this in the stream?" answerable
 // without thinking: the stream binds to "<prefix>.*.event.>" and that's it.
@@ -354,4 +355,26 @@ func HeartbeatSubject(kioskCode string) string {
 // kiosk's heartbeat subject.
 func HeartbeatFilter() string {
 	return SubjectPrefix() + ".*.heartbeat"
+}
+
+// SightingSubject is the subject an external gateway (or a custody reader, in
+// managed mode) publishes a raw location sighting on:
+// "<prefix>.<node_code>.sighting.raw". A new family `sighting`, sibling of
+// event/command/heartbeat — core NATS pub/sub, lossy, last-write-wins, OUTSIDE
+// the durable JetStream stream by construction (the stream binds only to
+// "<prefix>.*.event.>"). Sightings are high-volume and we only ever want
+// latest, so a dropped one self-heals on the next read. Publish via the raw
+// conn, never events.Publish — it is not an event. The wire payload is always
+// RAW (carries tag_id, never a resolved instance code); resolution happens
+// subscriber-side. See docs/location-sightings-plan.md.
+func SightingSubject(nodeCode string) string {
+	return fmt.Sprintf("%s.%s.sighting.raw", SubjectPrefix(), nodeCode)
+}
+
+// SightingFilter is the controller-side subscription pattern over every node's
+// sighting subject. The controller subscribes plainly (like heartbeats, NOT the
+// durable consumer) and is the sole fleet-wide sighting subscriber; kiosks
+// subscribe only to their OWN SightingSubject in standalone mode.
+func SightingFilter() string {
+	return SubjectPrefix() + ".*.sighting.raw"
 }

@@ -11,6 +11,7 @@ type fakeLookups struct {
 	itemsByCode     map[string]*Item
 	instancesByCode map[string]*InstanceMatch
 	instancesByRFID map[string]*InstanceMatch
+	instancesByBLE  map[string]*InstanceMatch
 	calls           []string // ordered list of lookup calls, for verifying dispatch
 }
 
@@ -29,6 +30,10 @@ func (f *fakeLookups) ItemInstanceByCode(c string) (*InstanceMatch, error) {
 func (f *fakeLookups) ItemInstanceByRFID(c string) (*InstanceMatch, error) {
 	f.calls = append(f.calls, "ItemInstanceByRFID:"+c)
 	return f.instancesByRFID[c], nil
+}
+func (f *fakeLookups) ItemInstanceByBLE(c string) (*InstanceMatch, error) {
+	f.calls = append(f.calls, "ItemInstanceByBLE:"+c)
+	return f.instancesByBLE[c], nil
 }
 
 func newFake() *fakeLookups {
@@ -53,6 +58,43 @@ func newFake() *fakeLookups {
 				Item:     item1,
 			},
 		},
+		instancesByBLE: map[string]*InstanceMatch{
+			"BEACON-9": {
+				Instance: &ItemInstance{ID: "inst-B", ItemID: "i1", Code: "DR-042-B", BLEID: "BEACON-9", Status: "in_service"},
+				Item:     item1,
+			},
+		},
+	}
+}
+
+// TestResolve_BLE: a BLE beacon id resolves to its instance, after the RFID
+// step misses — the source-agnostic location/sightings path (L4).
+func TestResolve_BLE(t *testing.T) {
+	fake := newFake()
+	r := &Resolver{
+		Lookups: Lookups{
+			UserByCode:         fake.UserByCode,
+			ItemByCode:         fake.ItemByCode,
+			ItemInstanceByCode: fake.ItemInstanceByCode,
+			ItemInstanceByRFID: fake.ItemInstanceByRFID,
+			ItemInstanceByBLE:  fake.ItemInstanceByBLE,
+		},
+	}
+	got := r.Resolve("BEACON-9")
+	if got.Type != ResultItemInstance {
+		t.Fatalf("type: got %q want item_instance", got.Type)
+	}
+	m, ok := got.Record.(*InstanceMatch)
+	if !ok || m.Instance == nil || m.Instance.BLEID != "BEACON-9" {
+		t.Fatalf("expected instance with BLEID=BEACON-9, got %#v", got.Record)
+	}
+	// BLE is tried only after code/item/rfid all miss.
+	want := []string{
+		"ItemInstanceByCode:BEACON-9", "ItemByCode:BEACON-9",
+		"ItemInstanceByRFID:BEACON-9", "ItemInstanceByBLE:BEACON-9",
+	}
+	if !reflect.DeepEqual(fake.calls, want) {
+		t.Errorf("calls: got %v want %v", fake.calls, want)
 	}
 }
 

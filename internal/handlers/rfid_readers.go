@@ -14,8 +14,10 @@ import (
 // still exists so callers can resolve the reader's identity and surface a 503.
 type ReaderHandle struct {
 	Reader      rfid.Reader // nil if New failed at startup
+	ID          string      // the reader_id key from cfg.RFID.Readers (the gateway id for sightings)
 	Mode        string      // counter_scan | enclosure_diff
 	EnclosureID string      // the cabinet this reader covers (enclosure_diff)
+	Zone        string      // optional coarse location label; a read here stamps last-observed (L1)
 }
 
 // ReaderByID returns the configured reader handle for id. When id is empty and

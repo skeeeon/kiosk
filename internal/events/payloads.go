@@ -324,6 +324,11 @@ type InstanceLifecycleInput struct {
 	CommandID         string
 	SourceAuditID     string
 	CompletedAt       time.Time
+	// RFIDEPC is the unit's current tag id, threaded so the controller can build
+	// its EPC → owning-unit index (location/sightings L3). Empty for untagged
+	// units. Advisory: a bare cosmetic EPC change emits no lifecycle event, so
+	// the index refreshes on the next create/status transition.
+	RFIDEPC string
 }
 
 // BuildInstanceLifecyclePayload renders the input into the map shape the
@@ -347,5 +352,27 @@ func BuildInstanceLifecyclePayload(in InstanceLifecycleInput) map[string]any {
 		"command_id":          in.CommandID,
 		"source_audit_id":     in.SourceAuditID,
 		"completed_at":        in.CompletedAt,
+		"rfid_epc":            in.RFIDEPC,
 	}
+}
+
+// SightingPayload is the ONE wire contract for the lossy `sighting` family
+// (docs/location-sightings-plan.md). It is always RAW: TagID is the observed
+// tag id (RFID EPC today, BLE beacon id later) — never a resolved instance
+// code, because an external gateway doesn't know our instance codes. Whoever
+// subscribes resolves it (standalone node via the scan resolver; controller via
+// an EPC index). The same struct serves both publish (marshal) and ingest
+// (unmarshal): external gateways publish JSON matching these keys, the node's
+// managed-mode custody-read publish marshals it, and every subscriber parses
+// it. Lat/Lon/RSSI are pointers so a zone-only sighting omits them; ObservedAt
+// is RFC3339 (a publisher that omits it gets defaulted to now at ingest —
+// advisory, lossy).
+type SightingPayload struct {
+	TagID      string    `json:"tag_id"`
+	GatewayID  string    `json:"gateway_id,omitempty"`
+	Zone       string    `json:"zone,omitempty"`
+	Lat        *float64  `json:"lat,omitempty"`
+	Lon        *float64  `json:"lon,omitempty"`
+	ObservedAt time.Time `json:"observed_at"`
+	RSSI       *int      `json:"rssi,omitempty"`
 }
