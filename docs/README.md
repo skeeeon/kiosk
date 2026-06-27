@@ -2,8 +2,15 @@
 
 Topic-by-topic documentation for the kiosk binary, the controller
 binary, and the operational surface around them. The repo-root
-[`README.md`](../README.md) is the orienting overview; everything more
-detailed lives here.
+[`README.md`](../README.md) is the feature-by-feature overview;
+everything more detailed lives here.
+
+## Start here
+
+- [Overview](overview.md) — the conceptual tour: what the platform is,
+  the custody-vs-location idea, the mental model (node / terminal /
+  reader / enclosure / item / instance), how the three programs fit
+  together, and how a deployment grows. Read this first.
 
 ## Setup & operation
 

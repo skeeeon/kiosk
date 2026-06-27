@@ -363,6 +363,9 @@ allows the punch rather than stranding the worker.
 
 The repo's deeper documentation lives under [`docs/`](docs/):
 
+- [Overview](docs/overview.md) — the high-level conceptual tour:
+  custody vs. location, the mental model, how the kiosk / controller /
+  timeclock programs fit together, and how a deployment grows. Start here.
 - [Configuration](docs/configuration.md) — YAML + env-var surface,
   branding, custom CSS.
 - [Development](docs/development.md) — dev loops, DB reset, test suite.
