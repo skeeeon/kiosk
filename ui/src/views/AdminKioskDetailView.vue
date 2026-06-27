@@ -20,6 +20,7 @@ import KioskItemsPanel from '../components/KioskItemsPanel.vue'
 import KioskInventoryPanel from '../components/KioskInventoryPanel.vue'
 import KioskInstancesPanel from '../components/KioskInstancesPanel.vue'
 import KioskMetricsPanel from '../components/KioskMetricsPanel.vue'
+import KioskConfigPanel from '../components/KioskConfigPanel.vue'
 import TimeclockPunchDialog from '../components/TimeclockPunchDialog.vue'
 import AppDialog from '../components/AppDialog.vue'
 import { useKioskIdentity } from '../composables/useKioskIdentity'
@@ -36,10 +37,10 @@ const loading = ref(false)
 const error = ref<string | null>(null)
 const saving = ref(false)
 
-type TabId = 'overview' | 'items' | 'inventory' | 'instances' | 'metrics' | 'timeclock'
+type TabId = 'overview' | 'items' | 'inventory' | 'instances' | 'readers' | 'metrics' | 'timeclock'
 const activeTab = ref<TabId>('overview')
 const tabs = computed<TabId[]>(() => {
-  const base: TabId[] = ['overview', 'items', 'inventory', 'instances', 'metrics']
+  const base: TabId[] = ['overview', 'items', 'inventory', 'instances', 'readers', 'metrics']
   if (identity.value?.timeclock_enabled) base.push('timeclock')
   return base
 })
@@ -48,6 +49,7 @@ const TAB_LABELS: Record<TabId, string> = {
   items: 'Items',
   inventory: 'Inventory',
   instances: 'Instances',
+  readers: 'Readers',
   metrics: 'Metrics',
   timeclock: 'Timeclock',
 }
@@ -396,6 +398,10 @@ async function submitRepublish() {
 
     <div v-if="kiosk && activeTab === 'instances'">
       <KioskInstancesPanel :kiosk-code="kiosk.kiosk_code" />
+    </div>
+
+    <div v-if="kiosk && activeTab === 'readers'">
+      <KioskConfigPanel :kiosk-code="kiosk.kiosk_code" />
     </div>
 
     <div v-if="kiosk && activeTab === 'metrics'">

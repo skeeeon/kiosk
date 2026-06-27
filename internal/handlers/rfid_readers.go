@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"sort"
+
 	"github.com/skeeeon/kiosk/internal/config"
 	"github.com/skeeeon/kiosk/internal/rfid"
 )
@@ -77,4 +79,54 @@ func (h *Handlers) anyReaderConnected() bool {
 		}
 	}
 	return false
+}
+
+// ReaderConfigSnapshot is one reader's config + live connection status, for the
+// read-only config.snapshot command. Pure observability — no secrets, no
+// mutation.
+type ReaderConfigSnapshot struct {
+	ReaderID    string `json:"reader_id"`
+	Mode        string `json:"mode"`
+	Host        string `json:"host"`
+	Port        int    `json:"port"`
+	EnclosureID string `json:"enclosure_id,omitempty"`
+	Antennas    int    `json:"antennas"`
+	Connected   bool   `json:"connected"`
+}
+
+// RFIDConfigSnapshot is the node's RFID topology as the controller's Readers tab
+// renders it: the shared read_window plus one row per configured reader (sorted
+// by reader_id for a stable display), each tagged with its current LLRP
+// connection status.
+type RFIDConfigSnapshot struct {
+	Enabled      bool                   `json:"enabled"`
+	ReadWindowMs int64                  `json:"read_window_ms"`
+	Readers      []ReaderConfigSnapshot `json:"readers"`
+}
+
+// RFIDConfigSnapshot builds the snapshot from config (host/port/mode/
+// enclosure_id/antennas) joined with the live reader handles (connected).
+func (h *Handlers) RFIDConfigSnapshot() RFIDConfigSnapshot {
+	out := RFIDConfigSnapshot{
+		Enabled:      h.Cfg.RFID.Enabled,
+		ReadWindowMs: h.Cfg.RFID.ReadWindow.AsDuration().Milliseconds(),
+		Readers:      []ReaderConfigSnapshot{},
+	}
+	for id, rc := range h.Cfg.RFID.Readers {
+		connected := false
+		if hd := h.Readers[id]; hd != nil && hd.Reader != nil {
+			connected = hd.Reader.Connected()
+		}
+		out.Readers = append(out.Readers, ReaderConfigSnapshot{
+			ReaderID:    id,
+			Mode:        rc.Mode,
+			Host:        rc.Host,
+			Port:        rc.Port,
+			EnclosureID: rc.EnclosureID,
+			Antennas:    len(rc.Antennas),
+			Connected:   connected,
+		})
+	}
+	sort.Slice(out.Readers, func(i, j int) bool { return out.Readers[i].ReaderID < out.Readers[j].ReaderID })
+	return out
 }

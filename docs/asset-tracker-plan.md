@@ -120,9 +120,10 @@ empty — unchanged.
   selection is the terminal work).
 - `main.go`: one `rfid.New` per entry, Connect each on serve, Close all on terminate.
   Single-reader configs behave exactly as before.
-- **Controller parity (deferred to a follow-on):** read-only `config.snapshot` command +
-  detail-page tab for reader/enclosure observability. Not blocking — node config is edited
-  locally; this is observability polish.
+- **Controller parity — DONE:** read-only `config.snapshot` command (kiosk) →
+  `GET /api/controller/kiosks/{code}/config` → SPA "Readers" tab (`KioskConfigPanel`) showing
+  each reader's mode / enclosure / endpoint / antenna-count + live connected status. Edited
+  locally in the kiosk's YAML; the tab is observability only.
 
 ### Phase 3 — `counter_scan` multi-reader + terminals first-class  *(additive)*
 
