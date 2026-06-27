@@ -245,6 +245,25 @@ export interface InstanceMatch {
   item: Item
 }
 
+// Custody-vs-location reconciliation (docs/location-sightings-plan.md, L4).
+export type DiscrepancyKind = 'not_taken' | 'stale' | 'unaccounted'
+
+export interface Discrepancy {
+  kind: DiscrepancyKind
+  kiosk_code: string
+  instance_code: string
+  item_name?: string
+  holder?: string
+  zone?: string
+  observed_at?: string
+}
+
+export interface ReconciliationResult {
+  discrepancies: Discrepancy[]
+  generated_at: string
+  stale_after_hrs: number
+}
+
 export type ScanResult =
   | { type: 'user'; record: User }
   | { type: 'item'; record: Item }
