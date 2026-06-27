@@ -82,7 +82,14 @@ present. The flow is event-driven and NATS-orchestrated:
 4. **In-process diff.** Pure function over (observed EPCs, expected
    set). Expected-present = non-retired serialized instances (in_service +
    maintenance) on this kiosk whose `id` is **not** currently in
-   `open_checkouts`. A maintenance unit is expected-present (it's
+   `open_checkouts`. When the node hosts **more than one cabinet**
+   (`enclosureCount() > 1`), that set is further scoped to instances whose
+   `item_instances.enclosure_id` matches the cabinet being read — so a read
+   of cabinet A never treats cabinet B's tools as missing. A single-cabinet
+   node (and any unassigned instance) keeps the whole-inventory set, so
+   nothing changes there. Assign a unit to a cabinet from the instance admin
+   UI (the "Enclosure" field, local or controller) or via CSV / the PB
+   superuser UI. A maintenance unit is expected-present (it's
    physically in the enclosure) but **not** checkout-eligible: if it
    leaves the enclosure it is skip-and-counted (recorded in a
    `SkippedIneligible` bucket, surfaced to the operator), never

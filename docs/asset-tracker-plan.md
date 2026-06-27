@@ -132,7 +132,7 @@ empty — unchanged.
 - Enclosure_diff accept now stamps `terminal_id` (the accepting door's screen).
 - At N=1, no param needed (implicit).
 
-### Phase 4 — `enclosure_diff` partition  *(additive — the capability)* — **DONE (backend)**
+### Phase 4 — `enclosure_diff` partition  *(additive — the capability)* — **DONE**
 
 - `item_instances.enclosure_id` (migration 1802000000; nullable, indexed). Explicit
   admin-assigned membership, no auto-flow. Empty = counter/crib stock or a single-cabinet
@@ -146,9 +146,14 @@ empty — unchanged.
 - **"Two doors" = two antennas on one reader** (already supported per-reader), so
   multi-reader-per-enclosure **union is deferred** — only needed when a cabinet needs >1
   physical reader (rare). One reader per enclosure is the shipped model.
-- **Deferred to the parity step:** the assignment UI — `enclosure_id` through the instance
-  create/edit command + `ItemInstancesPanel` / `KioskInstancesPanel`. Until then it's
-  assignable via the PB superuser UI / CSV.
+- **Assignment UI — DONE.** `enclosure_id` threads through the instance create/edit path:
+  `instances.CreateInput`/`EditInput`/`InstanceResult`/`SnapshotRow`, the kiosk command
+  handlers (`instance.create`/`instance.edit`/`instance.snapshot`), the controller endpoints
+  (`POST`/`PATCH /api/controller/kiosks/{code}/instances`), and both panels — the local
+  `ItemInstancesPanel` (an "Enclosure" column + inline input, written straight to PB) and the
+  controller `KioskInstancesPanel` (column + dialog field, over the command bus). Cosmetic
+  edit (no audit); `*"" ` clears the assignment. Covered by `TestInstanceEnclosureID_Assign`.
+  Still also assignable via the PB superuser UI / CSV.
 - Edge (note, don't solve): a tool returned to the wrong cabinet shows as unresolved in the
   wrong enclosure and missing in its home — same class of issue the single-enclosure model
   already has at the node boundary.

@@ -95,11 +95,12 @@ func fetchKioskData(
 // --- Create ---
 
 type instanceCreateRequest struct {
-	ItemCode string `json:"item_code"`
-	Code     string `json:"code"`
-	Serial   string `json:"serial,omitempty"`
-	RFIDEPC  string `json:"rfid_epc,omitempty"`
-	Notes    string `json:"notes,omitempty"`
+	ItemCode    string `json:"item_code"`
+	Code        string `json:"code"`
+	Serial      string `json:"serial,omitempty"`
+	RFIDEPC     string `json:"rfid_epc,omitempty"`
+	Notes       string `json:"notes,omitempty"`
+	EnclosureID string `json:"enclosure_id,omitempty"`
 }
 
 type instanceCreateCommandPayload struct {
@@ -110,6 +111,7 @@ type instanceCreateCommandPayload struct {
 	Serial            string `json:"serial,omitempty"`
 	RFIDEPC           string `json:"rfid_epc,omitempty"`
 	Notes             string `json:"notes,omitempty"`
+	EnclosureID       string `json:"enclosure_id,omitempty"`
 }
 
 // InstanceCreate returns the POST /api/controller/kiosks/{code}/instances
@@ -146,6 +148,7 @@ func (h *Handlers) InstanceCreate(nc *nats.Conn, reg *HeartbeatRegistry) func(*c
 			Serial:            body.Serial,
 			RFIDEPC:           body.RFIDEPC,
 			Notes:             body.Notes,
+			EnclosureID:       strings.TrimSpace(body.EnclosureID),
 		})
 		if err != nil {
 			return re.InternalServerError("marshal command", err)
@@ -158,10 +161,11 @@ func (h *Handlers) InstanceCreate(nc *nats.Conn, reg *HeartbeatRegistry) func(*c
 // --- Edit (cosmetic) ---
 
 type instanceEditRequest struct {
-	Code    *string `json:"code,omitempty"`
-	Serial  *string `json:"serial,omitempty"`
-	RFIDEPC *string `json:"rfid_epc,omitempty"`
-	Notes   *string `json:"notes,omitempty"`
+	Code        *string `json:"code,omitempty"`
+	Serial      *string `json:"serial,omitempty"`
+	RFIDEPC     *string `json:"rfid_epc,omitempty"`
+	Notes       *string `json:"notes,omitempty"`
+	EnclosureID *string `json:"enclosure_id,omitempty"`
 }
 
 type instanceEditCommandPayload struct {
@@ -170,6 +174,7 @@ type instanceEditCommandPayload struct {
 	Serial       *string `json:"serial,omitempty"`
 	RFIDEPC      *string `json:"rfid_epc,omitempty"`
 	Notes        *string `json:"notes,omitempty"`
+	EnclosureID  *string `json:"enclosure_id,omitempty"`
 }
 
 // InstanceEdit returns the PATCH /api/controller/kiosks/{code}/instances/{instance_code}
@@ -190,7 +195,7 @@ func (h *Handlers) InstanceEdit(nc *nats.Conn, reg *HeartbeatRegistry) func(*cor
 		if err := re.BindBody(&body); err != nil {
 			return re.BadRequestError("invalid request body", err)
 		}
-		if body.Code == nil && body.Serial == nil && body.RFIDEPC == nil && body.Notes == nil {
+		if body.Code == nil && body.Serial == nil && body.RFIDEPC == nil && body.Notes == nil && body.EnclosureID == nil {
 			return re.BadRequestError("at least one field is required", nil)
 		}
 		data, err := json.Marshal(instanceEditCommandPayload{
@@ -199,6 +204,7 @@ func (h *Handlers) InstanceEdit(nc *nats.Conn, reg *HeartbeatRegistry) func(*cor
 			Serial:       body.Serial,
 			RFIDEPC:      body.RFIDEPC,
 			Notes:        body.Notes,
+			EnclosureID:  body.EnclosureID,
 		})
 		if err != nil {
 			return re.InternalServerError("marshal command", err)

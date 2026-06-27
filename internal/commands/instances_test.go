@@ -343,3 +343,84 @@ func TestInstanceSnapshot_FilterByItem(t *testing.T) {
 		t.Errorf("unfiltered count: want 3, got %d", len(out.Instances))
 	}
 }
+
+// TestInstanceEnclosureID_Assign covers the enclosure-assignment thread added
+// for multi-cabinet enclosure_diff: create with an enclosure, see it on the
+// reply + snapshot, reassign it, then clear it (the *"" semantic). The
+// enclosure assignment is a cosmetic edit — it doesn't audit.
+func TestInstanceEnclosureID_Assign(t *testing.T) {
+	app := setupApp(t)
+	seedSerializedItem(t, app, "DRILL")
+	d := NewDispatcher(app, "KIOSK01")
+
+	// Create assigned to cabinet CAB-A.
+	createPayload, _ := json.Marshal(map[string]any{
+		"command_id":          "cmd-enc-create",
+		"controller_admin_id": "ctrl",
+		"item_code":           "DRILL",
+		"code":                "DRILL-ENC",
+		"enclosure_id":        "CAB-A",
+	})
+	reply := d.handleInstanceCreate(context.Background(), createPayload)
+	if !reply.Success {
+		t.Fatalf("create failed: %q", reply.Error)
+	}
+	var created instances.InstanceResult
+	cb, _ := json.Marshal(reply.Data)
+	if err := json.Unmarshal(cb, &created); err != nil {
+		t.Fatalf("unmarshal create: %v", err)
+	}
+	if created.EnclosureID != "CAB-A" {
+		t.Errorf("create reply EnclosureID = %q, want CAB-A", created.EnclosureID)
+	}
+
+	// Snapshot carries the assignment.
+	snap := d.handleInstanceSnapshot(context.Background(), []byte("{}"))
+	if !snap.Success {
+		t.Fatalf("snapshot failed: %q", snap.Error)
+	}
+	var snapOut struct {
+		Instances []instances.SnapshotRow `json:"instances"`
+	}
+	sb, _ := json.Marshal(snap.Data)
+	_ = json.Unmarshal(sb, &snapOut)
+	if len(snapOut.Instances) != 1 || snapOut.Instances[0].EnclosureID != "CAB-A" {
+		t.Fatalf("snapshot EnclosureID = %+v, want one row in CAB-A", snapOut.Instances)
+	}
+
+	// Reassign to CAB-B via a cosmetic edit.
+	cabB := "CAB-B"
+	editPayload, _ := json.Marshal(instanceEditRequest{
+		InstanceCode: "DRILL-ENC",
+		EnclosureID:  &cabB,
+	})
+	if r := d.handleInstanceEdit(context.Background(), editPayload); !r.Success {
+		t.Fatalf("reassign edit failed: %q", r.Error)
+	}
+	inst, err := app.FindFirstRecordByFilter("item_instances",
+		"code = {:c}", dbx.Params{"c": "DRILL-ENC"})
+	if err != nil {
+		t.Fatalf("find instance: %v", err)
+	}
+	if inst.GetString("enclosure_id") != "CAB-B" {
+		t.Errorf("after reassign: enclosure_id = %q, want CAB-B", inst.GetString("enclosure_id"))
+	}
+
+	// Clear the assignment (*"" → empty), e.g. moved to counter/crib stock.
+	empty := ""
+	clearPayload, _ := json.Marshal(instanceEditRequest{
+		InstanceCode: "DRILL-ENC",
+		EnclosureID:  &empty,
+	})
+	if r := d.handleInstanceEdit(context.Background(), clearPayload); !r.Success {
+		t.Fatalf("clear edit failed: %q", r.Error)
+	}
+	inst, err = app.FindFirstRecordByFilter("item_instances",
+		"code = {:c}", dbx.Params{"c": "DRILL-ENC"})
+	if err != nil {
+		t.Fatalf("find instance after clear: %v", err)
+	}
+	if inst.GetString("enclosure_id") != "" {
+		t.Errorf("after clear: enclosure_id = %q, want empty", inst.GetString("enclosure_id"))
+	}
+}

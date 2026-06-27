@@ -226,6 +226,10 @@ export interface ItemInstance {
   // delete. "Out" is NOT here — it's derived from open_checkouts.
   status: 'in_service' | 'maintenance' | 'retired'
   notes?: string
+  // Access-controlled cabinet this unit lives in — the enclosure_diff
+  // partition key when a node hosts more than one cabinet. Empty = counter/crib
+  // stock or a single-cabinet node (which doesn't partition).
+  enclosure_id?: string
 }
 
 export interface InstanceMatch {

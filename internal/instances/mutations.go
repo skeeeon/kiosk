@@ -46,6 +46,7 @@ type CreateInput struct {
 	Serial            string
 	RFIDEPC           string
 	Notes             string
+	EnclosureID       string // access-controlled cabinet the unit lives in (enclosure_diff partition); empty = counter/crib or single-cabinet
 	Status            string // StatusInService (default) | StatusMaintenance | StatusRetired
 	Source            string // events.SourceLocal | events.SourceController
 	AdminID           string // local admin PB id (source=local); empty otherwise
@@ -64,6 +65,7 @@ type EditInput struct {
 	Serial       *string
 	RFIDEPC      *string
 	Notes        *string
+	EnclosureID  *string // reassign the unit to a cabinet; *"" clears it
 }
 
 // ToggleInput packages the args for PerformSetStatus. Reason is required
@@ -88,6 +90,7 @@ type InstanceResult struct {
 	ItemID       string `json:"item_id"`
 	ItemCode     string `json:"item_code"`
 	Status       string `json:"status"`
+	EnclosureID  string `json:"enclosure_id"`
 }
 
 // MutationOutcome bundles InstanceResult with the audit row id and the
@@ -156,6 +159,9 @@ func PerformCreate(app core.App, in CreateInput) (*MutationOutcome, error) {
 		if in.Notes != "" {
 			inst.Set("notes", in.Notes)
 		}
+		if in.EnclosureID != "" {
+			inst.Set("enclosure_id", in.EnclosureID)
+		}
 		inst.Set("status", status)
 		if err := tx.Save(inst); err != nil {
 			return fmt.Errorf("save item_instance: %w", err)
@@ -186,6 +192,7 @@ func PerformCreate(app core.App, in CreateInput) (*MutationOutcome, error) {
 				ItemID:       item.Id,
 				ItemCode:     item.GetString("code"),
 				Status:       status,
+				EnclosureID:  inst.GetString("enclosure_id"),
 			},
 			AuditRecordID: audit.Id,
 			Action:        ActionCreate,
@@ -234,6 +241,9 @@ func PerformEdit(app core.App, in EditInput) (*InstanceResult, error) {
 		if in.Notes != nil {
 			inst.Set("notes", *in.Notes)
 		}
+		if in.EnclosureID != nil {
+			inst.Set("enclosure_id", *in.EnclosureID)
+		}
 		if err := tx.Save(inst); err != nil {
 			return fmt.Errorf("save item_instance: %w", err)
 		}
@@ -247,6 +257,7 @@ func PerformEdit(app core.App, in EditInput) (*InstanceResult, error) {
 			ItemID:       item.Id,
 			ItemCode:     item.GetString("code"),
 			Status:       inst.GetString("status"),
+			EnclosureID:  inst.GetString("enclosure_id"),
 		}
 		return nil
 	})
@@ -320,6 +331,7 @@ func PerformSetStatus(app core.App, in ToggleInput, target string) (*MutationOut
 			ItemID:       itemID,
 			ItemCode:     item.GetString("code"),
 			Status:       inst.GetString("status"),
+			EnclosureID:  inst.GetString("enclosure_id"),
 		}
 		if auditID == "" {
 			// No-op: already in target status. Report current state, no event.
@@ -398,6 +410,7 @@ type SnapshotRow struct {
 	RFIDEPC      string `json:"rfid_epc"`
 	Status       string `json:"status"`
 	Notes        string `json:"notes"`
+	EnclosureID  string `json:"enclosure_id"`
 	Created      string `json:"created"`
 	Updated      string `json:"updated"`
 	// Out reports whether this instance is currently checked out, derived
@@ -443,6 +456,7 @@ func Snapshot(app core.App, itemCode string) ([]SnapshotRow, error) {
 			RFIDEPC:      r.GetString("rfid_epc"),
 			Status:       r.GetString("status"),
 			Notes:        r.GetString("notes"),
+			EnclosureID:  r.GetString("enclosure_id"),
 			Created:      r.GetDateTime("created").String(),
 			Updated:      r.GetDateTime("updated").String(),
 		}
@@ -486,6 +500,7 @@ func buildOutcome(inst, audit *core.Record) MutationOutcome {
 			InstanceCode: inst.GetString("code"),
 			ItemID:       inst.GetString("item"),
 			Status:       inst.GetString("status"),
+			EnclosureID:  inst.GetString("enclosure_id"),
 		},
 		AuditRecordID: audit.Id,
 		Action:        audit.GetString("action"),
