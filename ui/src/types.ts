@@ -220,6 +220,10 @@ export interface ItemInstance {
   code: string
   serial?: string
   rfid_epc?: string
+  // BLE beacon id — the BLE analog of rfid_epc, resolved by the scan chain for
+  // BLE-sourced sightings (location/sightings L4). Assignable via PB superuser /
+  // CSV; instance-only, like rfid_epc.
+  ble_id?: string
   // Lifecycle state. Replaces the old `active` boolean: in_service is
   // checkout-eligible, maintenance is owned-but-parked (counts toward on-hand,
   // not available), retired absorbs the old active=false + the removed hard

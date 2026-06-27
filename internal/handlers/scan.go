@@ -34,6 +34,7 @@ func (h *Handlers) Scan(re *core.RequestEvent) error {
 			ItemByCode:         h.scanItemByCode,
 			ItemInstanceByCode: h.scanInstanceByCode,
 			ItemInstanceByRFID: h.scanInstanceByRFID,
+			ItemInstanceByBLE:  h.scanInstanceByBLE,
 		},
 	}
 	result := r.Resolve(body.Value)
@@ -255,6 +256,23 @@ func (h *Handlers) scanInstanceByRFID(epc string) (*scan.InstanceMatch, error) {
 	return h.instanceMatchFromRecord(rec)
 }
 
+// scanInstanceByBLE resolves a BLE beacon id to its instance — the BLE analog
+// of scanInstanceByRFID (location/sightings L4).
+func (h *Handlers) scanInstanceByBLE(bleID string) (*scan.InstanceMatch, error) {
+	if bleID == "" {
+		return nil, nil
+	}
+	bleID = strings.ToLower(strings.TrimSpace(bleID))
+	rec, err := h.App.FindFirstRecordByFilter("item_instances", "ble_id = {:b}", dbx.Params{"b": bleID})
+	if isNotFound(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return h.instanceMatchFromRecord(rec)
+}
+
 // instanceMatchFromRecord loads the instance's parent item so the caller has
 // the full picture in a single round-trip.
 func (h *Handlers) instanceMatchFromRecord(rec *core.Record) (*scan.InstanceMatch, error) {
@@ -269,6 +287,7 @@ func (h *Handlers) instanceMatchFromRecord(rec *core.Record) (*scan.InstanceMatc
 			Code:    rec.GetString("code"),
 			Serial:  rec.GetString("serial"),
 			RFIDEPC: rec.GetString("rfid_epc"),
+			BLEID:   rec.GetString("ble_id"),
 			Status:  rec.GetString("status"),
 			Notes:   rec.GetString("notes"),
 		},

@@ -283,7 +283,7 @@ func main() {
 			log.Printf("sightings: nats connection unavailable: %v", err)
 		} else {
 			app.OnServe().BindFunc(func(e *core.ServeEvent) error {
-				sub, err := sightings.Subscribe(nc, app, cfg.Kiosk.Code, h.LookupInstanceIDByEPC)
+				sub, err := sightings.Subscribe(nc, app, cfg.Kiosk.Code, h.LookupInstanceIDByTag)
 				if err != nil {
 					log.Printf("sightings: subscribe failed — %v", err)
 				} else {

@@ -254,12 +254,21 @@ the gateway interface (standalone-capable). L3 adds the fleet. L4 is the value.
   site-wide; node: its own instances).
 - **BLE as an alternate sighting source:** a BLE gateway publishes the **same** sighting shape
   with `tag_id` = a BLE beacon id, resolved against a new `item_instances.ble_id` (parallel to
-  `rfid_epc`, added to the scan resolver chain and the controller EPC index). Everything
-  downstream (ingest, dedup, projection, KV mirror, reconciliation) is **source-agnostic** —
-  RFID vs BLE differs only at resolution.
+  `rfid_epc`, added to the scan resolver chain). Everything downstream (ingest, dedup, projection,
+  KV mirror, reconciliation) is **source-agnostic** — RFID vs BLE differs only at resolution.
+  **Shipped:** the `ble_id` column + the node-side resolver chain (`ItemInstanceByBLE`), so a
+  **standalone** node with a BLE gateway resolves BLE sightings locally today (the node subscriber
+  tries EPC then BLE). **Deferred** (see below): the controller-side EPC index only resolves
+  `rfid_epc`, so **fleet** BLE aggregation (a BLE gateway feeding the controller) isn't wired yet —
+  it needs `ble_id` threaded onto `instance.lifecycle` + a second resolution key in
+  `instance_epc_index`. Small, well-understood follow-on; not built until a managed BLE deployment
+  needs it.
 
 ## Deferred (shaped-for, not in this plan)
 
+- **Controller-side fleet BLE resolution.** The node-side BLE resolver ships (standalone BLE
+  works); the controller's `instance_epc_index` resolves `rfid_epc` only. Threading `ble_id` onto
+  `instance.lifecycle` + a second resolution key would let a BLE gateway feed the controller.
 - **Gateway registry (controller `gateways` table).** v1 has each gateway stamp its `zone`/`id`
   inline (gateway config lives off-platform). A central registry — for gateways too dumb to
   self-label, or to manage a static gateway's zone centrally — is a later add-on; the ingest

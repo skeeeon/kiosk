@@ -77,6 +77,7 @@ type ItemInstance struct {
 	Code    string `json:"code"`
 	Serial  string `json:"serial,omitempty"`
 	RFIDEPC string `json:"rfid_epc,omitempty"`
+	BLEID   string `json:"ble_id,omitempty"`
 	// Status is the lifecycle state (in_service / maintenance / retired);
 	// replaces the old `active` boolean. Checkout eligibility is in_service.
 	Status string `json:"status"`
@@ -118,6 +119,11 @@ type Lookups struct {
 	ItemByCode         func(code string) (*Item, error)
 	ItemInstanceByCode func(code string) (*InstanceMatch, error)
 	ItemInstanceByRFID func(epc string) (*InstanceMatch, error)
+	// ItemInstanceByBLE resolves a BLE beacon id to its instance — the BLE
+	// analog of ItemInstanceByRFID (location/sightings L4). Same instance-only
+	// rule (beacon ids live on item_instances.ble_id, never on the SKU). nil is
+	// allowed (callers that don't use BLE).
+	ItemInstanceByBLE func(bleID string) (*InstanceMatch, error)
 }
 
 type Resolver struct {
@@ -136,7 +142,8 @@ type Resolver struct {
 //  1. If UserPrefix is set and value has it: strip and look up user only.
 //  2. If ItemPrefix is set and value has it: strip and try instance code →
 //     item code → instance rfid.
-//  3. Otherwise: try instance code → item code → instance rfid → user code.
+//  3. Otherwise: try instance code → item code → instance rfid → instance ble
+//     → user code.
 func (r *Resolver) Resolve(raw string) Result {
 	value := strings.TrimSpace(raw)
 	if value == "" {
@@ -162,6 +169,9 @@ func (r *Resolver) Resolve(raw string) Result {
 		if m, _ := tryInstanceByRFID(r.Lookups, code); m != nil {
 			return Result{Type: ResultItemInstance, Record: m}
 		}
+		if m, _ := tryInstanceByBLE(r.Lookups, code); m != nil {
+			return Result{Type: ResultItemInstance, Record: m}
+		}
 		return Result{Type: ResultUnknown, Value: value}
 	}
 
@@ -172,6 +182,9 @@ func (r *Resolver) Resolve(raw string) Result {
 		return Result{Type: ResultItem, Record: i}
 	}
 	if m, _ := tryInstanceByRFID(r.Lookups, value); m != nil {
+		return Result{Type: ResultItemInstance, Record: m}
+	}
+	if m, _ := tryInstanceByBLE(r.Lookups, value); m != nil {
 		return Result{Type: ResultItemInstance, Record: m}
 	}
 	if u, _ := r.Lookups.UserByCode(value); u != nil {
@@ -194,4 +207,11 @@ func tryInstanceByRFID(l Lookups, v string) (*InstanceMatch, error) {
 		return nil, nil
 	}
 	return l.ItemInstanceByRFID(v)
+}
+
+func tryInstanceByBLE(l Lookups, v string) (*InstanceMatch, error) {
+	if l.ItemInstanceByBLE == nil {
+		return nil, nil
+	}
+	return l.ItemInstanceByBLE(v)
 }
