@@ -336,8 +336,11 @@ onUnmounted(cleanup)
         </div>
 
         <!-- Map panel: v-show (not v-if) so Leaflet's DOM survives tab toggles.
-             Only GPS-bearing rows plot; the overlay covers the no-GPS case. -->
-        <div v-show="view === 'map'" class="relative">
+             Only GPS-bearing rows plot; the overlay covers the no-GPS case.
+             `isolate` traps Leaflet's internal z-indexes (panes/controls go up
+             to ~1000) in this wrapper's own stacking context so they can't
+             paint over the portaled detail sheet (z-40). -->
+        <div v-show="view === 'map'" class="relative isolate">
           <div
             id="locations-map"
             class="h-[70vh] min-h-[420px] rounded-xl border border-slate-800 overflow-hidden bg-slate-950"
