@@ -181,12 +181,26 @@ function handleMarkerClick(id: string) {
   if (row) selected.value = row
 }
 
+// Cluster click surfaces the units in that blob as a pick-list. This scales to
+// any N (a scrollable list), unlike a spiderfy spiral — the natural read for
+// our coarse fixes, where many units can share one gateway's coordinate.
+const clusterRows = ref<LocationRow[]>([])
+function handleClusterClick(ids: string[]) {
+  const set = new Set(ids)
+  clusterRows.value = mappable.value.filter((r) => set.has(markerId(r)))
+}
+// Picking a unit closes the list and opens the same per-unit detail sheet.
+function openFromCluster(r: LocationRow) {
+  clusterRows.value = []
+  selected.value = r
+}
+
 // Lazy init on first switch to the map tab (the container has real size only
 // once v-show reveals it). Re-entry just re-fits. Markers re-render reactively.
 async function ensureMap() {
   await nextTick()
   if (!mapReady) {
-    initMap(MAP_ID)
+    initMap(MAP_ID, { onClusterClick: handleClusterClick })
     mapReady = true
   }
   renderMarkers(markers.value, handleMarkerClick)
@@ -197,6 +211,7 @@ async function ensureMap() {
 
 watch(view, (v) => {
   if (v === 'map') ensureMap()
+  else clusterRows.value = [] // don't leave a map popup hanging over the table
 })
 watch(markers, (next) => {
   if (mapReady) renderMarkers(next, handleMarkerClick)
@@ -445,6 +460,43 @@ onUnmounted(cleanup)
       <p class="text-xs text-slate-600 mt-4">
         Advisory last-seen — lossy and never authoritative. It never gates custody.
       </p>
+    </AppDialog>
+
+    <!-- Cluster pick-list: opened when a map cluster can't be zoomed apart
+         (units sharing one coarse fix). Selecting a unit hands off to the
+         detail sheet above. Never open at the same time as it — openFromCluster
+         clears this list before setting `selected`. -->
+    <AppDialog
+      :open="clusterRows.length > 0"
+      variant="sheet"
+      size="sm"
+      :title="`${clusterRows.length} units here`"
+      description="Sharing one last-seen area"
+      @update:open="(v) => { if (!v) clusterRows = [] }"
+    >
+      <ul class="flex flex-col divide-y divide-slate-800 text-sm">
+        <li v-for="(r, i) in clusterRows" :key="r.kiosk_code + r.instance_code + i">
+          <button
+            type="button"
+            class="w-full text-left py-3 -mx-2 px-2 rounded flex items-center gap-3 hover:bg-slate-800/50 focus:outline-none focus:bg-slate-800/70"
+            @click="openFromCluster(r)"
+          >
+            <span
+              class="inline-block h-2.5 w-2.5 rounded-full shrink-0"
+              :style="{ background: ageColor(r.observed_at) }"
+              aria-hidden="true"
+            ></span>
+            <span class="min-w-0 flex-1">
+              <span class="block font-mono text-slate-200 truncate">{{ r.instance_code }}</span>
+              <span class="block text-xs text-slate-400 truncate">{{ r.item_name || r.item_code || '—' }}</span>
+            </span>
+            <span :class="ageClass(r.observed_at)" class="text-xs whitespace-nowrap shrink-0">
+              {{ relativeAge(r.observed_at) }}
+            </span>
+            <span class="text-slate-600 shrink-0">›</span>
+          </button>
+        </li>
+      </ul>
     </AppDialog>
   </main>
 </template>

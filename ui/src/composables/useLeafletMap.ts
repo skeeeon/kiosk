@@ -44,6 +44,16 @@ export interface MapMarkerInput {
   radiusM: number
 }
 
+export interface InitMapOptions {
+  // When set, cluster clicks route here instead of Leaflet's default
+  // zoom/spiderfy. The handler receives the child marker ids. We still zoom to
+  // fit a cluster whose points CAN be separated by zooming; the list is only
+  // surfaced for the un-separable case (identical coordinates, or already at
+  // max zoom) — which is the norm for our coarse gateway fixes and is exactly
+  // where a 20-leg spiderfy spiral falls apart.
+  onClusterClick?: (ids: string[]) => void
+}
+
 export function useLeafletMap() {
   const map = shallowRef<L.Map | null>(null)
   const clusterLayer = shallowRef<L.MarkerClusterGroup | null>(null)
@@ -51,7 +61,7 @@ export function useLeafletMap() {
 
   // Idempotent: the view lazily inits on first switch to the map tab, and a
   // re-entry just re-fits. A second init on a live map would leak the old one.
-  function initMap(containerId: string) {
+  function initMap(containerId: string, opts: InitMapOptions = {}) {
     if (map.value) return
     const container = document.getElementById(containerId)
     if (!container) return
@@ -65,11 +75,35 @@ export function useLeafletMap() {
     L.control.zoom({ position: 'bottomleft' }).addTo(m)
     L.tileLayer(TILE_URL, { attribution: TILE_ATTRIBUTION, maxZoom: 19 }).addTo(m)
 
+    const onClusterClick = opts.onClusterClick
     const cluster = L.markerClusterGroup({
       chunkedLoading: true,
       maxClusterRadius: 50,
       showCoverageOnHover: false,
+      // With a custom handler we own the click entirely (see below); disable
+      // the built-in zoom + spiral so they don't fire alongside it.
+      zoomToBoundsOnClick: !onClusterClick,
+      spiderfyOnMaxZoom: !onClusterClick,
     })
+    if (onClusterClick) {
+      cluster.on('clusterclick', (e: any) => {
+        const layer = e.layer
+        const bounds = layer.getBounds()
+        // Degenerate bounds = every child at (near-)identical coordinates, so
+        // zooming can never separate them. Otherwise, if we're not yet at max
+        // zoom, drill in — fitBounds has no maxZoom cap, so a tight cluster
+        // eventually reaches max zoom and then falls through to the list.
+        const degenerate = bounds.getNorthEast().equals(bounds.getSouthWest(), 1e-6)
+        if (!degenerate && m.getZoom() < m.getMaxZoom()) {
+          m.fitBounds(bounds, { padding: [40, 40] })
+          return
+        }
+        const ids = (layer.getAllChildMarkers() as L.Marker[])
+          .map((mk) => (mk as any).__rrId as string | undefined)
+          .filter((id): id is string => !!id)
+        onClusterClick(ids)
+      })
+    }
     cluster.addTo(m)
     // Halos live outside the cluster group (cluster plugin only clusters
     // Markers, not vector layers) so they render independently at every zoom.
@@ -115,6 +149,7 @@ export function useLeafletMap() {
       }).addTo(halos)
 
       const marker = L.marker([lat, lon], { icon: dotIcon(color), title: label })
+      ;(marker as any).__rrId = id // read back by the cluster-click handler
       if (onClick) marker.on('click', () => onClick(id))
       if (label) marker.bindTooltip(label, { direction: 'top', offset: [0, -8] })
       cluster.addLayer(marker)
