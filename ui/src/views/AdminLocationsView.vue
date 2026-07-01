@@ -6,10 +6,11 @@
      instance_location view, a node reads its own item_instances. Empty until a
      gateway or a zoned custody reader reports. -->
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { api } from '../lib/api'
 import { useKioskIdentity } from '../composables/useKioskIdentity'
 import { statusBadgeClass, statusLabel, type InstanceStatus } from '../lib/instanceStatus'
+import { useLeafletMap, type MapMarkerInput } from '../composables/useLeafletMap'
 import AppDialog from '../components/AppDialog.vue'
 import type { LocationReport, LocationRow } from '../types'
 
@@ -25,6 +26,17 @@ const error = ref<string | null>(null)
 const filter = ref('')
 // The unit whose detail sheet is open (null = closed). Rows are click-to-open.
 const selected = ref<LocationRow | null>(null)
+
+// Table (default) vs Map projection of the same rows. Table is safe at N=1 and
+// for zone-only sightings (which have no coordinate to plot); the map is opt-in.
+const view = ref<'table' | 'map'>('table')
+
+// Coarse-area halo radius, meters. The backend already defines "coarse": the
+// sighting dedup rounds GPS to 4 decimals ≈ ~11 m (internal/controller/
+// sightings.go, dedupKey). We honor that granularity here — a touch larger so
+// the halo is legible at street zoom. It's an honesty cue (the tag is somewhere
+// near the gateway's fix, not at it), not a measurement.
+const COARSE_RADIUS_M = 15
 
 async function load() {
   loading.value = true
@@ -76,16 +88,49 @@ function absoluteTime(iso?: string): string {
 }
 
 // Staleness tiers — high-signal for an asset tracker: a unit seen minutes ago is
-// trustworthy, one unseen for days is suspect. Advisory color only, mirrors the
+// trustworthy, one unseen for days is suspect. Advisory only, mirrors the
 // fresh→stale intuition (green → red). Matches no business rule; purely a cue.
-function ageClass(iso?: string): string {
-  if (!iso) return 'text-slate-500'
+// One tier function feeds both the table's text class and the map's marker
+// color so the two projections can never drift.
+type AgeTier = 'fresh' | 'recent' | 'stale' | 'old' | 'none'
+function ageTier(iso?: string): AgeTier {
+  if (!iso) return 'none'
   const diff = Date.now() - new Date(iso).getTime()
-  if (!Number.isFinite(diff)) return 'text-slate-500'
-  if (diff < 3_600_000) return 'text-emerald-400' // < 1h
-  if (diff < 86_400_000) return 'text-slate-300' // < 1d
-  if (diff < 604_800_000) return 'text-amber-400' // < 7d
-  return 'text-red-400' // ≥ 7d
+  if (!Number.isFinite(diff)) return 'none'
+  if (diff < 3_600_000) return 'fresh' // < 1h
+  if (diff < 86_400_000) return 'recent' // < 1d
+  if (diff < 604_800_000) return 'stale' // < 7d
+  return 'old' // ≥ 7d
+}
+function ageClass(iso?: string): string {
+  switch (ageTier(iso)) {
+    case 'fresh':
+      return 'text-emerald-400'
+    case 'recent':
+      return 'text-slate-300'
+    case 'stale':
+      return 'text-amber-400'
+    case 'old':
+      return 'text-red-400'
+    default:
+      return 'text-slate-500'
+  }
+}
+// Hex equivalents of ageClass, for the Leaflet dot + halo (Leaflet takes colors,
+// not Tailwind classes). Kept in lockstep with ageClass via the shared tier.
+function ageColor(iso?: string): string {
+  switch (ageTier(iso)) {
+    case 'fresh':
+      return '#34d399' // emerald-400
+    case 'recent':
+      return '#cbd5e1' // slate-300
+    case 'stale':
+      return '#fbbf24' // amber-400
+    case 'old':
+      return '#f87171' // red-400
+    default:
+      return '#64748b' // slate-500
+  }
 }
 
 // Coordinates worth showing: a zone-only sighting stores 0,0 (PB number columns
@@ -102,6 +147,61 @@ function coords(r: LocationRow): string {
 function mapUrl(r: LocationRow): string {
   return `https://www.openstreetmap.org/?mlat=${r.lat}&mlon=${r.lon}#map=16/${r.lat}/${r.lon}`
 }
+
+// --- Map projection -------------------------------------------------------
+// Only GPS-bearing rows are mappable; zone-only sightings have no coordinate
+// and stay in the table (we deliberately keep no zone→coordinate registry).
+// Everything flows from `visible`, so the filter box narrows the map too.
+const MAP_ID = 'locations-map'
+const { initMap, renderMarkers, fitAllMarkers, invalidateSize, cleanup } = useLeafletMap()
+let mapReady = false
+
+// A stable per-unit id for marker→row lookup on click (NUL-joined, same shape
+// as the controller's holder key; no delimiter collision with real codes).
+function markerId(r: LocationRow): string {
+  return r.kiosk_code + '\x00' + r.instance_code
+}
+
+const mappable = computed(() => visible.value.filter(hasGps))
+const markers = computed<MapMarkerInput[]>(() =>
+  mappable.value.map((r) => ({
+    id: markerId(r),
+    lat: r.lat as number,
+    lon: r.lon as number,
+    label: r.item_name || r.item_code || r.instance_code,
+    color: ageColor(r.observed_at),
+    radiusM: COARSE_RADIUS_M,
+  })),
+)
+
+// Marker click opens the same detail sheet a table row does — one code path for
+// "show me everything about this unit."
+function handleMarkerClick(id: string) {
+  const row = mappable.value.find((r) => markerId(r) === id)
+  if (row) selected.value = row
+}
+
+// Lazy init on first switch to the map tab (the container has real size only
+// once v-show reveals it). Re-entry just re-fits. Markers re-render reactively.
+async function ensureMap() {
+  await nextTick()
+  if (!mapReady) {
+    initMap(MAP_ID)
+    mapReady = true
+  }
+  renderMarkers(markers.value, handleMarkerClick)
+  await nextTick()
+  invalidateSize()
+  fitAllMarkers()
+}
+
+watch(view, (v) => {
+  if (v === 'map') ensureMap()
+})
+watch(markers, (next) => {
+  if (mapReady) renderMarkers(next, handleMarkerClick)
+})
+onUnmounted(cleanup)
 </script>
 
 <template>
@@ -145,9 +245,32 @@ function mapUrl(r: LocationRow): string {
             class="flex-1 rounded-lg bg-slate-900 border border-slate-700 px-3 py-1.5 text-sm"
           />
           <span class="text-xs text-slate-500 whitespace-nowrap">{{ visible.length }} of {{ total }}</span>
+          <!-- Table (default) vs Map. Map plots only GPS-bearing rows. -->
+          <div class="inline-flex rounded-lg border border-slate-700 overflow-hidden shrink-0" role="tablist">
+            <button
+              type="button"
+              role="tab"
+              :aria-selected="view === 'table'"
+              class="px-3 py-1.5 text-sm"
+              :class="view === 'table' ? 'bg-slate-700 text-white' : 'bg-slate-900 text-slate-400 hover:text-slate-200'"
+              @click="view = 'table'"
+            >
+              Table
+            </button>
+            <button
+              type="button"
+              role="tab"
+              :aria-selected="view === 'map'"
+              class="px-3 py-1.5 text-sm border-l border-slate-700"
+              :class="view === 'map' ? 'bg-slate-700 text-white' : 'bg-slate-900 text-slate-400 hover:text-slate-200'"
+              @click="view = 'map'"
+            >
+              Map
+            </button>
+          </div>
         </div>
 
-        <div class="overflow-x-auto rounded-xl border border-slate-800">
+        <div v-show="view === 'table'" class="overflow-x-auto rounded-xl border border-slate-800">
           <table class="w-full text-left text-sm">
             <thead class="text-slate-500 text-xs bg-slate-900/60">
               <tr>
@@ -212,8 +335,30 @@ function mapUrl(r: LocationRow): string {
           </table>
         </div>
 
+        <!-- Map panel: v-show (not v-if) so Leaflet's DOM survives tab toggles.
+             Only GPS-bearing rows plot; the overlay covers the no-GPS case. -->
+        <div v-show="view === 'map'" class="relative">
+          <div
+            id="locations-map"
+            class="h-[70vh] min-h-[420px] rounded-xl border border-slate-800 overflow-hidden bg-slate-950"
+          ></div>
+          <div
+            v-if="mappable.length === 0"
+            class="absolute inset-0 flex items-center justify-center p-4 pointer-events-none"
+          >
+            <div class="max-w-sm text-center rounded-lg bg-slate-900/90 border border-slate-800 px-4 py-3 pointer-events-auto">
+              <p class="text-sm text-slate-300">No units have a GPS fix yet.</p>
+              <p class="text-xs text-slate-500 mt-1">
+                Zone-only sightings (static readers) appear in the Table view.
+              </p>
+            </div>
+          </div>
+        </div>
+
         <p class="text-xs text-slate-600 mt-3">
-          Generated {{ relativeAge(result.generated_at) }} · most recently seen first
+          Generated {{ relativeAge(result.generated_at) }} ·
+          <template v-if="view === 'map'">{{ mappable.length }} with GPS · dot color = staleness, ring = coarse area</template>
+          <template v-else>most recently seen first</template>
         </p>
       </template>
     </template>
@@ -300,3 +445,37 @@ function mapUrl(r: LocationRow): string {
     </AppDialog>
   </main>
 </template>
+
+<style scoped>
+/* Leaflet injects its DOM inside #locations-map (a scoped element), so :deep()
+   reaches it. Retheme the cluster bubbles + tooltip to the slate palette (the
+   donated composable's daisyUI oklch vars don't exist here) and strip the
+   default white box off our divIcon dot. */
+:deep(.kiosk-map-dot) {
+  background: transparent;
+  border: none;
+}
+:deep(.leaflet-tooltip) {
+  background: #0f172a; /* slate-900 */
+  color: #e2e8f0; /* slate-200 */
+  border: 1px solid #334155; /* slate-700 */
+  box-shadow: none;
+}
+:deep(.leaflet-tooltip-top::before) {
+  border-top-color: #334155;
+}
+:deep(.marker-cluster) {
+  background: rgba(51, 65, 85, 0.35); /* slate-700 */
+}
+:deep(.marker-cluster div) {
+  background: rgba(51, 65, 85, 0.9);
+  color: #e2e8f0;
+  font-weight: 600;
+}
+:deep(.marker-cluster-medium div) {
+  background: rgba(71, 85, 105, 0.92); /* slate-600 */
+}
+:deep(.marker-cluster-large div) {
+  background: rgba(100, 116, 139, 0.95); /* slate-500 */
+}
+</style>
