@@ -22,6 +22,7 @@ type PunchRow struct {
 	OccurredAt time.Time
 	Created    time.Time // tie-break for same-occurred_at corrections
 	JobCode    string    // optional job/work-order tag; meaningful on the "in" punch
+	Note       string    // optional free-text annotation; may be on either punch
 }
 
 // Interval is one paired in→out stretch. Open intervals (clocked in, no out
@@ -36,6 +37,11 @@ type Interval struct {
 	Duration time.Duration `json:"-"`
 	Seconds  int64         `json:"seconds"`            // Duration for JSON consumers
 	JobCode  string        `json:"job_code,omitempty"` // carried from the opening "in" punch
+	// Notes are per-punch, so an interval surfaces both ends: Note from the
+	// "in" punch, OutNote from the "out" punch. Either may be empty; a note
+	// added on clock-out (the common case — "left early") lands in OutNote.
+	Note    string `json:"note,omitempty"`
+	OutNote string `json:"out_note,omitempty"`
 }
 
 // DayTotal is the summed closed-interval time for one user on one local
@@ -116,6 +122,8 @@ func Pair(punches []PunchRow, loc *time.Location) PairResult {
 				Duration: d,
 				Seconds:  int64(d / time.Second),
 				JobCode:  in.JobCode,
+				Note:     in.Note,
+				OutNote:  p.Note,
 			})
 			delete(open, p.UserID)
 		}
@@ -134,6 +142,7 @@ func Pair(punches []PunchRow, loc *time.Location) PairResult {
 			In:       p.OccurredAt,
 			Open:     true,
 			JobCode:  p.JobCode,
+			Note:     p.Note,
 		})
 	}
 

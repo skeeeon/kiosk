@@ -24,10 +24,17 @@ const emit = defineEmits<{
   recorded: [result: PunchResult]
 }>()
 
+// Single = one directional punch (optionally backdated). Shift = a full
+// in→out correction recorded as two backdated punches in one submit — the
+// common "worker forgot to clock out" fix.
+const mode = ref<'single' | 'shift'>('single')
+
 const userCode = ref('')
 const direction = ref<'in' | 'out'>('in')
 const reason = ref('')
-const occurredAt = ref('') // datetime-local; empty = now
+const occurredAt = ref('') // single mode; datetime-local; empty = now
+const startAt = ref('') // shift mode; datetime-local, required
+const endAt = ref('') // shift mode; datetime-local, required
 const force = ref(false)
 const kioskCode = ref('')
 const submitting = ref(false)
@@ -37,58 +44,109 @@ watch(
   () => props.open,
   (open) => {
     if (!open) return
+    mode.value = 'single'
     userCode.value = ''
     direction.value = 'in'
     reason.value = ''
     occurredAt.value = ''
+    startAt.value = ''
+    endAt.value = ''
     force.value = false
     kioskCode.value = props.defaultKioskCode ?? ''
     errorMsg.value = ''
   },
 )
 
-const canSubmit = computed(
-  () =>
-    userCode.value.trim() !== '' &&
-    reason.value.trim() !== '' &&
-    (!props.isController || kioskCode.value !== '') &&
-    !submitting.value,
+const canSubmit = computed(() => {
+  if (submitting.value) return false
+  if (userCode.value.trim() === '' || reason.value.trim() === '') return false
+  if (props.isController && kioskCode.value === '') return false
+  if (mode.value === 'shift') return startAt.value !== '' && endAt.value !== ''
+  return true
+})
+
+const path = computed(() =>
+  props.isController
+    ? `/api/controller/kiosks/${encodeURIComponent(kioskCode.value)}/timeclock/punch`
+    : '/api/kiosk/timeclock/admin-punch',
 )
+
+// datetime-local (local wall time) → UTC ISO, or null if unparseable.
+function toISO(local: string): string | null {
+  const t = new Date(local)
+  return Number.isFinite(t.getTime()) ? t.toISOString() : null
+}
+
+function describeErr(e: unknown): string {
+  if (isKioskOfflineError(e)) {
+    return `Kiosk ${kioskCode.value} is offline — manual punches need the kiosk reachable.`
+  }
+  if (e instanceof ApiError && e.status === 409) {
+    return (e.data as PunchConflict | null)?.message ?? e.message
+  }
+  return e instanceof ApiError ? e.message : (e as Error).message
+}
+
+async function postPunch(dir: 'in' | 'out', occurredISO: string | null, useForce: boolean) {
+  const body: Record<string, unknown> = {
+    user_code: userCode.value.trim(),
+    direction: dir,
+    reason: reason.value.trim(),
+    force: useForce,
+  }
+  if (occurredISO) body.occurred_at = occurredISO
+  return api.post<PunchResult>(path.value, body)
+}
 
 async function submit() {
   if (!canSubmit.value) return
   submitting.value = true
   errorMsg.value = ''
-  const body: Record<string, unknown> = {
-    user_code: userCode.value.trim(),
-    direction: direction.value,
-    reason: reason.value.trim(),
-    force: force.value,
-  }
-  if (occurredAt.value) {
-    const t = new Date(occurredAt.value)
-    if (!Number.isFinite(t.getTime())) {
-      errorMsg.value = 'Invalid date/time.'
-      submitting.value = false
+  try {
+    if (mode.value === 'shift') {
+      const startISO = toISO(startAt.value)
+      const endISO = toISO(endAt.value)
+      if (!startISO || !endISO) {
+        errorMsg.value = 'Invalid date/time.'
+        return
+      }
+      if (new Date(endISO) <= new Date(startISO)) {
+        errorMsg.value = 'End must be after start.'
+        return
+      }
+      // Record the clock-in first; only if it lands do we add the matching
+      // clock-out. Admin punches bypass alternation, so ordering is safe.
+      await postPunch('in', startISO, false)
+      let outRes: PunchResult
+      try {
+        // Force applies to the clock-out (the direction the open-tools block
+        // can reject).
+        outRes = await postPunch('out', endISO, force.value)
+      } catch (e) {
+        // The in-punch already committed; surface the partial state so the
+        // admin finishes with a single clock-out rather than re-adding both.
+        errorMsg.value = `Clock-in recorded, but the clock-out failed: ${describeErr(e)} Add the clock-out as a single punch.`
+        return
+      }
+      emit('recorded', outRes)
+      emit('update:open', false)
       return
     }
-    body.occurred_at = t.toISOString()
-  }
-  const path = props.isController
-    ? `/api/controller/kiosks/${encodeURIComponent(kioskCode.value)}/timeclock/punch`
-    : '/api/kiosk/timeclock/admin-punch'
-  try {
-    const res = await api.post<PunchResult>(path, body)
+
+    // Single punch.
+    let occurredISO: string | null = null
+    if (occurredAt.value) {
+      occurredISO = toISO(occurredAt.value)
+      if (!occurredISO) {
+        errorMsg.value = 'Invalid date/time.'
+        return
+      }
+    }
+    const res = await postPunch(direction.value, occurredISO, force.value)
     emit('recorded', res)
     emit('update:open', false)
   } catch (e) {
-    if (isKioskOfflineError(e)) {
-      errorMsg.value = `Kiosk ${kioskCode.value} is offline — manual punches need the kiosk reachable.`
-    } else if (e instanceof ApiError && e.status === 409) {
-      errorMsg.value = (e.data as PunchConflict | null)?.message ?? e.message
-    } else {
-      errorMsg.value = e instanceof ApiError ? e.message : (e as Error).message
-    }
+    errorMsg.value = describeErr(e)
   } finally {
     submitting.value = false
   }
@@ -99,7 +157,9 @@ async function submit() {
   <AppDialog
     :open="open"
     title="Record punch"
-    description="Manual/corrective punch. Reason is required; leave the time empty to punch now."
+    :description="mode === 'shift'
+      ? 'Record a full shift as an in→out pair. Reason is required.'
+      : 'Manual/corrective punch. Reason is required; leave the time empty to punch now.'"
     size="sm"
     @update:open="emit('update:open', $event)"
   >
@@ -128,33 +188,78 @@ async function submit() {
         />
       </label>
 
+      <!-- Single directional punch vs. a full in→out shift correction. -->
       <div class="flex gap-2">
         <button
           type="button"
           class="flex-1 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors"
-          :class="direction === 'in' ? 'bg-emerald-700 text-white' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'"
-          @click="direction = 'in'"
+          :class="mode === 'single' ? 'bg-brand-primary text-white' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'"
+          @click="mode = 'single'"
         >
-          Clock in
+          Single punch
         </button>
         <button
           type="button"
           class="flex-1 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors"
-          :class="direction === 'out' ? 'bg-amber-700 text-white' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'"
-          @click="direction = 'out'"
+          :class="mode === 'shift' ? 'bg-brand-primary text-white' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'"
+          @click="mode = 'shift'"
         >
-          Clock out
+          Full shift
         </button>
       </div>
 
-      <label class="flex flex-col gap-1 text-sm text-slate-300">
-        Time (leave empty for now)
-        <input
-          v-model="occurredAt"
-          type="datetime-local"
-          class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100"
-        />
-      </label>
+      <!-- SINGLE: pick a direction and an optional backdated time. -->
+      <template v-if="mode === 'single'">
+        <div class="flex gap-2">
+          <button
+            type="button"
+            class="flex-1 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors"
+            :class="direction === 'in' ? 'bg-emerald-700 text-white' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'"
+            @click="direction = 'in'"
+          >
+            Clock in
+          </button>
+          <button
+            type="button"
+            class="flex-1 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors"
+            :class="direction === 'out' ? 'bg-amber-700 text-white' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'"
+            @click="direction = 'out'"
+          >
+            Clock out
+          </button>
+        </div>
+
+        <label class="flex flex-col gap-1 text-sm text-slate-300">
+          Time (leave empty for now)
+          <input
+            v-model="occurredAt"
+            type="datetime-local"
+            class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100"
+          />
+        </label>
+      </template>
+
+      <!-- SHIFT: start + end become two backdated punches (in, then out). -->
+      <template v-else>
+        <div class="flex gap-3">
+          <label class="flex-1 flex flex-col gap-1 text-sm text-slate-300">
+            Start (clock in)
+            <input
+              v-model="startAt"
+              type="datetime-local"
+              class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100"
+            />
+          </label>
+          <label class="flex-1 flex flex-col gap-1 text-sm text-slate-300">
+            End (clock out)
+            <input
+              v-model="endAt"
+              type="datetime-local"
+              class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100"
+            />
+          </label>
+        </div>
+      </template>
 
       <label class="flex flex-col gap-1 text-sm text-slate-300">
         Reason
@@ -166,7 +271,12 @@ async function submit() {
         />
       </label>
 
-      <label v-if="direction === 'out'" class="flex items-center gap-2 text-sm text-slate-300">
+      <!-- Force bypasses the open-tools clock-out block — relevant to a
+           clock-out (single mode) or the out leg of a shift. -->
+      <label
+        v-if="mode === 'shift' || direction === 'out'"
+        class="flex items-center gap-2 text-sm text-slate-300"
+      >
         <input v-model="force" type="checkbox" class="rounded border-slate-600 bg-slate-800" />
         Force — bypass the open-tools block
       </label>

@@ -96,6 +96,9 @@ func (a *Aggregator) ProjectTimePunch(p EventPayload) projectOutcome {
 	if p.JobCode != "" {
 		rec.Set("job_code", p.JobCode)
 	}
+	if p.Note != "" {
+		rec.Set("note", p.Note)
+	}
 	rec.Set("kiosk_code", p.KioskCode)
 	rec.Set("location_code", p.LocationCode)
 	rec.Set("command_id", p.CommandID)

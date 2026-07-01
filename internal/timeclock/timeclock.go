@@ -86,6 +86,12 @@ type PunchInput struct {
 	// hours. Meaningful on a clock-in (pairing carries it onto the interval);
 	// stored on whatever punch supplies it, never validated.
 	JobCode string
+
+	// Note is an optional free-text annotation on this punch, usable by ANY
+	// source. Distinct from Reason (required, admin-only justification): a Note
+	// is a worker-visible aside ("left early — dentist") stored on whatever
+	// punch supplies it. Never validated.
+	Note string
 }
 
 // PunchResult is what the funnel returns and what the HTTP/command layers
@@ -120,6 +126,7 @@ func PerformPunch(app core.App, fleet *Fleet, checkoutFleet *CheckoutFleet, rule
 	in.TargetUserCode = strings.TrimSpace(in.TargetUserCode)
 	in.Reason = strings.TrimSpace(in.Reason)
 	in.JobCode = strings.TrimSpace(in.JobCode)
+	in.Note = strings.TrimSpace(in.Note)
 	if in.TargetUserCode == "" {
 		return nil, fmt.Errorf("target user code is required")
 	}
@@ -278,6 +285,9 @@ func PerformPunch(app core.App, fleet *Fleet, checkoutFleet *CheckoutFleet, rule
 		}
 		if in.JobCode != "" {
 			rec.Set("job_code", in.JobCode)
+		}
+		if in.Note != "" {
+			rec.Set("note", in.Note)
 		}
 		rec.Set("kiosk_code", id.KioskCode)
 		rec.Set("location_code", id.LocationCode)

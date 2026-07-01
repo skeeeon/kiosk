@@ -270,6 +270,7 @@ type TimeclockPunchInput struct {
 	Force              bool
 	CommandID          string
 	JobCode            string    // optional job/work-order tag
+	Note               string    // optional free-text per-punch annotation
 	RecordedAt         time.Time // when the row was written (≠ OccurredAt for backdated punches)
 }
 
@@ -293,6 +294,7 @@ func BuildTimeclockPunchPayload(in TimeclockPunchInput) map[string]any {
 		"force":                 in.Force,
 		"command_id":            in.CommandID,
 		"job_code":              in.JobCode,
+		"note":                  in.Note,
 		"recorded_at":           in.RecordedAt,
 	}
 }

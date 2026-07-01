@@ -92,6 +92,8 @@ func RepublishPunches(app core.App, from, to string, publish func(subject string
 			Reason:             r.GetString("reason"),
 			Force:              r.GetBool("force"),
 			CommandID:          r.GetString("command_id"),
+			JobCode:            r.GetString("job_code"),
+			Note:               r.GetString("note"),
 			RecordedAt:         r.GetDateTime("created").Time(),
 		}))
 	}

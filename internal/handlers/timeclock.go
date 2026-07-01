@@ -154,6 +154,8 @@ func (h *Handlers) TimeclockPunch(re *core.RequestEvent) error {
 		Acknowledge bool `json:"acknowledge"`
 		// JobCode optionally tags the hours with a job / work-order number.
 		JobCode string `json:"job_code"`
+		// Note is an optional free-text annotation on this punch.
+		Note string `json:"note"`
 	}
 	if err := re.BindBody(&body); err != nil {
 		return re.BadRequestError("invalid request body", err)
@@ -168,6 +170,7 @@ func (h *Handlers) TimeclockPunch(re *core.RequestEvent) error {
 		Source:         timeclock.SourceSelf,
 		Force:          body.Acknowledge,
 		JobCode:        body.JobCode,
+		Note:           body.Note,
 	}
 	recordedByUserCode := ""
 	if body.TargetUserCode != "" && body.TargetUserCode != body.UserCode {
@@ -281,6 +284,7 @@ func (h *Handlers) TimeclockAdminPunch(re *core.RequestEvent) error {
 		OccurredAt string `json:"occurred_at"`
 		Force      bool   `json:"force"`
 		JobCode    string `json:"job_code"`
+		Note       string `json:"note"`
 	}
 	if err := re.BindBody(&body); err != nil {
 		return re.BadRequestError("invalid request body", err)
@@ -293,6 +297,7 @@ func (h *Handlers) TimeclockAdminPunch(re *core.RequestEvent) error {
 		Reason:         body.Reason,
 		Force:          body.Force,
 		JobCode:        body.JobCode,
+		Note:           body.Note,
 	}
 	if body.OccurredAt != "" {
 		t, err := time.Parse(time.RFC3339, body.OccurredAt)
@@ -377,6 +382,7 @@ func PublishPunchEvent(res *timeclock.PunchResult, in timeclock.PunchInput, reco
 		Force:              in.Force,
 		CommandID:          in.CommandID,
 		JobCode:            in.JobCode,
+		Note:               in.Note,
 		RecordedAt:         res.RecordedAt,
 	}))
 }

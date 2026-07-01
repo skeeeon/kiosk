@@ -148,6 +148,37 @@ func TestPair_JobCodeCarriesFromInPunch(t *testing.T) {
 	}
 }
 
+// A note can sit on either punch, so an interval surfaces both ends: the "in"
+// note in Note, the "out" note in OutNote. This is the display the self
+// timeclock renders per interval.
+func TestPair_NoteCarriesFromBothPunches(t *testing.T) {
+	in := ts(t, "2026-06-11T07:00:00Z")
+	out := ts(t, "2026-06-11T15:00:00Z")
+	openIn := ts(t, "2026-06-11T16:00:00Z")
+	res := timeclock.Pair([]timeclock.PunchRow{
+		// Closed interval: note on the in AND a different note on the out.
+		{ID: "in-1", UserID: "bob", UserCode: "bob", Direction: "in", OccurredAt: in, Created: in, Note: "starting job A"},
+		{ID: "out-1", UserID: "bob", UserCode: "bob", Direction: "out", OccurredAt: out, Created: out, Note: "left early — dentist"},
+		// Trailing open interval carries its in-note.
+		{ID: "in-2", UserID: "bob", UserCode: "bob", Direction: "in", OccurredAt: openIn, Created: openIn, Note: "back on site"},
+	}, time.UTC)
+
+	var closed, open timeclock.Interval
+	for _, iv := range res.Intervals {
+		if iv.Open {
+			open = iv
+		} else {
+			closed = iv
+		}
+	}
+	if closed.Note != "starting job A" || closed.OutNote != "left early — dentist" {
+		t.Fatalf("closed interval notes: got in=%q out=%q", closed.Note, closed.OutNote)
+	}
+	if open.Note != "back on site" || open.OutNote != "" {
+		t.Fatalf("open interval notes: got in=%q out=%q (want out empty)", open.Note, open.OutNote)
+	}
+}
+
 func TestPair_MultiUserIsolation(t *testing.T) {
 	res := timeclock.Pair([]timeclock.PunchRow{
 		punch("a-in", "alice", "in", ts(t, "2026-06-11T07:00:00Z"), ts(t, "2026-06-11T07:00:00Z")),

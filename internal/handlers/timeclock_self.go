@@ -94,6 +94,8 @@ func (h *Handlers) SelfTimeclockPunch(re *core.RequestEvent) error {
 		Acknowledge bool `json:"acknowledge"`
 		// JobCode optionally tags the hours with a job / work-order number.
 		JobCode string `json:"job_code"`
+		// Note is an optional free-text annotation on this punch.
+		Note string `json:"note"`
 	}
 	if err := re.BindBody(&body); err != nil {
 		return re.BadRequestError("invalid request body", err)
@@ -106,6 +108,7 @@ func (h *Handlers) SelfTimeclockPunch(re *core.RequestEvent) error {
 		Source:         timeclock.SourceSelf,
 		Force:          body.Acknowledge,
 		JobCode:        body.JobCode,
+		Note:           body.Note,
 	}
 	res, err := timeclock.PerformPunch(h.App, h.PunchFleet, h.CheckoutFleet, h.punchRules(), kioskctx.Get(), in)
 	if err != nil {

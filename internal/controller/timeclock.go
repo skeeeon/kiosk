@@ -35,6 +35,7 @@ type timeclockPunchCommandPayload struct {
 	OccurredAt        string `json:"occurred_at,omitempty"`
 	Force             bool   `json:"force,omitempty"`
 	JobCode           string `json:"job_code,omitempty"`
+	Note              string `json:"note,omitempty"`
 }
 
 // TimeclockPunch records a manual punch at a kiosk on behalf of a controller
@@ -59,6 +60,7 @@ func (h *Handlers) TimeclockPunch(nc *nats.Conn, reg *HeartbeatRegistry) func(*c
 			OccurredAt string `json:"occurred_at"`
 			Force      bool   `json:"force"`
 			JobCode    string `json:"job_code"`
+			Note       string `json:"note"`
 		}
 		if err := re.BindBody(&body); err != nil {
 			return re.BadRequestError("invalid request body", err)
@@ -79,6 +81,7 @@ func (h *Handlers) TimeclockPunch(nc *nats.Conn, reg *HeartbeatRegistry) func(*c
 			OccurredAt:        body.OccurredAt,
 			Force:             body.Force,
 			JobCode:           body.JobCode,
+			Note:              body.Note,
 		})
 		if err != nil {
 			return re.InternalServerError("marshal command", err)

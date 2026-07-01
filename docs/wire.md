@@ -361,7 +361,8 @@ enabled on the kiosk.
   "reason": "forgot to clock out",
   "occurred_at": "RFC3339 (optional; empty = now)",
   "force": false,
-  "job_code": "optional job / work-order tag"
+  "job_code": "optional job / work-order tag",
+  "note": "optional free-text per-punch annotation"
 }
 ```
 
@@ -669,6 +670,7 @@ re-publish.
   "force": false,
   "command_id": "...",
   "job_code": "optional job / work-order tag (supplied on a clock-in)",
+  "note": "optional free-text per-punch annotation (either direction)",
   "recorded_at": "RFC3339 — when the row was written"
 }
 ```

@@ -18,6 +18,7 @@ import { useKioskIdentity } from '../composables/useKioskIdentity'
 import type {
   OpenCheckoutDetail,
   PunchConflict,
+  PunchInterval,
   PunchResult,
   PunchStatus,
   TimeclockHistoryResponse,
@@ -118,6 +119,8 @@ const blockedRows = ref<OpenCheckoutDetail[]>([])
 const lastPunch = ref<PunchResult | null>(null)
 // Optional job/work-order tag, supplied on clock-in. Cleared after a punch.
 const jobCode = ref('')
+// Optional free-text note, allowed on any punch (in or out). Cleared after a punch.
+const note = ref('')
 
 // ---------- timesheet summary ----------
 // A glanceable "Today / This week" total plus today's punch pairs, fetched
@@ -178,9 +181,12 @@ async function punch(direction: 'in' | 'out', acknowledge = false) {
       ...(acknowledge ? { acknowledge: true } : {}),
       // Job tag is only meaningful on a clock-in; pairing reads it off the "in".
       ...(direction === 'in' && jobCode.value.trim() ? { job_code: jobCode.value.trim() } : {}),
+      // A note can ride either direction (job # is clock-in only).
+      ...(note.value.trim() ? { note: note.value.trim() } : {}),
     })
     lastPunch.value = res
     if (direction === 'in') jobCode.value = ''
+    note.value = ''
     status.value = { ...status.value, clocked_in: res.clocked_in, since: res.occurred_at }
     void loadSummary()
   } catch (e) {
@@ -285,25 +291,99 @@ const liveSeconds = computed(() => {
   return Math.max(0, Math.floor((now.value.getTime() - since) / 1000))
 })
 
-const todaySeconds = computed(() => {
-  const closed = summary.value?.day_totals.find((d) => d.date === todayKey.value)?.seconds ?? 0
+// Closed-interval seconds bucketed by the interval's LOCAL start day — the
+// SAME browser-local keying used for todayIntervals, so the totals card can
+// never disagree with the punch list below it. We deliberately do NOT read
+// summary.day_totals: the server buckets those in ITS timezone (time.Local),
+// which differs from the browser's when the terminal runs in UTC — that
+// mismatch was rendering 0m against a plainly-visible interval. Midnight-
+// spanning intervals are attributed whole to their start day; fine for a
+// glanceable readout, and the raw-punch CSV remains the payroll contract.
+const closedSecondsByDay = computed(() => {
+  const map = new Map<string, number>()
+  for (const iv of summary.value?.intervals ?? []) {
+    if (iv.open) continue
+    const key = ymd(new Date(iv.in))
+    map.set(key, (map.get(key) ?? 0) + iv.seconds)
+  }
+  return map
+})
+
+const todaySeconds = computed(
+  () => (closedSecondsByDay.value.get(todayKey.value) ?? 0) + liveSeconds.value,
+)
+
+const weekSeconds = computed(() => {
+  let closed = 0
+  for (const [date, secs] of closedSecondsByDay.value) {
+    if (date >= weekStartKey.value && date <= todayKey.value) closed += secs
+  }
   return closed + liveSeconds.value
 })
 
-const weekSeconds = computed(() => {
-  const closed = (summary.value?.day_totals ?? [])
-    .filter((d) => d.date >= weekStartKey.value && d.date <= todayKey.value)
-    .reduce((sum, d) => sum + d.seconds, 0)
-  return closed + liveSeconds.value
+// Format a YYYY-MM-DD key as a short local date label ("Mon, Jun 29"). We
+// parse the parts and rebuild in LOCAL time — new Date("2026-06-29") would
+// parse as UTC midnight and can slip to the previous day west of Greenwich.
+function dayLabel(key: string): string {
+  const [y, m, d] = key.split('-').map(Number)
+  return new Date(y, m - 1, d).toLocaleDateString([], {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+  })
+}
+
+// Non-empty notes on an interval, in punch order (in-note then out-note).
+function intervalNotes(iv: PunchInterval): string[] {
+  return [iv.note, iv.out_note].filter((n): n is string => !!n && n.length > 0)
+}
+
+// All intervals grouped by their LOCAL start day — the one place we bucket, so
+// the today list and the earlier-week list stay consistent with the totals.
+const intervalsByDay = computed(() => {
+  const map = new Map<string, PunchInterval[]>()
+  for (const iv of summary.value?.intervals ?? []) {
+    const key = ymd(new Date(iv.in))
+    const arr = map.get(key)
+    if (arr) arr.push(iv)
+    else map.set(key, [iv])
+  }
+  return map
 })
 
 // Today's intervals, newest first so a running session sits on top.
 const todayIntervals = computed(() =>
-  (summary.value?.intervals ?? [])
-    .filter((iv) => ymd(new Date(iv.in)) === todayKey.value)
-    .slice()
-    .reverse(),
+  (intervalsByDay.value.get(todayKey.value) ?? []).slice().reverse(),
 )
+
+// Earlier days THIS week (Mon..yesterday), newest day first, each with its own
+// closed-second total and intervals. Lets a phone see the week, not just today.
+const earlierDays = computed(() => {
+  const days: { date: string; label: string; seconds: number; intervals: PunchInterval[] }[] = []
+  for (const [date, ivs] of intervalsByDay.value) {
+    if (date >= weekStartKey.value && date < todayKey.value) {
+      const seconds = ivs.reduce((sum, iv) => sum + (iv.open ? 0 : iv.seconds), 0)
+      days.push({ date, label: dayLabel(date), seconds, intervals: ivs.slice().reverse() })
+    }
+  }
+  days.sort((a, b) => (a.date < b.date ? 1 : -1))
+  return days
+})
+
+// Recent job codes across the fetched window, most-recent first, de-duplicated
+// — powers the Job # datalist so a worker taps a prior job instead of retyping.
+const recentJobCodes = computed(() => {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const iv of (summary.value?.intervals ?? []).slice().reverse()) {
+    const jc = iv.job_code?.trim()
+    if (jc && !seen.has(jc)) {
+      seen.add(jc)
+      out.push(jc)
+    }
+  }
+  return out
+})
 </script>
 
 <template>
@@ -457,14 +537,28 @@ const todayIntervals = computed(() =>
               </li>
             </ul>
 
-            <!-- Optional job / work-order tag, offered only when clocking in. -->
-            <input
-              v-if="blockedRows.length === 0 && !status.clocked_in"
-              v-model="jobCode"
-              type="text"
-              placeholder="Job # (optional)"
-              class="w-full px-4 py-3 rounded-xl bg-slate-800 border border-slate-700 text-slate-100 placeholder-slate-500 text-center focus:outline-none focus:border-slate-500"
-            />
+            <!-- Optional job / work-order tag (clock-in only) + a free-text
+                 note (either direction). The job field offers a datalist of the
+                 worker's recent jobs for one-tap reuse instead of retyping. -->
+            <template v-if="blockedRows.length === 0">
+              <input
+                v-if="!status.clocked_in"
+                v-model="jobCode"
+                type="text"
+                list="recent-jobs"
+                placeholder="Job # (optional)"
+                class="w-full px-4 py-3 rounded-xl bg-slate-800 border border-slate-700 text-slate-100 placeholder-slate-500 text-center focus:outline-none focus:border-slate-500"
+              />
+              <datalist v-if="recentJobCodes.length" id="recent-jobs">
+                <option v-for="jc in recentJobCodes" :key="jc" :value="jc" />
+              </datalist>
+              <input
+                v-model="note"
+                type="text"
+                placeholder="Add a note (optional)"
+                class="w-full px-4 py-3 rounded-xl bg-slate-800 border border-slate-700 text-slate-100 placeholder-slate-500 text-center focus:outline-none focus:border-slate-500"
+              />
+            </template>
 
             <!-- Normal punch button, hidden once a clock-out is blocked. -->
             <button
@@ -546,27 +640,70 @@ const todayIntervals = computed(() =>
         <div class="px-5 py-4">
           <p class="text-xs uppercase tracking-wide text-slate-500 mb-2">Today's punches</p>
           <ul v-if="todayIntervals.length" class="flex flex-col gap-1.5">
-            <li
-              v-for="(iv, i) in todayIntervals"
-              :key="i"
-              class="flex items-center justify-between text-sm"
-            >
-              <span class="text-slate-300 tabular-nums">
-                {{ formatTime(iv.in) }}
-                <span class="text-slate-600 px-0.5">→</span>
-                <span v-if="iv.open" class="text-emerald-400">in progress</span>
-                <template v-else>{{ formatTime(iv.out) }}</template>
-                <span
-                  v-if="iv.job_code"
-                  class="ml-1.5 px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-xs font-mono text-slate-400"
-                >{{ iv.job_code }}</span>
-              </span>
-              <span class="text-slate-400 tabular-nums">
-                {{ formatDuration(iv.open ? liveSeconds : iv.seconds) }}
-              </span>
+            <li v-for="(iv, i) in todayIntervals" :key="i" class="text-sm">
+              <div class="flex items-center justify-between">
+                <span class="text-slate-300 tabular-nums">
+                  {{ formatTime(iv.in) }}
+                  <span class="text-slate-600 px-0.5">→</span>
+                  <span v-if="iv.open" class="text-emerald-400">in progress</span>
+                  <template v-else>{{ formatTime(iv.out) }}</template>
+                  <span
+                    v-if="iv.job_code"
+                    class="ml-1.5 px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-xs font-mono text-slate-400"
+                  >{{ iv.job_code }}</span>
+                </span>
+                <span class="text-slate-400 tabular-nums">
+                  {{ formatDuration(iv.open ? liveSeconds : iv.seconds) }}
+                </span>
+              </div>
+              <p
+                v-for="(n, ni) in intervalNotes(iv)"
+                :key="ni"
+                class="text-xs text-slate-500 italic mt-0.5 pl-1"
+              >
+                “{{ n }}”
+              </p>
             </li>
           </ul>
           <p v-else class="text-sm text-slate-500">No punches yet today.</p>
+        </div>
+
+        <!-- Earlier this week: prior days (Mon..yesterday) with their own
+             totals, so the phone shows the week rather than only today. -->
+        <div v-if="earlierDays.length" class="px-5 py-4 border-t border-slate-800">
+          <p class="text-xs uppercase tracking-wide text-slate-500 mb-2">Earlier this week</p>
+          <div v-for="day in earlierDays" :key="day.date" class="mb-3 last:mb-0">
+            <div class="flex items-center justify-between mb-1">
+              <span class="text-sm font-medium text-slate-300">{{ day.label }}</span>
+              <span class="text-sm text-slate-400 tabular-nums">{{ formatDuration(day.seconds) }}</span>
+            </div>
+            <ul class="flex flex-col gap-1 pl-1">
+              <li v-for="(iv, i) in day.intervals" :key="i" class="text-sm">
+                <div class="flex items-center justify-between">
+                  <span class="text-slate-400 tabular-nums">
+                    {{ formatTime(iv.in) }}
+                    <span class="text-slate-600 px-0.5">→</span>
+                    <span v-if="iv.open" class="text-emerald-400">in progress</span>
+                    <template v-else>{{ formatTime(iv.out) }}</template>
+                    <span
+                      v-if="iv.job_code"
+                      class="ml-1.5 px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-xs font-mono text-slate-500"
+                    >{{ iv.job_code }}</span>
+                  </span>
+                  <span class="text-slate-500 tabular-nums">
+                    {{ formatDuration(iv.open ? liveSeconds : iv.seconds) }}
+                  </span>
+                </div>
+                <p
+                  v-for="(n, ni) in intervalNotes(iv)"
+                  :key="ni"
+                  class="text-xs text-slate-500 italic mt-0.5 pl-1"
+                >
+                  “{{ n }}”
+                </p>
+              </li>
+            </ul>
+          </div>
         </div>
       </div>
       </template>

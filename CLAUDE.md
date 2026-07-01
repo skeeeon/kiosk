@@ -209,7 +209,11 @@ Three invariants:
    job / work-order tag, supplied on a clock-in) — an optional attribution
    column on the punch ledger (same shape as `transactions.terminal_id`), threaded
    through every punch path and projected onto the controller's `time_punches`;
-   display pairing carries it from the "in" punch onto the interval.
+   display pairing carries it from the "in" punch onto the interval. It also
+   carries an optional `note` (free-text per-punch annotation, allowed on
+   either direction and any source — distinct from `reason`, which is required
+   only for admin/corrective punches); pairing surfaces both ends of an
+   interval as `note` (from the "in") and `out_note` (from the "out").
    `<prefix>.<kiosk_code>.event.scan.rfid.observed` fires after every
    LLRP inventory cycle in either RFID mode and carries the full
    deduplicated EPC array (the read-window observability stream —
@@ -458,7 +462,11 @@ append-only punch ledger — API-readonly, funnel-only writes),
 seeds the `digest.timeclock` template), and
 `1799200000_timeclock_self_digest.go` (extends `report_key` with
 `timeclock_self` + seeds the per-worker `digest.timeclock_self` template —
-see the scheduler fan-out note below); controller-side
+see the scheduler fan-out note below),
+`1799300000_time_punches_job_code.go` (adds the optional `job_code` column),
+and `1799400000_time_punches_note.go` (adds the optional `note` column — both
+shared kiosk migrations, so the controller/timeclock DBs get them too and the
+aggregator projects the fleet's values through); controller-side
 `2001100000_time_punches_source.go` (adds `source_punch_id`
 unique-when-non-empty — the projection's idempotency anchor — plus
 `source_actor` for kiosk-admin actors whose FK can't resolve in the
