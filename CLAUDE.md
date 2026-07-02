@@ -249,7 +249,8 @@ Three invariants:
      reply, single attempt, ≤5 s reply timeout. The kiosk's dispatcher
      replies on `msg.Reply` with a `{success, error, data}` envelope.
      Built-ins today: `inventory.adjust`, `inventory.snapshot`,
-     `checkout.close`, the `instance.*` family
+     `checkout.close`, `checkout.snapshot` (read-only open-checkouts DTOs —
+     the reconciliation gather's live-snapshot source), the `instance.*` family
      (`create`/`edit`/`set_status`/`snapshot` — `set_status` carries the
      target status as data and covers send-to-maintenance / return-to-service
      / retire / un-retire in one command — `create`/`edit` also carry the

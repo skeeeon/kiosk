@@ -237,9 +237,9 @@ subjects are in place to make them additive rather than rewrites.
   separate, harder problem (the instance row would have to move) and stays
   deferred.
 - **Asset-tracker generalization (jobsite custody + RFID topology).**
-  *Foundation built on branch `asset-tracker-foundation`, not yet merged to
-  `main`.* Generalizes the single-cabinet kiosk toward a site-scoped tool &
-  asset platform: `transactions.door_id` split into `terminal_id` (accepting
+  *Foundation merged to `main`.* Generalizes the single-cabinet kiosk toward a
+  site-scoped tool & asset platform — north star: the on-site **smart cache**
+  container (see the plan's Physical form factor section): `transactions.door_id` split into `terminal_id` (accepting
   screen) + `enclosure_id` (cabinet); a per-node **reader map** (several
   readers, mode per-reader, so one node hosts `counter_scan` + `enclosure_diff`
   at once); `enclosure_diff` reads **partitioned per cabinet** via
@@ -248,8 +248,8 @@ subjects are in place to make them additive rather than rewrites.
   controller's Readers tab; and `counter_scan` **multi-reader selection** via a
   `?reader=` URL param. All additive and N=1-invisible. See
   [asset-tracker plan](asset-tracker-plan.md).
-- **Location & sightings.** *L1–L4 built on branch `location-sightings`, not yet
-  merged to `main`.* Coarse last-seen of assets from RFID/BLE gateways that are
+- **Location & sightings.** *L1–L4 merged to `main`.* Coarse last-seen of
+  assets from RFID/BLE gateways that are
   **external publishers** (configured/run off-platform — RFID-over-MQTT into
   NATS's MQTT interface, or an HTTP→NATS bridge), putting one raw sighting shape
   on a new lossy `sighting` NATS family (advisory, last-write-wins, outside the
@@ -259,9 +259,10 @@ subjects are in place to make them additive rather than rewrites.
   KV (sliced per node like `catalog_items`). Custody reads double as sightings.
   The payoff — **custody-vs-location reconciliation** (`not_taken` / `stale` /
   `unaccounted`) — ships as `/api/{kiosk,controller}/reconciliation` + an admin
-  view. **Deferred within L4:** the scheduled `digest.reconciliation` email,
-  controller-side *fleet* BLE (standalone BLE works), and the GPS-polygon theft
-  flag. See [location & sightings plan](location-sightings-plan.md).
+  view, plus the scheduled `digest.reconciliation` email (cron-bound on both
+  binaries). **Deferred within L4:** controller-side *fleet* BLE (standalone
+  BLE works) and the GPS-polygon theft flag. See
+  [location & sightings plan](location-sightings-plan.md).
 
 Each of these can be evaluated on demand. None should be built until
 there is a concrete user asking for it.

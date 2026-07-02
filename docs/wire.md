@@ -173,6 +173,26 @@ once.
 
 **Errors.** Missing fields, open_checkouts row not found.
 
+### `checkout.snapshot`
+
+Read-only — the kiosk's currently-open checkouts, read from the
+materialized `open_checkouts` table and hydrated through the same
+`ledger.Hydrate` path the local report uses, so the DTO shape and id
+scheme match the kiosk's own `/reports/open-checkouts` exactly (the
+admin-close flow keys on the `transaction_line` id surfaced here). Used
+by the controller's reconciliation gather to prefer a live snapshot from
+online kiosks (offline kiosks fall back to replaying the projected
+ledger).
+
+**Publisher.** controller
+
+**Payload.** None.
+
+**Reply data.** `{open_checkouts: [<ledger.OpenCheckoutDTO>]}` — same
+row shape as `GET /api/kiosk/reports/open-checkouts`.
+
+**Idempotency.** Read-only.
+
 ### `instance.create`
 
 Create one `item_instances` row + an `instance_audit` row + publish
@@ -280,18 +300,31 @@ Read-only — list instances optionally filtered by `item_code`.
     {
       "instance_id": "...",
       "instance_code": "WIDGET-001-A",
+      "item_id": "...",
       "item_code": "WIDGET-001",
       "item_name": "Widget",
       "serial": "SN-12345",
       "rfid_epc": "...",
       "status": "in_service" | "maintenance" | "retired",
       "notes": "",
+      "enclosure_id": "",
       "created": "RFC3339",
-      "updated": "RFC3339"
+      "updated": "RFC3339",
+      "last_observed_at": "RFC3339 or empty",
+      "last_observed_zone": "",
+      "last_observed_gateway": "",
+      "last_observed_lat": 0,
+      "last_observed_lon": 0,
+      "out": false
     }
   ]
 }
 ```
+
+The `last_observed_*` fields are the advisory location columns (empty
+until something is observed; kept current by the L3 mirror watcher in
+managed mode). `out` is derived from `open_checkouts` by the command
+handler so the controller needn't replay its ledger for out-status.
 
 **Idempotency.** Read-only.
 
@@ -432,6 +465,27 @@ snapshot. Proxied by the controller's
 ```
 
 **Idempotency.** Read-only; replay-safe by definition.
+
+### `config.snapshot`
+
+Read-only — this kiosk's RFID reader/enclosure topology plus live
+connected status, for the controller's per-kiosk Readers tab. Proxied by
+`GET /api/controller/kiosks/{code}/config`. Config is edited locally in
+the kiosk's YAML; this command is observability only. Reaches process
+state through `Dispatcher.KioskHandlers`; if that isn't wired (test
+dispatcher, pre-wiring window) it still replies with an error rather
+than hanging, so the controller's 5 s request never times out into a
+false "offline".
+
+**Publisher.** controller
+
+**Payload.** None.
+
+**Reply data.** One entry per configured reader: `reader_id`, `mode`
+(`counter_scan` | `enclosure_diff`), `host:port`, `enclosure_id`,
+`zone`, antenna count, and live `connected` status.
+
+**Idempotency.** Read-only.
 
 ### `cart.start`
 

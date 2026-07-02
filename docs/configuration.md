@@ -33,6 +33,7 @@ controller:                    # Optional. Opt-in to central catalog sync.
   enabled: false               # When true, watches KV buckets below and projects updates locally.
   catalog_items_bucket: "catalog_items"   # JetStream KV bucket published by kiosk-controller
   catalog_users_bucket: "catalog_users"
+  catalog_groups_bucket: "catalog_groups"
 
 branding:                      # Optional. Customize visual identity.
   logo_path: "./branding/logo.svg"   # Served by the binary at /branding/logo.
@@ -44,6 +45,8 @@ branding:                      # Optional. Customize visual identity.
 nats:                          # Optional. Off by default.
   enabled: false               # When true, events also publish to NATS.
   url: "nats://localhost:4222"
+  subject_prefix: ""           # Subject prefix for all families; default "kiosk".
+  stream_name: ""              # JetStream stream the controller binds; default "KIOSK_EVENTS".
   # Use whichever auth your nats-server expects; leave blank for anonymous.
   token: ""
   username: ""
@@ -289,10 +292,13 @@ KIOSK_BRANDING_PRIMARY_COLOR=#1d4ed8
 KIOSK_BRANDING_CUSTOM_CSS_PATH=/etc/kiosk/yard-03-theme.css
 KIOSK_NATS_ENABLED=true
 KIOSK_NATS_URL=nats://central.example.com:4222
+KIOSK_NATS_SUBJECT_PREFIX=kiosk
+KIOSK_NATS_STREAM_NAME=KIOSK_EVENTS
 KIOSK_NATS_CREDENTIALS_FILE=/etc/kiosk/nats.creds
 KIOSK_CONTROLLER_ENABLED=true
 KIOSK_CONTROLLER_CATALOG_ITEMS_BUCKET=catalog_items
 KIOSK_CONTROLLER_CATALOG_USERS_BUCKET=catalog_users
+KIOSK_CONTROLLER_CATALOG_GROUPS_BUCKET=catalog_groups
 KIOSK_RFID_ENABLED=true
 KIOSK_RFID_READ_WINDOW=3s
 # Per-reader RFID fields (mode/host/port/enclosure_id/antennas) live in the

@@ -1,10 +1,11 @@
 # Notifications
 
-The admin SPA's **Notifications** tab manages eight event types out of
+The admin SPA's **Notifications** tab manages nine event types out of
 the box: transaction receipts, low-stock alerts, maintenance alerts
 (a serialized unit routed into maintenance on return), scheduled
 open-checkouts digests, scheduled daily-activity digests, a scheduled
-"items in maintenance" digest, a scheduled timeclock digest (every
+"items in maintenance" digest, a scheduled custody-vs-location
+reconciliation digest, a scheduled timeclock digest (every
 worker's hours in one admin email), and a scheduled per-worker timeclock
 summary (each active worker emailed their own timesheet). Each
 event has an editable subject + body (Go `text/template` syntax) and
@@ -43,7 +44,7 @@ the local notifier. The aggregator subscribes to:
   to one send. Recipients = all admins.
 
 Scheduled digests (`open_checkouts`, `daily_activity`, `maintenance`,
-`timeclock`, `timeclock_self`) no longer ride NATS. The controller owns
+`reconciliation`, `timeclock`, `timeclock_self`) no longer ride NATS. The controller owns
 the `scheduled_reports` rows,
 the cron, the digest computation, and the SMTP send. The kiosk's
 scheduler is skipped entirely when `controller.enabled=true`; the SPA on
@@ -57,7 +58,19 @@ maintenance. A standalone run queries the local `item_instances` table
 fan-out across online kiosks filtered to `status=maintenance`, listing
 offline kiosks as excluded so the operator knows the digest is partial.
 The `open_checkouts` and `daily_activity` digests compute against the
-controller's projected `open_checkouts` + ledger as before.
+controller's projected ledger — "what's out" is derived on demand by
+replaying `transaction_lines` (`ledger.ReplayOpenRows`), the same path
+the kiosk's integrity check uses; the controller does not materialize an
+`open_checkouts` table.
+
+The `reconciliation` digest (`digest.reconciliation`,
+`ReconciliationDigestContext`) emails the custody-vs-location
+discrepancy set from the reconciliation report — `not_taken` / `stale` /
+`unaccounted` rows (see the [location & sightings
+plan](location-sightings-plan.md)). It runs pure-DB on both binaries:
+standalone against the node's own `item_instances.last_observed_*`
+columns, the controller against its fleet `instance_location`
+projection.
 
 The two timeclock digests pair raw punches into display totals (the
 raw-punch CSV stays the payroll contract). `digest.timeclock`

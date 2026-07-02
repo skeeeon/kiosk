@@ -1,9 +1,10 @@
 # Asset-tracker generalization — plan
 
-Status: **Phases 1–5 landed** on branch `asset-tracker-foundation` (2026-06-27), green
-(`go test ./...` + `vue-tsc`), not yet merged to `main`. Living doc; update as phases land.
+Status: **Phases 1–5 merged to `main`** (landed on `asset-tracker-foundation` 2026-06-27,
+green: `go test ./...` + `vue-tsc`). Living doc; update as phases land.
 The foundation (custody + per-cabinet RFID partition + multi-reader/terminal topology) is in;
-location/sightings remain deferred (see below).
+location/sightings L1–L4 have since landed too (see
+[location-sightings-plan](location-sightings-plan.md)).
 
 ## North-star
 
@@ -14,9 +15,34 @@ RFID/BLE reads (static gateways, or a roaming GPS-stamped gateway) give the last
 coarse location of every tracked asset. Custody answers *who's responsible*; location
 answers *where is it*; the diff between them is the product.
 
+### Physical form factor: the smart cache
+
+The concrete product this converges on is a **modular building / storage container — a
+"smart cache" — on the jobsite**: access control on the door, an RFID reader covering the
+cavity, and a touchscreen + barcode scanner mounted **outside** next to the door. The
+container *is* an enclosure; the flow *is* `enclosure_diff`: badge-in publishes
+`cart.start`, the door event fires `read.trigger`, the diff proposes what left or came
+back, and the worker accepts at the outside terminal — that accept is the custody
+handoff. The barcode scanner is the fallback for tags the read missed (same cart), and a
+**barcode-only container is a valid V0** — a lock, a screen, and today's kiosk flow in a
+steel box; the reader and access control are an additive upgrade, not a prerequisite.
+
+It scales along the axes this plan already built: one cache → several caches per site
+(topology A: one node, `enclosure_id` partitions; or topology B: node-per-container) →
+federated across sites under the controller. The location/sightings layer gives yard-wide
+last-seen around the caches.
+
+The open risks for this form factor are **hardware-shaped, not software-shaped**:
+RF read fidelity inside a steel container (multipath, tag-on-metal, dense tool piles —
+validate with a physical testbed before deepening the software), multi-occupant
+attribution (two workers inside during one read window; policy candidates are
+one-badge-one-entry or attribute-at-accept — decide before designing the door hardware),
+and the access-control BOM/glue, which stays an external publisher by design (see
+Deferred).
+
 This plan covers the **foundation refactor** that makes a kiosk grow from a single
 enclosure into a site (one node, many readers/enclosures/terminals) and/or be managed by a
-controller. Location/sightings ride on top later (see Deferred).
+controller. Location/sightings ride on top (see Deferred).
 
 ## Principles (load-bearing)
 

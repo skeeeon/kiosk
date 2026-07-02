@@ -229,13 +229,15 @@ What it **doesn't** do in v1 (deliberately out of scope):
 
 The controller's Reports view exposes eight tabs. Five are backed by the
 projected ledger — three read `transactions` + `transaction_lines` directly,
-and "Currently out" / "Aging" read the projected `open_checkouts` table
-(maintained by the aggregator from `item.{action}` and `checkout.admin_close`
-events). The remaining three project from dedicated event subjects:
+and "Currently out" / "Aging" derive "what's out" on demand by replaying
+`transaction_lines` (`ledger.ReplayOpenRows` — the controller does **not**
+materialize an `open_checkouts` table, so the view is convergent with each
+kiosk's by construction). The remaining three project from dedicated event
+subjects:
 
 | Tab | Source | Notes |
 |---|---|---|
-| Currently out | `GET /api/kiosk/reports/open-checkouts` (controller impl reads from the projected `open_checkouts` table) | Honors `?kiosk_code=`; per-row "Close…" affordance forwards to the remote kiosk via the admin force-close endpoint |
+| Currently out | `GET /api/kiosk/reports/open-checkouts` (controller impl replays the projected `transaction_lines` on demand) | Honors `?kiosk_code=`; per-row "Close…" affordance forwards to the remote kiosk via the admin force-close endpoint |
 | Aging | Same source as Currently out, bucketed by user with oldest-out-first sort | Per-user rollup; threshold is a display hint, not a filter; per-row "Close…" affordance same as above |
 | Low stock | `GET /api/controller/reports/low-stock` (snapshot fan-out) | Offline kiosks listed under `errors` for partial-result transparency |
 | Group activity | `transactions` + `transaction_lines` + `groups` via pb-sdk, rolled up client-side | Date range filter |

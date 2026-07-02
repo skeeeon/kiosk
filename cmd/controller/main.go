@@ -89,8 +89,8 @@ func main() {
 	h := controller.New(app, cfg, notifier)
 
 	// Scheduled reports own the fleet's digest cadence in managed mode. The
-	// controller has the projected open_checkouts table + transaction ledger
-	// and the central notification_templates config, so the scheduler runs
+	// controller has the projected transaction ledger (open rows replayed on
+	// demand) and the central notification_templates config, so the scheduler runs
 	// here exclusively — kiosks running in managed mode skip the scheduler
 	// entirely (see cmd/kiosk/main.go). BindRecordHooks reacts to SPA edits;
 	// RegisterEnabled reattaches enabled rows at boot inside OnServe.
