@@ -179,7 +179,7 @@ func main() {
 			app.OnServe().BindFunc(func(e *core.ServeEvent) error {
 				// Empty version string is fine — telemetry only. ldflags-injected
 				// version can be added later without touching this signature.
-				heartbeat.Start(heartbeatCtx, nc, cfg.Kiosk.Code, "")
+				heartbeat.Start(heartbeatCtx, nc, cfg.Kiosk.Code, cfg.Kiosk.LocationCode, "")
 				return e.Next()
 			})
 		}

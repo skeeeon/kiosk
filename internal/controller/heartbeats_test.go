@@ -54,9 +54,10 @@ func TestHeartbeatRegistry_HandleParsesPayload(t *testing.T) {
 	r := NewHeartbeatRegistry(nil)
 	ts := time.Now().UTC().Truncate(time.Second)
 	data, _ := json.Marshal(map[string]any{
-		"ts":         ts,
-		"kiosk_code": "K42",
-		"version":    "v1.2.3",
+		"ts":       ts,
+		"code":     "K42",
+		"location": "BAY1",
+		"version":  "v1.2.3",
 	})
 	r.handle(&nats.Msg{Subject: "kiosk.K42.heartbeat", Data: data})
 
@@ -66,6 +67,31 @@ func TestHeartbeatRegistry_HandleParsesPayload(t *testing.T) {
 	}
 	if !got.Equal(ts) {
 		t.Errorf("K42 ts: got %v, want %v", got, ts)
+	}
+}
+
+// TestHeartbeatRegistry_HandleLegacyPayload keeps beats from kiosk builds
+// that predate the {code, location, ts} payload alignment working — they
+// still publish kiosk_code/location_code. Drop with the fallback in handle.
+func TestHeartbeatRegistry_HandleLegacyPayload(t *testing.T) {
+	var calls []struct{ Code, Location string }
+	touch := func(code, loc string) error {
+		calls = append(calls, struct{ Code, Location string }{code, loc})
+		return nil
+	}
+	r := NewHeartbeatRegistry(touch)
+	data, _ := json.Marshal(map[string]any{
+		"ts":            time.Now().UTC(),
+		"kiosk_code":    "OLDIE",
+		"location_code": "BAY9",
+	})
+	r.handle(&nats.Msg{Subject: "kiosk.OLDIE.heartbeat", Data: data})
+
+	if _, ok := r.LastBeat("OLDIE"); !ok {
+		t.Fatal("legacy kiosk_code payload not recorded")
+	}
+	if len(calls) != 1 || calls[0].Code != "OLDIE" || calls[0].Location != "BAY9" {
+		t.Errorf("legacy touch: got %+v, want [{OLDIE BAY9}]", calls)
 	}
 }
 
@@ -79,9 +105,9 @@ func TestHeartbeatRegistry_AutoRegister(t *testing.T) {
 	}
 	r := NewHeartbeatRegistry(touch)
 	data, _ := json.Marshal(map[string]any{
-		"ts":            time.Now().UTC(),
-		"kiosk_code":    "NEWBIE",
-		"location_code": "BAY3",
+		"ts":       time.Now().UTC(),
+		"code":     "NEWBIE",
+		"location": "BAY3",
 	})
 	r.handle(&nats.Msg{Subject: "kiosk.NEWBIE.heartbeat", Data: data})
 	r.handle(&nats.Msg{Subject: "kiosk.NEWBIE.heartbeat", Data: data}) // second beat

@@ -170,7 +170,7 @@ func main() {
 			log.Printf("heartbeat: nats connection unavailable: %v", cerr)
 		} else {
 			app.OnServe().BindFunc(func(e *core.ServeEvent) error {
-				heartbeat.Start(heartbeatCtx, nc, cfg.Kiosk.Code, "")
+				heartbeat.Start(heartbeatCtx, nc, cfg.Kiosk.Code, cfg.Kiosk.LocationCode, "")
 				return e.Next()
 			})
 		}

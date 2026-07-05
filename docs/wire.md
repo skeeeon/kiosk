@@ -831,11 +831,17 @@ by design — durability would mask the very signal we care about.
 **Payload.**
 ```json
 {
+  "code": "...",
+  "location": "...",
   "ts": "RFC3339",
-  "kiosk_code": "...",
   "version": "optional, build version when ldflags-injected"
 }
 ```
+
+The field names deliberately match the access-control application's
+heartbeat shape (`{code, location, ts}`) so fleet tooling can consume
+both. The controller still accepts the legacy `kiosk_code` /
+`location_code` names from older kiosk builds.
 
 First beat from a previously-unknown kiosk also triggers
 auto-registration of a `kiosks` row on the controller side, parallel

@@ -83,17 +83,29 @@ func (r *HeartbeatRegistry) Unsubscribe() {
 // and drop.
 func (r *HeartbeatRegistry) handle(msg *nats.Msg) {
 	var p struct {
-		Ts           time.Time `json:"ts"`
-		KioskCode    string    `json:"kiosk_code"`
-		LocationCode string    `json:"location_code"`
-		Version      string    `json:"version"`
+		Ts       time.Time `json:"ts"`
+		Code     string    `json:"code"`
+		Location string    `json:"location"`
+		Version  string    `json:"version"`
+
+		// Legacy field names from kiosk builds that predate the
+		// access-control payload alignment ({code, location, ts}).
+		// Drop once the fleet no longer runs those builds.
+		KioskCode    string `json:"kiosk_code"`
+		LocationCode string `json:"location_code"`
 	}
 	if err := json.Unmarshal(msg.Data, &p); err != nil {
 		r.logger.Warn("controller.heartbeat.bad_payload",
 			"subject", msg.Subject, "error", err)
 		return
 	}
-	if p.KioskCode == "" {
+	if p.Code == "" {
+		p.Code = p.KioskCode
+	}
+	if p.Location == "" {
+		p.Location = p.LocationCode
+	}
+	if p.Code == "" {
 		r.logger.Warn("controller.heartbeat.missing_kiosk_code", "subject", msg.Subject)
 		return
 	}
@@ -105,14 +117,14 @@ func (r *HeartbeatRegistry) handle(msg *nats.Msg) {
 	// touchKiosk is an upsert), but checking the map first avoids a DB roundtrip
 	// per beat for known kiosks.
 	r.mu.Lock()
-	_, known := r.beats[p.KioskCode]
-	r.beats[p.KioskCode] = p.Ts
+	_, known := r.beats[p.Code]
+	r.beats[p.Code] = p.Ts
 	r.mu.Unlock()
 
 	if !known && r.touch != nil {
-		if err := r.touch(p.KioskCode, p.LocationCode); err != nil {
+		if err := r.touch(p.Code, p.Location); err != nil {
 			r.logger.Warn("controller.heartbeat.auto_register_failed",
-				"kiosk_code", p.KioskCode, "error", err)
+				"kiosk_code", p.Code, "error", err)
 		}
 	}
 }
