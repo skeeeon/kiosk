@@ -86,7 +86,6 @@ func (r *HeartbeatRegistry) handle(msg *nats.Msg) {
 		Ts       time.Time `json:"ts"`
 		Code     string    `json:"code"`
 		Location string    `json:"location"`
-		Version  string    `json:"version"`
 
 		// Legacy field names from kiosk builds that predate the
 		// access-control payload alignment ({code, location, ts}).

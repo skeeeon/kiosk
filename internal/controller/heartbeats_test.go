@@ -57,7 +57,6 @@ func TestHeartbeatRegistry_HandleParsesPayload(t *testing.T) {
 		"ts":       ts,
 		"code":     "K42",
 		"location": "BAY1",
-		"version":  "v1.2.3",
 	})
 	r.handle(&nats.Msg{Subject: "kiosk.K42.heartbeat", Data: data})
 

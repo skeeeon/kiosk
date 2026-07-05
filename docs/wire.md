@@ -833,8 +833,7 @@ by design — durability would mask the very signal we care about.
 {
   "code": "...",
   "location": "...",
-  "ts": "RFC3339",
-  "version": "optional, build version when ldflags-injected"
+  "ts": "RFC3339"
 }
 ```
 

@@ -29,27 +29,24 @@ const DefaultInterval = 45 * time.Second
 // Payload is the JSON shape published on each beat. Minimal on purpose —
 // the controller's interest is "did this arrive recently?", not what the
 // payload says. The field names match the access-control heartbeat shape
-// ({code, location, ts}) so fleet tooling can consume both. Version is
-// injected at startup so a fleet view can spot kiosks running older
-// builds; empty string when not set is acceptable.
+// ({code, location, ts}) so fleet tooling can consume both.
 type Payload struct {
 	Code     string    `json:"code"`
 	Location string    `json:"location"`
 	Ts       time.Time `json:"ts"`
-	Version  string    `json:"version,omitempty"`
 }
 
 // Start launches the heartbeat goroutine. Returns immediately; the goroutine
 // runs until ctx is cancelled. nc may be nil — in that case the function
 // is a no-op (the kiosk is allowed to boot without NATS). Errors during
 // publish are logged at warn and otherwise swallowed: the next tick retries.
-func Start(ctx context.Context, nc *nats.Conn, kioskCode, locationCode, version string) {
-	StartWithInterval(ctx, nc, kioskCode, locationCode, version, DefaultInterval)
+func Start(ctx context.Context, nc *nats.Conn, kioskCode, locationCode string) {
+	StartWithInterval(ctx, nc, kioskCode, locationCode, DefaultInterval)
 }
 
 // StartWithInterval is Start with a configurable cadence. Tests use this to
 // avoid waiting 45 seconds for a single beat.
-func StartWithInterval(ctx context.Context, nc *nats.Conn, kioskCode, locationCode, version string, interval time.Duration) {
+func StartWithInterval(ctx context.Context, nc *nats.Conn, kioskCode, locationCode string, interval time.Duration) {
 	if nc == nil || kioskCode == "" {
 		return
 	}
@@ -61,7 +58,7 @@ func StartWithInterval(ctx context.Context, nc *nats.Conn, kioskCode, locationCo
 	go func() {
 		// First beat right away so the controller learns about us on
 		// startup, not 45 seconds later.
-		publishOne(nc, subject, kioskCode, locationCode, version)
+		publishOne(nc, subject, kioskCode, locationCode)
 
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
@@ -70,18 +67,17 @@ func StartWithInterval(ctx context.Context, nc *nats.Conn, kioskCode, locationCo
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				publishOne(nc, subject, kioskCode, locationCode, version)
+				publishOne(nc, subject, kioskCode, locationCode)
 			}
 		}
 	}()
 }
 
-func publishOne(nc *nats.Conn, subject, kioskCode, locationCode, version string) {
+func publishOne(nc *nats.Conn, subject, kioskCode, locationCode string) {
 	payload := Payload{
 		Code:     kioskCode,
 		Location: locationCode,
 		Ts:       time.Now().UTC().Truncate(time.Second),
-		Version:  version,
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
