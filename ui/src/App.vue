@@ -24,8 +24,16 @@ const hideFooter = computed(() => isAdminRoute.value || route.name === 'virtual-
        lines (or any other route's content) grow, the inner overflow-auto
        containers scroll instead of pushing the document past 100vh and
        taking the footer with it. min-h-screen used to let the document
-       grow past the viewport, which broke that contract. -->
-  <div class="h-dvh overflow-hidden flex flex-col bg-slate-950 text-slate-100">
+       grow past the viewport, which broke that contract.
+       `relative` makes this the positioning context for the whole tree:
+       overflow-hidden only clips a descendant whose containing block IS this
+       element, so without it an absolutely-positioned descendant with no
+       nearer positioned ancestor (e.g. an .sr-only label deep inside a tall
+       admin table) resolves against the initial containing block, escapes the
+       clip, and stretches the document — producing a second, page-level
+       scrollbar that scrolls the sidebar away. Anchoring it here contains
+       every such descendant in one place. -->
+  <div class="relative h-dvh overflow-hidden flex flex-col bg-slate-950 text-slate-100">
     <RouterView class="flex-1 min-h-0" />
 
     <footer
