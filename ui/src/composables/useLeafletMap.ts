@@ -16,15 +16,42 @@
 import { shallowRef, onUnmounted } from 'vue'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
+// maplibre-gl is held at v5 on purpose. v5 inlines its tile-parsing worker into
+// dist/maplibre-gl.js; v6 splits it out and resolves it as a sibling file
+// (`new URL('./maplibre-gl-worker.mjs', import.meta.url)`) that Vite never emits
+// once the library is bundled into a hashed chunk. Nothing throws and nothing
+// reaches the console — the style still loads and its background layer still
+// paints, so water, landuse, roads and labels vanish together. On a fixed-dark
+// SPA that failure is near-invisible: it reads as a plain dark panel with dots
+// on it. v5 is also the version OpenFreeMap's own quick start pins.
+import 'maplibre-gl/dist/maplibre-gl.css'
+// Side-effect import: registers L.maplibreGL and augments the leaflet module types.
+import '@maplibre/maplibre-gl-leaflet'
 import 'leaflet.markercluster'
 import 'leaflet.markercluster/dist/MarkerCluster.css'
 import 'leaflet.markercluster/dist/MarkerCluster.Default.css'
 
-// CARTO dark tiles match the SPA's fixed slate palette. Attribution is required
-// by both OSM and CARTO's usage terms.
-const TILE_URL = 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
+// OpenFreeMap's fiord: a designed dark style that matches the SPA's fixed slate
+// palette. Keyless, uncapped, commercial use permitted, self-hostable.
+//
+// This replaced CARTO's dark_all, which was not a preference but a forced move —
+// CARTO put its raster basemaps behind an API key and is retiring them, and this
+// SPA is fixed-dark, so dark_all was the only basemap here with nothing to fall
+// back to. Lifted from the platform, which moved first.
+//
+// It is a MapLibre style document, not a {z}/{x}/{y} template (OpenFreeMap
+// publishes no raster endpoint), so it renders through L.maplibreGL onto a WebGL
+// canvas instead of L.tileLayer. Everything drawn on top is unchanged Leaflet:
+// the divIcon dots, their L.circle halos and the cluster group are all overlay
+// panes above the GL canvas. It does mean the basemap needs WebGL — worth
+// remembering, since this SPA also runs on the mini-PC appliance.
+const STYLE_URL = 'https://tiles.openfreemap.org/styles/fiord'
+// The style JSON carries no `attribution` on its sources, so MapLibre renders no
+// credit of its own and ODbL still requires one. It goes on the map's attribution
+// control rather than the layer: L.maplibreGL's options are typed as MapLibre's
+// own, which have no Leaflet `attribution` key.
 const TILE_ATTRIBUTION =
-  '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
+  '&copy; <a href="https://openfreemap.org">OpenFreeMap</a> &middot; <a href="https://www.openmaptiles.org/">OpenMapTiles</a> &middot; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
 
 // US centroid — the neutral default before markers are fit. The view calls
 // fitAllMarkers() on entry, so this is only ever seen when there are no pins.
@@ -69,11 +96,21 @@ export function useLeafletMap() {
     const m = L.map(containerId, {
       center: DEFAULT_CENTER,
       zoom: DEFAULT_ZOOM,
+      // Was an L.tileLayer option; the GL layer supplies no zoom bounds, and
+      // without this Leaflet would zoom in without limit (and the cluster-click
+      // handler's getMaxZoom() check would never fire).
+      maxZoom: 19,
       zoomControl: false,
       attributionControl: true,
     })
+    // Leaflet's default prefix is width the credit needs, and the credit that
+    // has to be there is the data's, not the library's.
+    m.attributionControl.setPrefix(false)
+    m.attributionControl.addAttribution(TILE_ATTRIBUTION)
     L.control.zoom({ position: 'bottomleft' }).addTo(m)
-    L.tileLayer(TILE_URL, { attribution: TILE_ATTRIBUTION, maxZoom: 19 }).addTo(m)
+    // attributionControl: false — the credit lives on the Leaflet control above,
+    // not on a second one MapLibre would draw itself.
+    L.maplibreGL({ style: STYLE_URL, attributionControl: false }).addTo(m)
 
     const onClusterClick = opts.onClusterClick
     const cluster = L.markerClusterGroup({
@@ -114,7 +151,7 @@ export function useLeafletMap() {
     haloLayer.value = halos
 
     // A freshly-shown container can report zero size for a frame; nudge Leaflet
-    // once it's laid out so tiles fill the pane.
+    // once it's laid out so the basemap fills the pane.
     setTimeout(() => m.invalidateSize(), 100)
   }
 

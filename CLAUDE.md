@@ -832,6 +832,33 @@ The scan composable skips when an `<input>`, `<textarea>`, `<select>`, or
 contenteditable has focus. If you're adding a screen where the scan flow
 should keep working, don't put a focused input in it.
 
+**Locations map: OpenFreeMap, WebGL, and the one lazy route.** The Locations
+map (`composables/useLeafletMap.ts`, `AdminLocationsView`) moved off CARTO's
+`dark_all` rasters because CARTO put them behind an API key and is retiring
+them. This SPA is fixed-dark, so `dark_all` was the only basemap here and there
+was nothing to fall back to. Its replacement is OpenFreeMap's **fiord** — a
+designed dark style that needs no brightness lift, keyless, uncapped and
+self-hostable. Three consequences:
+
+- **It is a MapLibre style document, not a `{z}/{x}/{y}` template**, so it
+  renders through `L.maplibreGL` onto a **WebGL canvas** rather than
+  `L.tileLayer`. Everything drawn on top is unchanged Leaflet — the `divIcon`
+  dots, their `L.circle` halos and the cluster group are all overlay panes above
+  the canvas. But the basemap now needs WebGL, which is worth remembering
+  because this same SPA also runs on the mini-PC appliance.
+- **`maplibre-gl` is pinned to 5, not 6.** v5 inlines its tile-parsing worker;
+  v6 resolves it as a sibling file Vite never emits once the library is in a
+  hashed chunk, and **nothing throws and nothing reaches the console** — the
+  style loads and its background layer paints, so water, landuse, roads and
+  labels vanish together. On a fixed-dark SPA that failure is near-invisible: it
+  reads as a plain dark panel with dots on it. v5 is also what OpenFreeMap's own
+  quick start pins.
+- **`admin-locations` is the only lazily-imported route in `router.ts`**, and
+  that is load-bearing rather than stylistic. Every other route is a static
+  import, so a static import here would put MapLibre's ~275 kB gzipped into the
+  first load of the checkout screen — the view that actually runs on the
+  appliance and never shows a map. Keep it behind `() => import(...)`.
+
 **Kiosk detail page.** On the controller, `/admin/kiosks` is a list view
 that polls `/api/controller/kiosks/heartbeats` every 10 s for online
 badges; clicking a row navigates to `/admin/kiosks/:code` (the

@@ -21,7 +21,6 @@ import AdminKioskDetailView from './views/AdminKioskDetailView.vue'
 import AdminTransactionsView from './views/AdminTransactionsView.vue'
 import AdminCatalogSyncView from './views/AdminCatalogSyncView.vue'
 import AdminReconciliationView from './views/AdminReconciliationView.vue'
-import AdminLocationsView from './views/AdminLocationsView.vue'
 
 export const router = createRouter({
   history: createWebHistory(),
@@ -53,7 +52,12 @@ export const router = createRouter({
         { path: 'transactions', name: 'admin-transactions', component: AdminTransactionsView },
         { path: 'metrics', name: 'admin-metrics', component: AdminMetricsView },
         { path: 'reconciliation', name: 'admin-reconciliation', component: AdminReconciliationView },
-        { path: 'locations', name: 'admin-locations', component: AdminLocationsView },
+        // The only lazily-imported route in this SPA, and deliberately so: its
+        // map pulls in MapLibre (~275 kB gzipped) for the OpenFreeMap basemap,
+        // and every other route here is eager — so a static import would put
+        // that weight in the first load of the checkout screen, which is the
+        // view that actually runs on the appliance and never shows a map.
+        { path: 'locations', name: 'admin-locations', component: () => import('./views/AdminLocationsView.vue') },
         { path: 'notifications', name: 'admin-notifications', component: AdminNotificationsView },
         { path: 'notifications/scheduled', name: 'admin-notifications-scheduled', component: AdminScheduledReportsView },
         { path: 'notifications/log', name: 'admin-notifications-log', component: AdminNotificationsLogView },

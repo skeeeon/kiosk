@@ -83,3 +83,29 @@ html {
     font-size: 16px;
   }
 }
+
+/* Keep the basemap attribution to one line.
+ *
+ * Leaflet anchors attribution bottom-right and the Locations map puts its zoom
+ * control at bottomleft, so a credit long enough to wrap grows upward and
+ * leftward straight across those buttons. Truncated rather than abbreviated:
+ * the credit is a licence obligation, so the full text stays in the DOM, and
+ * hover or keyboard focus expands it.
+ *
+ * No basemap brightness filter here on purpose. CARTO's dark_all needed one;
+ * OpenFreeMap's fiord is a designed dark style and does not. A filter would now
+ * be harmful — L.maplibreGL renders into .leaflet-tile-pane, so it would wash
+ * out the whole basemap. */
+.leaflet-control-attribution {
+  max-width: calc(100% - 4rem);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.leaflet-control-attribution:hover,
+.leaflet-control-attribution:focus-within {
+  max-width: none;
+  white-space: normal;
+  overflow: visible;
+}
