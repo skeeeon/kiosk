@@ -4,6 +4,15 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
     <title>Kiosk</title>
+    <!-- The basemap origin, for the admin locations map. MapLibre does not ask
+         for the style until that tab is opened and a megabyte of renderer has
+         parsed, so the DNS + TCP + TLS handshake to this host is worth starting
+         during the HTML parse instead. crossorigin is load-bearing, not
+         decoration: the style, glyphs, sprite and tiles are all CORS fetches,
+         and a preconnect without it opens the socket in the wrong credentials
+         mode, so nothing reuses it and the handshake happens twice. The cost on
+         a visit that never opens the map is one idle socket. -->
+    <link rel="preconnect" href="https://tiles.openfreemap.org" crossorigin>
   </head>
   <body class="bg-slate-950 text-slate-100">
     <div id="app"></div>
