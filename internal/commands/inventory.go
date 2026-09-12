@@ -109,6 +109,51 @@ func (d *Dispatcher) handleInventoryAdjust(_ context.Context, payload []byte) Re
 	}}
 }
 
+// inventorySetThresholdRequest sets one SKU's low-stock alert level at this
+// kiosk. No command_id: the operation is absolute, so a replay converges on
+// the same value and there is nothing for an idempotency key to protect.
+// No reason either — a threshold is a policy knob, not a physical count
+// change, and it writes no audit row for a reason to live on.
+type inventorySetThresholdRequest struct {
+	ControllerAdminID string `json:"controller_admin_id"`
+	ItemCode          string `json:"item_code"`
+	Value             int    `json:"value"`
+}
+
+// handleInventorySetThreshold is the only way a controller-managed kiosk can
+// receive a reorder_threshold. The field is deliberately kiosk-local — it
+// does not cross the catalogue wire — so before this existed the
+// controller's Inventory panel showed a "Reorder ≤" column it had no way to
+// fill, and low-stock alerting could not fire anywhere in a managed fleet.
+func (d *Dispatcher) handleInventorySetThreshold(_ context.Context, payload []byte) Reply {
+	var req inventorySetThresholdRequest
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return Reply{Success: false, Error: "invalid request body: " + err.Error()}
+	}
+	// Trim before validating so whitespace-only fields fail the required
+	// checks, same as the HTTP handlers.
+	req.ControllerAdminID = strings.TrimSpace(req.ControllerAdminID)
+	req.ItemCode = strings.TrimSpace(req.ItemCode)
+	if req.ControllerAdminID == "" {
+		return Reply{Success: false, Error: "controller_admin_id is required"}
+	}
+	if req.ItemCode == "" {
+		return Reply{Success: false, Error: "item_code is required"}
+	}
+	if req.Value < 0 {
+		return Reply{Success: false, Error: "value must be zero or greater"}
+	}
+
+	result, err := handlers.PerformSetReorderThreshold(d.app, req.ItemCode, req.Value)
+	if err != nil {
+		if dberr.IsNotFound(err) {
+			return Reply{Success: false, Error: fmt.Sprintf("item_code %q not found", req.ItemCode)}
+		}
+		return Reply{Success: false, Error: "set threshold failed: " + err.Error()}
+	}
+	return Reply{Success: true, Data: result}
+}
+
 // inventorySnapshotRequest filters to a subset of items, or returns all
 // stocked items at this kiosk when item_codes is empty. The SPA's inventory
 // panel uses the empty form on initial load and may pass codes for a

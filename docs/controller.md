@@ -25,9 +25,15 @@ of truth for catalog plus a unified transaction ledger.
   the same answer at every kiosk; "how many are on this shelf" is not. So
   `type`, `tracking_mode`, `category` and
   `requires_maintenance_on_return` cross the wire, and the quantities do
-  not. `reorder_threshold` sits awkwardly on that line — it is arguably
-  policy — but it is documented as excluded and each site may genuinely
-  want its own, so it stays kiosk-local and is set per kiosk.
+  not. `reorder_threshold` is the interesting case: it reads like policy,
+  but the alert fires against each kiosk's *own* available count, and a
+  busy main crib and a quiet cross-dock stocking the same SKU want
+  different levels. So it stays kiosk-local and gets its own route in —
+  the `inventory.set_threshold` command, reachable from
+  `POST /api/controller/kiosks/{code}/inventory/threshold` and from the
+  kiosk detail page's Inventory tab by clicking the "Reorder ≤" value.
+  Without that route the column was unfillable and low-stock alerting
+  could not fire anywhere in a managed fleet.
 
   **Upgrading from a build before `requires_maintenance_on_return` was
   carried:** existing KV entries were written without it, and the

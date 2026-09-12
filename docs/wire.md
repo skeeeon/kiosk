@@ -97,6 +97,56 @@ re-applying.
 
 **Errors.** Missing required fields, item not found, unknown mode.
 
+### `inventory.set_threshold`
+
+Set one SKU's `reorder_threshold` — the level at or below which
+available stock raises a low-stock alert — at this kiosk.
+
+This command exists because `reorder_threshold` is deliberately
+**kiosk-local**: it does not cross the catalogue wire (a busy main crib
+and a quiet cross-dock stocking the same SKU want different levels, and
+the alert fires against each kiosk's own available count). So on a
+controller-managed kiosk this is the only route in, and therefore the only
+way low-stock alerting can fire in a managed fleet.
+
+Unlike `inventory.adjust`, **serialized SKUs are accepted.** Their
+`quantity_on_hand` is derived and so not adjustable, but a threshold is an
+alert level against that derived count and is perfectly meaningful.
+
+**Publisher.** controller
+
+**Payload.**
+```json
+{
+  "controller_admin_id": "admin record id",
+  "item_code": "WIDGET-001",
+  "value": 4
+}
+```
+
+**Reply data.**
+```json
+{
+  "item_id": "items record id",
+  "item_code": "WIDGET-001",
+  "reorder_threshold": 4,
+  "prev_threshold": 0
+}
+```
+
+**Idempotency.** No `command_id`, deliberately: the operation is absolute
+("set it to 4"), so a replay converges on the same value and there is
+nothing for an idempotency key to protect. Contrast `inventory.adjust`,
+which can carry a delta and therefore must dedupe.
+
+**No audit row and no event.** `stock_adjustments` is a ledger of physical
+count changes and a threshold moves nothing; and the controller does not
+project item state — its Inventory panel reads a live
+`inventory.snapshot`, which already carries `reorder_threshold`, so the
+new value appears on the next refresh with nothing extra on the wire.
+
+**Errors.** Missing required fields, negative value, item not found.
+
 ### `inventory.snapshot`
 
 Read-only — returns the kiosk's current on-hand quantities. Used by

@@ -234,42 +234,41 @@ direct field write in the local applier costs a line. **This demo changes no
 production design.** If a real deployment later wants fleet-wide thresholds, that
 is its own argument to make on its own evidence.
 
-### The consequence, stated plainly
+### What building this turned up
 
-Holding that line has a cost, and building Phase 1 surfaced it: **the managed
-estate gets no reorder thresholds.** The local applier sets them; the remote
-applier cannot, because there is no command and no payload field. So on the
-three-kiosk managed demo every `reorder_threshold` stays at zero until someone sets
-it, and the low-stock alert — which reads the threshold from the kiosk's own
-snapshot, the kiosk being the source of truth for its own stocking policy — has
-nothing to fire on.
+Writing the two appliers surfaced two fields that a controller admin could set and
+no managed kiosk could ever receive. Both were fixed on their own merits rather than
+worked around here, so this section is now history rather than a caveat — but it is
+worth keeping, because the shape of the mistake will recur.
 
-`items.requires_maintenance_on_return` had the identical shape and the identical
-consequence — `commit.Commit` reads it from the kiosk's local row, and it was not in
-`ItemPayload` either, so a managed kiosk never learned that the torque wrench needs
-recalibrating. But the two were never the same kind of thing. `reorder_threshold` is
-named in `internal/catalog/payload.go`'s package comment as deliberately excluded
-kiosk-local state. `requires_maintenance_on_return` was named nowhere — added by
-migration 1795 and simply never wired into the payload. That was a product bug, not
-a design decision, and it has since been **fixed on its own merits**: the flag now
-crosses the wire alongside `type` and `tracking_mode`, guarded at all three hops
-(payload round-trip, `itemPayloadFrom`, `Watcher.upsertItem`). Existing fleets pick
-it up on the next catalogue reconcile.
+**`items.requires_maintenance_on_return`** — `commit.Commit` reads it from the
+kiosk's local row, and it was not in `ItemPayload`, so a managed kiosk never learned
+that the torque wrench needs recalibrating. That was a straightforward omission:
+added by migration 1795 and never wired to the wire. It now crosses the catalogue
+alongside `type` and `tracking_mode`, guarded at all three hops (payload round-trip,
+`itemPayloadFrom`, `Watcher.upsertItem`). Existing fleets pick it up on the next
+catalogue reconcile.
 
-So the gap is now `reorder_threshold` alone, and the admin SPA is no escape hatch —
-its input carries `:disabled="managed"`, which is correct, because a managed kiosk
-does not own its catalogue.
+**`reorder_threshold`** — the harder one, because its exclusion is *deliberate* and
+named in `internal/catalog/payload.go`'s package comment. A busy main crib and a
+quiet cross-dock stocking the same SKU want different alert levels, and the alert
+fires against each kiosk's own available count, so a single fleet-wide value would
+be wrong. But the controller's Inventory panel rendered a "Reorder ≤" column with no
+way to fill it, and low-stock alerting — a shipped feature with its own template and
+scheduled report — could not fire anywhere in a managed fleet.
 
-The managed runbook's answer: **run `kiosk demo-seed --confirm` at each kiosk before
-starting it.** The seeder creates that node's item rows locally and applies its
-thresholds, quantities and units; the catalogue watcher then upserts the same rows
-by `code` on first start and leaves the quantities and the threshold alone. It costs
-one extra line per kiosk.
+The answer was a command rather than a payload field: `inventory.set_threshold`,
+mirroring the `inventory.adjust` pair, reachable from
+`POST /api/controller/kiosks/{code}/inventory/threshold` and from that same panel by
+clicking the number. Per-kiosk values survive, the payload's exclusion stays true,
+and `ApplyRemote` now carries thresholds like everything else — which is why the
+runbook no longer needs a per-kiosk `kiosk demo-seed` pass.
 
-The remote applier still earns its place — it is the production seam, and watching
-the controller provision a fleet over the command bus is a better opening than a
-database that was already full. But it cannot carry `reorder_threshold`, and this
-plan should say so rather than imply the managed path is complete.
+The lesson worth keeping: **a field read by kiosk-side logic and set by a controller
+admin needs a route to the kiosk.** The catalogue wire is one; a command is the
+other. Adding the field and stopping there produces a feature that is silently off
+in the product's flagship deployment mode, and nothing errors, logs or fails a test
+to tell you.
 
 ---
 
@@ -757,36 +756,26 @@ Each step is where it is for a reason; the reasons are above.
 #    KV buckets itself, so it does not matter that the controller is not serving.
 ./kiosk-controller demo-seed --confirm   # applies its own migrations first
 
-# 2. Kiosks: the reorder thresholds, which neither the catalogue wire nor any
-#    command carries. Run BEFORE first start; the catalogue watcher upserts the
-#    same rows by code and leaves reorder_threshold alone. See "The consequence,
-#    stated plainly" above for why this step exists at all. (The maintenance
-#    policy no longer needs it — that one rides the catalogue now.)
-KIOSK_CONFIG=demo/kc-dc1-crib.yaml  ./kiosk-app demo-seed --confirm
-KIOSK_CONFIG=demo/kc-dc1-dock.yaml  ./kiosk-app demo-seed --confirm
-KIOSK_CONFIG=demo/sgf-xd2-crib.yaml ./kiosk-app demo-seed --confirm
-
-# 3. Kiosks serve. They come up managed, watch `<code>.>` on catalog_items, and
+# 2. Kiosks serve. They come up managed, watch `<code>.>` on catalog_items, and
 #    project their own slice of the catalogue locally.
 KIOSK_CONFIG=demo/kc-dc1-crib.yaml  ./kiosk-app
 KIOSK_CONFIG=demo/kc-dc1-dock.yaml  ./kiosk-app
 KIOSK_CONFIG=demo/sgf-xd2-crib.yaml ./kiosk-app
 
-# 4. Controller: provision kiosk-local state over the command bus. Polls
-#    inventory.snapshot per kiosk until the catalogue has landed, then fires
-#    instance.create / inventory.adjust. Idempotent against step 2 — the
-#    quantities already match and the units already exist, so this run reports
-#    everything as already present. Run it on a fresh estate and it does the
-#    whole job; it is also the demo beat worth showing.
+# 3. Controller: provision every kind of kiosk-local state over the command bus.
+#    Polls inventory.snapshot per kiosk until the catalogue has landed, then
+#    fires inventory.adjust, inventory.set_threshold and instance.create.
+#    Read-then-write, so a second run reports everything as already present.
+#    This is also the demo beat worth showing.
 ./kiosk-controller demo-seed --remote --confirm
 
-# 5. Controller and timeclock terminal serve. The controller's durable consumer
+# 4. Controller and timeclock terminal serve. The controller's durable consumer
 #    starts at the beginning of the stream, so it picks up every audit event the
-#    seed produced in steps 2 and 4 — which is what EnsureStream in step 1 bought.
+#    seed produced in step 3 — which is what EnsureStream in step 1 bought.
 ./kiosk-controller serve
 KIOSK_CONFIG=demo/timeclock.yaml ./kiosk-timeclock
 
-# 6. Warm up, then go ambient. Same rules, different cadence.
+# 5. Warm up, then go ambient. Same rules, different cadence.
 DEMO_CRON="*/3 * * * * *"  rule-router --config demo/rule-router.yaml --rules demo/rules
 # ...ctrl-C after ~10 minutes...
 DEMO_CRON="*/45 * * * * *" rule-router --config demo/rule-router.yaml --rules demo/rules

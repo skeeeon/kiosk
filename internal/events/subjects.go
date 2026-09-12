@@ -244,6 +244,17 @@ func InventoryAdjustCommandSubject(kioskCode string) string {
 	return CommandSubject(kioskCode, "inventory.adjust")
 }
 
+// InventorySetThresholdCommandSubject is the controller→kiosk command that
+// sets one SKU's low-stock alert level at that kiosk. Needs no idempotency
+// key — the operation is absolute, so a replay converges on the same value.
+//
+// reorder_threshold is kiosk-local by design (a busy crib and a quiet
+// cross-dock want different levels for the same SKU), so it never crosses
+// the catalogue wire; this command is how a managed kiosk receives one.
+func InventorySetThresholdCommandSubject(kioskCode string) string {
+	return CommandSubject(kioskCode, "inventory.set_threshold")
+}
+
 // InventorySnapshotCommandSubject is the controller→kiosk read-only command
 // that returns the kiosk's current on-hand quantities for one or more items.
 // Used by the controller SPA's inventory panel to display live values

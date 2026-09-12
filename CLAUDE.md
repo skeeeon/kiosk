@@ -21,7 +21,7 @@ via JetStream KV. Item delivery is **membership-driven**: a join collection
 namespaced `<kiosk_code>.<item_code>` so each kiosk subscribes only to its
 own slice. Users remain org-wide. Beyond the JetStream channels, the
 controller also drives admin commands at remote kiosks over core NATS
-request/reply (currently `inventory.adjust` + `inventory.snapshot`), and
+request/reply (the `inventory.*` family, `instance.*`, and more), and
 receives 45 s heartbeats over a plain pub/sub subject to render live
 online status. See the "Central controller" section in README.md for the
 operator-facing view.
@@ -67,12 +67,15 @@ binaries expose it, sharing `internal/csvimport.Run`.
 **Demo tooling lives in `internal/demoseed`** and is registered as a
 `demo-seed` subcommand on *both* binaries (`--confirm` gated; it writes a
 well-known admin password, so never run it on a customer install). One
-fixture table, two appliers: `ApplyLocal` calls
-`instances.PerformCreate` + `handlers.PerformStockAdjustment` in-process;
-`ApplyRemote` sends the identical values as `instance.create` /
-`inventory.adjust` commands from the controller, which land on those same
-two functions — *the remote applier is the local applier with NATS in the
-middle*, and they cannot drift. The controller's `demo-seed` also calls the
+fixture table, two appliers: `ApplyLocal` calls `instances.PerformCreate`,
+`handlers.PerformStockAdjustment` and `handlers.PerformSetReorderThreshold`
+in-process; `ApplyRemote` sends the identical values as `instance.create` /
+`inventory.adjust` / `inventory.set_threshold` commands from the
+controller, which land on those same three functions — *the remote applier
+is the local applier with NATS in the middle*, and they cannot drift.
+Both are read-then-write (they ask `inventory.snapshot` /
+`instance.snapshot` first), so a re-run is silent rather than writing
+zero-delta audit rows. The controller's `demo-seed` also calls the
 exported `controller.EnsureStream` before writing, because a one-shot
 seeder runs while the controller is NOT serving and the audit events it
 triggers would otherwise be published to a stream that doesn't exist yet
@@ -132,8 +135,11 @@ blank-imports `migrations/controller` for side effect.
   checks `re.Auth.Collection().Name == "admins"`.
 - `/api/controller/*` — controller-binary-only endpoints registered in
   `cmd/controller/main.go`, served by methods on `controller.Handlers`.
-  Today: `GET /api/controller/kiosks/heartbeats`, the inventory pair
-  `GET .../kiosks/{code}/inventory` + `POST .../inventory/adjust`, the
+  Today: `GET /api/controller/kiosks/heartbeats`, the inventory trio
+  `GET .../kiosks/{code}/inventory` + `POST .../inventory/adjust` +
+  `POST .../inventory/threshold` (the last being the only way a managed
+  kiosk receives a `reorder_threshold`, which is kiosk-local and never
+  crosses the catalogue wire), the
   instances family `GET .../kiosks/{code}/instances` +
   `POST` (create) + `PATCH .../{instance_code}` (edit, carries `enclosure_id`)
   + `POST .../{instance_code}/status` (set_status), and the read-only
@@ -264,7 +270,11 @@ Three invariants:
      `events.CommandSubject` / `events.CommandSubscribePattern`). Request/
      reply, single attempt, ≤5 s reply timeout. The kiosk's dispatcher
      replies on `msg.Reply` with a `{success, error, data}` envelope.
-     Built-ins today: `inventory.adjust`, `inventory.snapshot`,
+     Built-ins today: `inventory.adjust`, `inventory.set_threshold`
+     (absolute, so no command_id; the ONLY route by which a managed kiosk
+     receives a `reorder_threshold`, since that field is kiosk-local and
+     never crosses the catalogue wire — serialized SKUs accepted, unlike
+     adjust), `inventory.snapshot`,
      `checkout.close`, `checkout.snapshot` (read-only open-checkouts DTOs —
      the reconciliation gather's live-snapshot source), the `instance.*` family
      (`create`/`edit`/`set_status`/`snapshot` — `set_status` carries the

@@ -537,6 +537,18 @@ export interface InventoryAdjustResponse {
   prev_quantity: number
 }
 
+// InventoryThresholdResponse mirrors the kiosk's reply to a controller-driven
+// reorder-threshold set. reorder_threshold is kiosk-local — it never crosses
+// the catalogue wire, because a busy main crib and a quiet cross-dock want
+// different alert levels for the same SKU — so this command is the only way a
+// managed kiosk receives one.
+export interface InventoryThresholdResponse {
+  item_id: string
+  item_code: string
+  reorder_threshold: number
+  prev_threshold: number
+}
+
 // KioskOfflineError is the SSE-style 503 body the controller returns when
 // the kiosk's heartbeat is stale or the NATS reply doesn't arrive. The SPA
 // distinguishes this from generic 5xx so the inventory panel can render a

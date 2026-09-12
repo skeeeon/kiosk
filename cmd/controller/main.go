@@ -279,6 +279,11 @@ func main() {
 		e.Router.GET("/api/controller/kiosks/{code}/metrics", h.Metrics(nc, hbRegistry))
 		e.Router.GET("/api/controller/kiosks/{code}/config", h.Config(nc, hbRegistry))
 		e.Router.POST("/api/controller/kiosks/{code}/inventory/adjust", h.InventoryAdjust(nc, hbRegistry))
+		// reorder_threshold is kiosk-local (it never crosses the catalogue
+		// wire), so this command is the only way a managed kiosk receives
+		// one — and therefore the only way low-stock alerting can fire in a
+		// managed fleet.
+		e.Router.POST("/api/controller/kiosks/{code}/inventory/threshold", h.InventorySetThreshold(nc, hbRegistry))
 		e.Router.POST("/api/controller/kiosks/{code}/checkouts/{source_line_id}/close", h.CheckoutClose(nc, hbRegistry))
 
 		// Remote item-instance management. Mirrors the inventory family of

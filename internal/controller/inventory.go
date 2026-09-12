@@ -119,6 +119,71 @@ func (h *Handlers) InventoryAdjust(nc *nats.Conn, reg *HeartbeatRegistry) func(*
 	}
 }
 
+// inventorySetThresholdRequest is the SPA-supplied body for
+// POST /api/controller/kiosks/:code/inventory/threshold.
+type inventorySetThresholdRequest struct {
+	ItemCode string `json:"item_code"`
+	Value    int    `json:"value"`
+}
+
+// inventorySetThresholdCommandPayload is the JSON sent to the kiosk. No
+// command_id: the operation is absolute, so a replay lands on the same
+// value. No reason: a threshold is a policy knob, not a count change, and
+// nothing audits it.
+type inventorySetThresholdCommandPayload struct {
+	ControllerAdminID string `json:"controller_admin_id"`
+	ItemCode          string `json:"item_code"`
+	Value             int    `json:"value"`
+}
+
+// InventorySetThreshold returns the
+// POST /api/controller/kiosks/:code/inventory/threshold handler.
+//
+// reorder_threshold is kiosk-local by design — a busy main crib and a quiet
+// cross-dock stocking the same SKU want different alert levels, and the
+// alert fires against each kiosk's own available count — so it does not
+// ride the catalogue wire. This endpoint is how a managed kiosk gets one.
+// Without it the Inventory panel rendered a "Reorder ≤" column nothing
+// could fill, and low-stock alerting never fired in a managed fleet.
+func (h *Handlers) InventorySetThreshold(nc *nats.Conn, reg *HeartbeatRegistry) func(*core.RequestEvent) error {
+	return func(re *core.RequestEvent) error {
+		if err := h.requireAdmin(re); err != nil {
+			return err
+		}
+		kioskCode := strings.TrimSpace(re.Request.PathValue("code"))
+		if kioskCode == "" {
+			return re.BadRequestError("kiosk code is required", nil)
+		}
+
+		var body inventorySetThresholdRequest
+		if err := re.BindBody(&body); err != nil {
+			return re.BadRequestError("invalid request body", err)
+		}
+		body.ItemCode = strings.TrimSpace(body.ItemCode)
+		if body.ItemCode == "" {
+			return re.BadRequestError("item_code is required", nil)
+		}
+		if body.Value < 0 {
+			return re.BadRequestError("value must be zero or greater", nil)
+		}
+
+		data, err := json.Marshal(inventorySetThresholdCommandPayload{
+			ControllerAdminID: re.Auth.Id,
+			ItemCode:          body.ItemCode,
+			Value:             body.Value,
+		})
+		if err != nil {
+			return re.InternalServerError("marshal command", err)
+		}
+
+		// Mutation: the kiosk's reply passes through unchanged. The empty
+		// commandID argument is deliberate — dispatchKioskCommand only
+		// echoes it in the offline response body, and there is none to echo.
+		return dispatchKioskCommand(re, nc, reg, kioskCode,
+			events.InventorySetThresholdCommandSubject(kioskCode), "", data)
+	}
+}
+
 // InventorySnapshot returns the GET /api/controller/kiosks/:code/inventory
 // handler. Read-only command: same offline behavior as InventoryAdjust but
 // no command_id (replays are harmless). The kiosk's reply is enriched with

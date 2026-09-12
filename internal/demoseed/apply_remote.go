@@ -46,12 +46,11 @@ var ErrKioskOffline = errors.New("kiosk_offline")
 // ApplyRemote installs every kiosk node's local state over the command
 // bus, from the controller, with no HTTP request and no heartbeat registry.
 //
-// It sends exactly the two mutating commands that exist —
-// `inventory.adjust` for quantity-tracked SKUs and `instance.create` for
-// serialized units — which the kiosk's dispatcher lands on
-// handlers.PerformStockAdjustment and instances.PerformCreate: the same
-// two functions ApplyLocal calls directly. That is the whole design: the
-// remote applier is the local applier with NATS in the middle.
+// The kiosk's dispatcher lands each command on the very function
+// ApplyLocal calls directly — PerformStockAdjustment,
+// PerformSetReorderThreshold, PerformCreate — so the two appliers cannot
+// drift. That is the whole design: the remote applier is the local applier
+// with NATS in the middle.
 //
 // Every unit provisioned this way lands with source=controller in the
 // kiosk's instance_audit and an instance.lifecycle event on the bus. That
@@ -63,11 +62,11 @@ var ErrKioskOffline = errors.New("kiosk_offline")
 // since its job is deduping a redelivery within one attempt, not two
 // attempts a week apart.
 //
-// NOT covered: reorder_threshold. It is documented kiosk-local state, so
-// it does not cross the catalogue wire, and there is no item-field
-// mutation command to send it as either. ApplyLocal sets it directly; the
-// managed runbook runs `kiosk demo-seed` once per kiosk for that reason
-// alone. See "What propagates, and what does not" in docs/demo-plan.md.
+// It sends three commands, one per kind of kiosk-local state:
+// inventory.adjust for quantities, inventory.set_threshold for low-stock
+// levels, and instance.create for serialized units. All three land on the
+// same functions ApplyLocal calls in-process, so the estate is identical
+// whichever applier built it.
 func ApplyRemote(nc *nats.Conn, adminID string, log Logf) (*Result, error) {
 	if log == nil {
 		log = discard
@@ -115,10 +114,10 @@ func ApplyRemote(nc *nats.Conn, adminID string, log Logf) (*Result, error) {
 //
 // On failure the error names the kiosk and the SKUs that never arrived,
 // because "timed out" on its own sends an operator to the wrong place.
-func waitForCatalog(nc *nats.Conn, node Node, timeout time.Duration, log Logf) (map[string]int, error) {
+func waitForCatalog(nc *nats.Conn, node Node, timeout time.Duration, log Logf) (map[string]stockState, error) {
 	want := node.ItemCodes()
 	if len(want) == 0 {
-		return map[string]int{}, nil
+		return map[string]stockState{}, nil
 	}
 
 	deadline := time.Now().Add(timeout)
@@ -153,24 +152,32 @@ func waitForCatalog(nc *nats.Conn, node Node, timeout time.Duration, log Logf) (
 	}
 }
 
-// inventorySnapshot returns the kiosk's item_code → quantity_on_hand map.
-func inventorySnapshot(nc *nats.Conn, kioskCode string) (map[string]int, error) {
+// stockState is what a kiosk currently holds for one SKU. Both fields are
+// read before writing so a re-run sends nothing it does not need to.
+type stockState struct {
+	Quantity  int
+	Threshold int
+}
+
+// inventorySnapshot returns the kiosk's item_code → current state map.
+func inventorySnapshot(nc *nats.Conn, kioskCode string) (map[string]stockState, error) {
 	data, err := request(nc, events.InventorySnapshotCommandSubject(kioskCode), struct{}{})
 	if err != nil {
 		return nil, err
 	}
 	var reply struct {
 		Items []struct {
-			ItemCode       string `json:"item_code"`
-			QuantityOnHand int    `json:"quantity_on_hand"`
+			ItemCode         string `json:"item_code"`
+			QuantityOnHand   int    `json:"quantity_on_hand"`
+			ReorderThreshold int    `json:"reorder_threshold"`
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(data, &reply); err != nil {
 		return nil, fmt.Errorf("decode inventory snapshot: %w", err)
 	}
-	out := make(map[string]int, len(reply.Items))
+	out := make(map[string]stockState, len(reply.Items))
 	for _, it := range reply.Items {
-		out[it.ItemCode] = it.QuantityOnHand
+		out[it.ItemCode] = stockState{Quantity: it.QuantityOnHand, Threshold: it.ReorderThreshold}
 	}
 	return out, nil
 }
@@ -198,28 +205,49 @@ func instanceCodes(nc *nats.Conn, kioskCode string) (map[string]bool, error) {
 	return out, nil
 }
 
-func applyStockRemote(nc *nats.Conn, node Node, adminID string, onHand map[string]int, out *Result, log Logf) error {
+func applyStockRemote(nc *nats.Conn, node Node, adminID string, current map[string]stockState, out *Result, log Logf) error {
 	for _, s := range node.Stock {
-		if current, ok := onHand[s.ItemCode]; ok && current == s.Quantity {
+		have, known := current[s.ItemCode]
+
+		if known && have.Quantity == s.Quantity {
+			out.Existing++
+		} else {
+			payload := map[string]any{
+				"command_id":          uuid.NewString(),
+				"controller_admin_id": adminID,
+				"item_code":           s.ItemCode,
+				// Absolute, not delta: the fixture states what the shelf
+				// holds, not how much to add to whatever the demo traffic
+				// has already done to it.
+				"mode":   "absolute",
+				"value":  s.Quantity,
+				"reason": SeedReason,
+			}
+			if _, err := request(nc, events.InventoryAdjustCommandSubject(node.Code), payload); err != nil {
+				return fmt.Errorf("%s inventory.adjust %s: %w", node.Code, s.ItemCode, err)
+			}
+			out.Applied++
+			log("demo-seed: %s %s qty -> %d", node.Code, s.ItemCode, s.Quantity)
+		}
+
+		// The threshold is its own command because it is kiosk-local and
+		// does not ride the catalogue wire. Sending it here is what lets a
+		// managed estate raise a low-stock alert at all — and it is why the
+		// runbook no longer needs a per-kiosk `kiosk demo-seed` pass.
+		if known && have.Threshold == s.ReorderThreshold {
 			out.Existing++
 			continue
 		}
 		payload := map[string]any{
-			"command_id":          uuid.NewString(),
 			"controller_admin_id": adminID,
 			"item_code":           s.ItemCode,
-			// Absolute, not delta: the fixture states what the shelf holds,
-			// not how much to add to whatever the demo traffic has already
-			// done to it.
-			"mode":   "absolute",
-			"value":  s.Quantity,
-			"reason": SeedReason,
+			"value":               s.ReorderThreshold,
 		}
-		if _, err := request(nc, events.InventoryAdjustCommandSubject(node.Code), payload); err != nil {
-			return fmt.Errorf("%s inventory.adjust %s: %w", node.Code, s.ItemCode, err)
+		if _, err := request(nc, events.InventorySetThresholdCommandSubject(node.Code), payload); err != nil {
+			return fmt.Errorf("%s inventory.set_threshold %s: %w", node.Code, s.ItemCode, err)
 		}
 		out.Applied++
-		log("demo-seed: %s %s qty -> %d", node.Code, s.ItemCode, s.Quantity)
+		log("demo-seed: %s %s reorder_threshold -> %d", node.Code, s.ItemCode, s.ReorderThreshold)
 	}
 	return nil
 }
