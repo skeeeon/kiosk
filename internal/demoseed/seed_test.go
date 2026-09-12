@@ -355,6 +355,53 @@ func TestNodeByCodeNamesWhatItKnew(t *testing.T) {
 	}
 }
 
+// The platform join, asserted from this side.
+//
+// Every node code below is also a Thing in the STONE-AGE PLATFORM's demo seed
+// (internal/demoseed/inventory.go there), carrying a signed NATS identity whose
+// permissions are what lets this estate reach the bus at all. The two repos are
+// separate Go modules and neither imports the other, so there is no mechanism
+// that keeps them agreeing — only this test and its mirror,
+// TestTheKioskEstateIsPresentAndJoinable, one on each side.
+//
+// Renaming a node here without renaming its Thing there does not fail loudly. It
+// mints a credential for a kiosk that no longer exists and leaves the real one
+// authenticating as nobody, which surfaces as a permissions violation on the
+// first publish — a long way from the line that caused it.
+//
+// The site codes go the other way: KC-DC1, KC-OFFICE and SGF-XD2 are the
+// platform's locations, and this fixture mirrors them.
+func TestNodeCodesMatchThePlatformDemo(t *testing.T) {
+	// code -> the platform thing type it is seeded as.
+	want := map[string]string{
+		"KC-DC1-CRIB":  "tool-kiosk",
+		"KC-DC1-DOCK":  "tool-kiosk",
+		"SGF-XD2-CRIB": "tool-kiosk",
+		"KC-OFFICE-TC": "timeclock-terminal",
+	}
+	sites := map[string]bool{"KC-DC1": true, "KC-OFFICE": true, "SGF-XD2": true}
+
+	if len(demoseed.Nodes) != len(want) {
+		t.Errorf("fixture has %d nodes, the platform seeds %d Things — update both sides",
+			len(demoseed.Nodes), len(want))
+	}
+	for _, n := range demoseed.Nodes {
+		wantType, ok := want[n.Code]
+		if !ok {
+			t.Errorf("node %q has no Thing in the platform demo seed", n.Code)
+			continue
+		}
+		// The timeclock terminal is the one node that is not a kiosk, and the
+		// platform models that as a different thing type with a narrower
+		// contract: punches and a heartbeat, no command subtree.
+		if gotTimeclock := wantType == "timeclock-terminal"; gotTimeclock != n.Timeclock {
+			t.Errorf("node %q is seeded as %q but Timeclock=%v", n.Code, wantType, n.Timeclock)
+		}
+		if !sites[n.LocationCode] {
+			t.Errorf("node %q sits at %q, which is not a platform location", n.Code, n.LocationCode)
+		}
+	}
+}
 func findItem(t *testing.T, app core.App, code string) *core.Record {
 	t.Helper()
 	rec, err := app.FindFirstRecordByFilter("items", "code = {:c}", dbx.Params{"c": code})
