@@ -1,11 +1,12 @@
 # Northwind demo — plan
 
-Status: **phases 1–3 landed; 4–6 not started.** Living doc; update as phases land.
+Status: **phases 1–3 and 6 landed; 4–5 not started.** Living doc; update as phases land.
 
 The fixture and both appliers are in `internal/demoseed`, the two `demo-seed`
-subcommands are registered on their binaries, and `demo/standalone.yaml` makes the
-standalone demo runnable today. What is still ahead: the mock RFID reader, the
-rule-router driver and the per-kiosk configs, and the platform Thing types.
+subcommands are registered on their binaries, `demo/standalone.yaml` makes the
+standalone demo runnable today, and the estate now exists as Things in the Stone
+Age platform's own demo seed with the NATS roles to match. What is still ahead:
+the mock RFID reader, and the rule-router driver with its per-kiosk configs.
 
 The repo has no demo story. This plans one: a runnable **Northwind Traders**
 estate — three kiosks, a virtual timeclock terminal and a central controller —
@@ -682,66 +683,81 @@ arithmetic rather than to add rules.
 
 ---
 
-## Phase 6 — Northwind on the platform
+## Phase 6 — Northwind on the platform — **LANDED**
 
-In `platform/internal/demoseed/contract.go`.
+In `platform/internal/demoseed/`. Built against the estate that actually exists
+(three kiosks, one timeclock terminal, one controller), not the six-node one this
+document originally sketched — see *What building this turned up*, below.
 
 **Subject mapping.** The kiosk's grammar is
 `<prefix>.<kiosk_code>.<family>.<...>` — note there is **no location segment**,
 unlike `acc.{location}.{type}.{thing}`. The kiosk code *is* the Thing code, so the
-subject prefix is `kiosk.{thing}`. `kiosk.>` is free in Northwind's subject space.
+subject prefix is `kiosk.{thing}`, and `TestKioskSubjectPrefixesMatchTheWireFormat`
+holds it there.
 
-**Operations** to add:
+**Operations** — sixteen, one per real subject, in `contract.go`. The ledger four
+(`event.transaction.complete`, `event.item.{checkout,return,consume}`), the
+admin-close (`event.checkout.admin_close`), inventory and instance audits, the
+punch, the three notification contexts (`event.receipt.transaction`,
+`event.alert.lowstock`, `event.alert.maintenance`), `event.integrity.rebuild`,
+`event.scan.rfid.observed`, the `heartbeat`, `command.>` and `sighting.raw`.
 
-| Name | Capability | Suffix |
-|---|---|---|
-| `publish_kiosk_transaction` | publish | `event.transaction.complete` |
-| `publish_kiosk_inventory` | publish | `event.inventory.adjust` |
-| `publish_kiosk_instance` | publish | `event.instance.lifecycle` |
-| `publish_kiosk_punch` | publish | `event.timeclock.punch` |
-| `publish_kiosk_heartbeat` | publish | `heartbeat` |
-| `reply_kiosk_command` | **reply** | `command.>` |
+The item-action question this document left open resolved itself the moment it was
+written down: **one operation per action, not a wildcard.** A publish operation
+resolves to a subject something actually publishes *on*, and `event.item.>` is not
+one. `command.>` keeps its wildcard for the opposite reason — it is a
+*subscription* pattern, and the twenty-odd command leaves are registered in the
+dispatcher, so enumerating them in a second place would guarantee only that the
+two drift.
 
-The `reply` capability is exactly right and worth noting rather than glossing: on
-that platform it means precisely "the thing subscribes to its own subject and
-publishes its answer to the requester's `_INBOX.>`", which is what the kiosk's
-command dispatcher does.
+**Thing types:** `tool-kiosk` (kind gateway, role `gateway`),
+`timeclock-terminal` (kind appliance, role `gateway`), `kiosk-controller` (kind
+app, role `application`). The timeclock's kind and role deliberately disagree: it
+is an appliance in form, but it mirrors the worker catalogue and the fleet punch
+replica out of KV, which is JetStream access that `console-readonly` — what the
+dock display takes — does not have and could not use.
 
-**Open question to resolve when writing it:** `event.item.{action}` has a varying
-final token (`checkout` / `return` / `consume` / `admin_close`). Either declare one
-operation per action or use a wildcard suffix. The existing fixtures use literal
-suffixes throughout, so a wildcard would be a new precedent — probably worth one
-operation per action.
+**Roles.** Both changes landed as specified: `kiosk.>` on the `gateway` role's
+publish *and* subscribe, `kiosk.>` and `$KV.>` on `application`'s publish.
 
-**Thing types:** `tool-kiosk` (kind gateway, prefix `kiosk.{thing}`),
-`timeclock-terminal` (kind appliance, same prefix), `kiosk-controller` (kind app,
-prefix `app.kiosk.{thing}`). Schemas can carry the things an integrator actually
-records — reader make and antenna count, enclosure count, screen size, the
-barcode-scanner model.
+**Things:** `KC-DC1-CRIB`, `KC-DC1-DOCK`, `SGF-XD2-CRIB`, `KC-OFFICE-TC` and
+`KIOSK-CTRL-01`, each with a Nebula host — the opposite call from the access
+estate's doors, and the same test applied honestly: a door is I/O on a
+controller's terminal block, a kiosk is a mini-PC with its own database that an
+administrator has to reach when the bus is unhappy.
 
-**Roles.** Two precise changes, and the second mirrors a bug the `gateway` role's
-own comment already narrates:
+The join is now asserted from both sides, the way stone-access's is:
+`TestTheKioskEstateIsPresentAndJoinable` there, `TestNodeCodesMatchThePlatformDemo`
+here.
 
-- `gateway`: add `kiosk.>` to **both** publish and subscribe. It already carries
-  `$JS.API.>`, `$KV.>` and `_INBOX.>`, which is what a kiosk needs to watch the
-  catalogue buckets and answer commands.
-- `application`: add `kiosk.>` **and `$KV.>`** to publish. It currently has
-  `app.>`, `cmd.>`, `helpdesk.>`, `$JS.API.>` — and the controller *writes*
-  `catalog_items`, `catalog_users`, `catalog_groups`, `punch_state` and
-  `open_checkouts_state`. A KV write is a plain publish to `$KV.{bucket}.{key}`,
-  which `$JS.API.>` does not cover. This is the identical failure the access
-  controller hit: a box that boots clean, syncs its whole graph, and then cannot
-  write state.
+### What building this turned up
 
-`TestEveryThingTypeCanSpeakItsOwnContract` checks both directions for every type
-against the role it points at, so it will fail until the lists and the operations
-agree. That is the safety net doing its job, not an obstacle.
+**The controller declares no operations, and that is the finding.** Every subject
+it touches belongs to some other Thing: it requests on each kiosk's `command.`
+subtree, subscribes their heartbeats and sightings, and consumes their events
+through the stream. An operation's suffix composes against its *own* type's
+prefix, so any entry would have rendered `app.kiosk.<code>.…` on the Thing Type
+screen — a subject nothing publishes on and nothing listens to. The access
+controller has the same shape and nobody had noticed: its subscriptions to door
+subjects are likewise absent from its operation list. Cross-subtree participation
+is expressed in the **role**, not in operations.
 
-**Things:** three kiosks and the timeclock terminal at their mapped locations, plus
-the controller. Each kiosk then runs on a platform-minted signed credential, the
-same as the four access controllers — and the Northwind account carries cold-chain
-telemetry on `telemetry.>`, access traffic on `acc.>` and tool custody on
-`kiosk.>` at once, which is what a tenant's bus actually looks like.
+Which has a consequence worth stating plainly, because it is the whole reason
+Phase 6 needed tests of its own:
+`TestEveryThingTypeCanSpeakItsOwnContract` **cannot see this class of gap**. It
+derives what a type needs from the operations the type declares, so a type that
+declares none is checked vacuously. The broken `application` role — no `kiosk.>`,
+no `$KV.>` — passed that test cleanly while being unable to publish a single
+command or write a single catalogue key. `TestApplicationRoleCanRunTheKioskController`
+and `TestGatewayRoleCanRunAKioskNode` are the mirrors of
+`TestGatewayRoleCanRunAnEdgeService`, and they exist for exactly that blind spot.
+
+**The plan and the fixture had drifted.** This document's Phase 6 named five
+kiosks including `KC-DC1-FZ1` and `KC-OFFICE-IT`; Phase 1 shipped three, because
+a freezer PPE cabinet and an IT-equipment locker demonstrate nothing the dock and
+the crib do not. Seeding Things from the plan would have minted signed
+credentials for two nodes that do not exist. **The fixture is the source, not
+this document** — which is what the mirror tests now enforce.
 
 ---
 
@@ -838,7 +854,7 @@ file.
 | 3 | `kiosk demo-seed` + `demo/standalone.yaml` | **Landed** — the standalone demo runs |
 | 4 | Mock RFID reader | Unblocks the enclosure_diff story |
 | 5 | `demo/rules/` + `demo/*.yaml` configs | Needs 1–3; 4 for the cabinet rules |
-| 6 | Platform Northwind thing types, operations, roles | Cross-repo |
+| 6 | Platform Northwind thing types, operations, roles | **Landed** — cross-repo, joined by a mirror test on each side |
 
 Phases 1–3 land together: one fixture is useless without an applier, and the
 standalone demo is the cheapest thing to be able to show.
