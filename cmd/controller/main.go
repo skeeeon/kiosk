@@ -77,6 +77,7 @@ func main() {
 	authfix.EnforceEmailVisibility(app)
 
 	controller.RegisterSeedCommand(app, cfg)
+	controller.RegisterDemoSeedCommand(app, cfg)
 
 	// Centralized notifier for managed kiosks. Reads templates from the
 	// controller's notification_templates collection (seeded automatically

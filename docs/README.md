@@ -56,3 +56,20 @@ everything more detailed lives here.
 
 - [Shipped & roadmap](roadmap.md) — what's already in the binary and
   what's deliberately deferred.
+
+## Plans
+
+Living design documents for work in flight. Each carries its own status
+line; none of them is a reference for what the binary does today.
+
+- [Asset-tracker generalization](asset-tracker-plan.md) — custody plus
+  coarse location on a jobsite, the multi-reader / multi-enclosure
+  topology, the "smart cache" form factor.
+- [Location & sightings](location-sightings-plan.md) — the advisory
+  asset-location layer, external gateways, `last_observed_*`.
+- [Northwind demo](demo-plan.md) — a runnable three-kiosk + timeclock +
+  controller demo estate. The fixture and both `demo-seed` subcommands
+  have landed (`KIOSK_CONFIG=demo/standalone.yaml ./kiosk-app demo-seed
+  --confirm` stands a kiosk up on its own); still ahead are the mock RFID
+  reader and the rule-router rules that drive live traffic through the
+  real commit path.

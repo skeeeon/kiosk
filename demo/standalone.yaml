@@ -1,0 +1,71 @@
+# Northwind demo — the standalone kiosk.
+#
+# One binary, one config, no controller, no NATS. This is the cheapest
+# thing to put in front of someone and the first demo most people will
+# ever see:
+#
+#   KIOSK_CONFIG=demo/standalone.yaml ./kiosk-app demo-seed --confirm
+#   KIOSK_CONFIG=demo/standalone.yaml ./kiosk-app
+#
+# Then open http://127.0.0.1:8101 and scan a badge code — nw-elena,
+# nw-marco, nw-dana, nw-owen or nw-raj — followed by an item code. Admin
+# login is at /admin/login: admin@northwind.example / northwind-demo.
+#
+# The estate this node belongs to is defined in internal/demoseed/data.go,
+# and docs/demo-plan.md explains why it is shaped the way it is. The
+# managed three-kiosk configs and the rule-router files that drive live
+# traffic arrive with Phase 5.
+#
+# DEMO TOOLING. The admin password here is well-known on purpose. Do not
+# copy this file to an install.
+
+kiosk:
+  # Must match a node in internal/demoseed/data.go — demo-seed resolves
+  # this node's slice of the catalogue from it.
+  code: "KC-DC1-CRIB"
+  location_code: "KC-DC1"
+
+server:
+  port: 8101
+  bind: "127.0.0.1"
+
+session:
+  idle_timeout: "5m"
+  cart_grace_period: "30s"
+
+returns:
+  allow_cross_user: true
+  allow_uncorrelated: true
+
+# Standalone: no broker, no controller. The kiosk's own ledger is the
+# system of record and nothing projects out of it.
+nats:
+  enabled: false
+
+controller:
+  enabled: false
+
+# On, so the clock-in interlock and the timesheet reports have something
+# to show. Both interlocks are left off: a demo that refuses a checkout in
+# the first thirty seconds is a demo nobody enjoys. Turn
+# require_clock_in_for_checkout on deliberately, once, to show the 409 the
+# SPA turns into a one-tap "clock in now?".
+timeclock:
+  enabled: true
+  require_clock_in_for_checkout: false
+  block_clock_out_with_open_checkouts: false
+  timeclock_only: false
+  virtual: false
+
+# Off. KC-DC1-CRIB's two cabinets (A and B) are real in the fixture — the
+# serialized units carry their enclosure assignment and their tags — but
+# reading them needs either an LLRP reader on the network or the mock
+# reader from Phase 4. Until then the units check out at the counter like
+# any other serialized tool.
+rfid:
+  enabled: false
+  readers: {}
+
+branding:
+  logo_path: "./branding/logo.svg"
+  tagline: "Northwind Traders — Tool Crib"

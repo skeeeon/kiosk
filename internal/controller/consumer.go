@@ -245,8 +245,31 @@ func (a *Aggregator) Stop() {
 }
 
 func (a *Aggregator) ensureStream(ctx context.Context) (jetstream.Stream, error) {
+	return EnsureStream(ctx, a.js, a.streamName)
+}
+
+// EnsureStream provisions the kiosk event stream, idempotently. Exported
+// because the aggregator is not the only thing that needs it to exist.
+//
+// Start also creates the durable consumer, which a one-shot CLI must not
+// do — so the stream half is factored out here and both callers use it.
+// The case that forced this: the demo seeder runs while the controller is
+// NOT serving (it writes the controller's own database), so under the
+// obvious ordering nothing has created the stream yet, and every
+// instance.lifecycle / inventory.adjust event the seeded estate emits is
+// published to nothing. Unlike the ledger, those audits have no republish
+// command and cannot be backfilled. One shared function and the ordering
+// stops mattering.
+//
+// Empty streamName falls back to events.DefaultStreamName. The subject
+// filter is built through events.StreamSubjectFilter, which depends on the
+// prefix installed in main() — call events.SetSubjectPrefix first.
+func EnsureStream(ctx context.Context, js jetstream.JetStream, streamName string) (jetstream.Stream, error) {
+	if streamName == "" {
+		streamName = events.DefaultStreamName
+	}
 	cfg := jetstream.StreamConfig{
-		Name:        a.streamName,
+		Name:        streamName,
 		Description: "Per-kiosk events (kiosk.*.event.>). Consumed by the controller.",
 		// Stream owns only the event subject space. Commands
 		// (kiosk.*.command.>) and heartbeats (kiosk.*.heartbeat) ride core
@@ -261,7 +284,7 @@ func (a *Aggregator) ensureStream(ctx context.Context) (jetstream.Stream, error)
 	// Subjects on a stream that already holds messages outside the new
 	// pattern will fail — operators upgrading from the old "kiosk.>" stream
 	// must `nats stream rm KIOSK_EVENTS` once so this call recreates it.
-	return a.js.CreateOrUpdateStream(ctx, cfg)
+	return js.CreateOrUpdateStream(ctx, cfg)
 }
 
 func (a *Aggregator) ensureConsumer(ctx context.Context, stream jetstream.Stream) (jetstream.Consumer, error) {

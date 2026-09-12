@@ -64,6 +64,22 @@ The same row logic backs the HTTP importer at
 `POST /api/kiosk/<kind>/import` (kind ∈ {items, users, groups}) — both
 binaries expose it, sharing `internal/csvimport.Run`.
 
+**Demo tooling lives in `internal/demoseed`** and is registered as a
+`demo-seed` subcommand on *both* binaries (`--confirm` gated; it writes a
+well-known admin password, so never run it on a customer install). One
+fixture table, two appliers: `ApplyLocal` calls
+`instances.PerformCreate` + `handlers.PerformStockAdjustment` in-process;
+`ApplyRemote` sends the identical values as `instance.create` /
+`inventory.adjust` commands from the controller, which land on those same
+two functions — *the remote applier is the local applier with NATS in the
+middle*, and they cannot drift. The controller's `demo-seed` also calls the
+exported `controller.EnsureStream` before writing, because a one-shot
+seeder runs while the controller is NOT serving and the audit events it
+triggers would otherwise be published to a stream that doesn't exist yet
+(and unlike the ledger, `inventory_audit` / `instance_lifecycle_audit`
+have no republish command). `demo/standalone.yaml` + `kiosk demo-seed`
+stands up a working single-kiosk demo. See [demo-plan](docs/demo-plan.md).
+
 Frontend dev loop: run both the Go binary and `npm run dev` — Vite proxies
 `/api` and `/_` to the Go process. Frontend build emits to `internal/ui/dist/`,
 which `internal/ui/embed.go` pulls into both binaries via `//go:embed all:dist`.

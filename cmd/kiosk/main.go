@@ -17,6 +17,7 @@ import (
 	"github.com/skeeeon/kiosk/internal/catalog"
 	"github.com/skeeeon/kiosk/internal/commands"
 	"github.com/skeeeon/kiosk/internal/config"
+	"github.com/skeeeon/kiosk/internal/demoseed"
 	"github.com/skeeeon/kiosk/internal/events"
 	"github.com/skeeeon/kiosk/internal/handlers"
 	"github.com/skeeeon/kiosk/internal/heartbeat"
@@ -61,6 +62,12 @@ func main() {
 	})
 
 	authfix.EnforceEmailVisibility(app)
+
+	// `demo-seed` — the standalone Northwind demo. Registered here beside
+	// migratecmd because a subcommand must exist on the root command
+	// before cobra dispatches; config.EnsureServeBind leaves non-`serve`
+	// args alone, so nothing below needs to know about it.
+	demoseed.RegisterKioskCommand(app, cfg.Kiosk.Code)
 
 	// NATS is best-effort: a misconfigured or unreachable endpoint must not
 	// block the kiosk from starting (the local ledger is authoritative).
