@@ -19,6 +19,24 @@ of truth for catalog plus a unified transaction ledger.
   `catalog_users`. Kiosk-local state (`quantity_on_hand`,
   `reorder_threshold`, `item_instances`) is intentionally not synced
   and survives catalog updates untouched.
+
+  The line the payload draws is **per-SKU policy syncs, per-site physical
+  state does not**. "What kind of thing is this and how is it handled" is
+  the same answer at every kiosk; "how many are on this shelf" is not. So
+  `type`, `tracking_mode`, `category` and
+  `requires_maintenance_on_return` cross the wire, and the quantities do
+  not. `reorder_threshold` sits awkwardly on that line — it is arguably
+  policy — but it is documented as excluded and each site may genuinely
+  want its own, so it stays kiosk-local and is set per kiosk.
+
+  **Upgrading from a build before `requires_maintenance_on_return` was
+  carried:** existing KV entries were written without it, and the
+  publisher only rewrites a key when its item record is saved. Run
+  **catalogue reconcile** once (`POST /api/kiosk/catalog/reconcile`, or
+  the button in the admin UI) — it force-pushes every expected key, not
+  just the missing ones, so the whole fleet picks up the field in one
+  pass. Until then a managed kiosk reads the absent field as `false`,
+  which is the behaviour it already had.
 - **Transactions up → controller.** Every kiosk already publishes
   `{prefix}.{code}.event.transaction.complete` and
   `{prefix}.{code}.event.item.{action}` when NATS is enabled (`{prefix}`

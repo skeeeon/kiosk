@@ -96,6 +96,45 @@ func TestWatcher_UpsertItem_InsertsAndUpdates(t *testing.T) {
 	}
 }
 
+// TestWatcher_UpsertItem_ProjectsMaintenancePolicy — commit.Commit reads
+// requires_maintenance_on_return from the kiosk's own items row, so the
+// projection has to write it in BOTH directions. Setting it must arrive;
+// clearing it must also arrive, or a kiosk that once saw `true` keeps
+// routing that SKU to the bench after the admin turned the policy off.
+func TestWatcher_UpsertItem_ProjectsMaintenancePolicy(t *testing.T) {
+	app := setupApp(t)
+	w := newTestWatcher(app)
+
+	on := ItemPayload{
+		Code: "TORQUE-D1", Name: "Digital Torque Wrench",
+		Type: "tool", TrackingMode: "serialized", Active: true,
+		RequiresMaintenanceOnReturn: true,
+	}
+	if err := w.upsertItem(on); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	rec, err := app.FindFirstRecordByFilter("items", "code = {:c}", dbx.Params{"c": "TORQUE-D1"})
+	if err != nil {
+		t.Fatalf("find after insert: %v", err)
+	}
+	if !rec.GetBool("requires_maintenance_on_return") {
+		t.Fatal("maintenance policy did not reach the kiosk on insert")
+	}
+
+	off := on
+	off.RequiresMaintenanceOnReturn = false
+	if err := w.upsertItem(off); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	rec, err = app.FindFirstRecordByFilter("items", "code = {:c}", dbx.Params{"c": "TORQUE-D1"})
+	if err != nil {
+		t.Fatalf("find after update: %v", err)
+	}
+	if rec.GetBool("requires_maintenance_on_return") {
+		t.Fatal("clearing the maintenance policy did not reach the kiosk")
+	}
+}
+
 func TestWatcher_SoftDeleteItem_SetsActiveFalse(t *testing.T) {
 	app := setupApp(t)
 	w := newTestWatcher(app)

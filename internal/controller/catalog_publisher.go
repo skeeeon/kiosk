@@ -270,14 +270,15 @@ func (p *CatalogPublisher) kvKeyForMembership(rec *core.Record) string {
 
 func itemPayloadFrom(rec *core.Record) catalog.ItemPayload {
 	return catalog.ItemPayload{
-		Code:         rec.GetString("code"),
-		Name:         rec.GetString("name"),
-		Type:         rec.GetString("type"),
-		Unit:         rec.GetString("unit"),
-		TrackingMode: rec.GetString("tracking_mode"),
-		Category:     rec.GetString("category"),
-		Active:       rec.GetBool("active"),
-		Notes:        rec.GetString("notes"),
+		Code:                        rec.GetString("code"),
+		Name:                        rec.GetString("name"),
+		Type:                        rec.GetString("type"),
+		Unit:                        rec.GetString("unit"),
+		TrackingMode:                rec.GetString("tracking_mode"),
+		Category:                    rec.GetString("category"),
+		Active:                      rec.GetBool("active"),
+		Notes:                       rec.GetString("notes"),
+		RequiresMaintenanceOnReturn: rec.GetBool("requires_maintenance_on_return"),
 	}
 }
 

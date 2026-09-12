@@ -6,6 +6,11 @@
 // Only the fields that should sync are carried — system fields (id, created,
 // updated), auth secrets (password, tokenKey), and kiosk-local state
 // (quantity_on_hand, reorder_threshold) are deliberately excluded.
+//
+// When adding a field to items, ask which side of that line it falls on:
+// per-SKU policy syncs, per-site physical state does not. A field that is
+// read by kiosk-side logic and set by a controller admin MUST be here, or
+// the feature silently does nothing in managed mode.
 package catalog
 
 import (
@@ -19,6 +24,11 @@ import (
 //
 // RFID EPCs and per-unit serials live on item_instances, not on the SKU,
 // so neither field is part of this payload.
+//
+// The line this type draws is per-SKU POLICY (carried) versus per-site
+// PHYSICAL STATE (not carried). "What kind of thing is this and how is it
+// handled" is the same answer at every kiosk in the fleet; "how many are
+// on this particular shelf" is not.
 type ItemPayload struct {
 	Code         string `json:"code"`
 	Name         string `json:"name"`
@@ -28,6 +38,18 @@ type ItemPayload struct {
 	Category     string `json:"category,omitempty"`
 	Active       bool   `json:"active"`
 	Notes        string `json:"notes,omitempty"`
+
+	// RequiresMaintenanceOnReturn is per-SKU policy — a digital torque
+	// wrench needs recalibrating wherever it comes back — so it rides the
+	// wire alongside type and tracking_mode. commit.Commit reads it from
+	// the kiosk's LOCAL items row, so without it here a managed kiosk
+	// never learns the policy and the flag an admin set on the controller
+	// does nothing to the whole fleet.
+	//
+	// No omitempty: false is a meaningful value. Omitting it on the wire
+	// would still decode to false, but being explicit keeps the KV entry
+	// readable by anyone debugging with `nats kv get`.
+	RequiresMaintenanceOnReturn bool `json:"requires_maintenance_on_return"`
 }
 
 // UserPayload is the cross-fleet view of a users record. Password and

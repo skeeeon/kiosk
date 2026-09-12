@@ -312,6 +312,10 @@ func (w *Watcher) upsertItem(p ItemPayload) error {
 	rec.Set("category", p.Category)
 	rec.Set("active", p.Active)
 	rec.Set("notes", p.Notes)
+	// Per-SKU policy, same class as type/tracking_mode/category: commit.Commit
+	// reads it from this local row when a serialized unit comes back, so the
+	// controller's value has to land here or the flag does nothing fleet-wide.
+	rec.Set("requires_maintenance_on_return", p.RequiresMaintenanceOnReturn)
 	// quantity_on_hand and reorder_threshold are intentionally NOT touched —
 	// they're kiosk-local state owned by the commit hook + admin stock-adjust
 	// flow. New records pick up PB's zero default.
