@@ -73,10 +73,26 @@ type ServerConfig struct {
 	Bind string `yaml:"bind"`
 }
 
+// SessionConfig bounds an in-progress cart. Both values default (see
+// validate) — an omitted `session:` block must not leave a kiosk that
+// boots cleanly and cannot complete a single checkout.
 type SessionConfig struct {
-	IdleTimeout     Duration `yaml:"idle_timeout"`
+	// IdleTimeout is how long a cart survives without being touched.
+	// cart.Store expires lazily on access and stamps ExpiresAt from this.
+	IdleTimeout Duration `yaml:"idle_timeout"`
+
+	// CartGracePeriod is how long the SPA holds the post-commit success
+	// screen. Carried here so it is configurable per deployment.
 	CartGracePeriod Duration `yaml:"cart_grace_period"`
 }
+
+// Session defaults. Five minutes is long enough that a worker can go find
+// the thing they forgot and come back to a live cart, short enough that an
+// abandoned cart is gone before the next shift walks up to the screen.
+const (
+	defaultIdleTimeout     = 5 * time.Minute
+	defaultCartGracePeriod = 30 * time.Second
+)
 
 type ScanningConfig struct {
 	UserQRPrefix      string `yaml:"user_qr_prefix"`
@@ -583,6 +599,21 @@ func validate(c *Config) error {
 	}
 	if c.Server.Bind == "" {
 		c.Server.Bind = "127.0.0.1"
+	}
+	// A missing `session:` block used to mean idle_timeout = 0, and
+	// cart.Store stamps ExpiresAt = now + idleTimeout — so every cart was
+	// already expired when it was created. The kiosk started, served the
+	// SPA, accepted a badge scan, and then 404'd "Cart not found or
+	// expired" on the very next call. Nothing in the logs said why.
+	//
+	// Zero is not a meaningful setting here (neither is a negative one, the
+	// usual cause being a typo'd unit), so both fall back to the value
+	// kiosk.yaml.example has always shipped.
+	if c.Session.IdleTimeout <= 0 {
+		c.Session.IdleTimeout = Duration(defaultIdleTimeout)
+	}
+	if c.Session.CartGracePeriod <= 0 {
+		c.Session.CartGracePeriod = Duration(defaultCartGracePeriod)
 	}
 	if err := validateRFID(&c.RFID); err != nil {
 		return err

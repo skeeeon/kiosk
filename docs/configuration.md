@@ -17,7 +17,11 @@ server:
 
 session:
   idle_timeout: "5m"           # In-memory carts expire after this much inactivity.
+                               # Defaults to 5m; a zero or negative value is
+                               # treated as unset, because it would expire every
+                               # cart the instant it was created.
   cart_grace_period: "30s"     # Success screen duration (frontend constant).
+                               # Defaults to 30s.
 
 scanning:
   user_qr_prefix: "U:"         # Optional. If set and a scan starts with this,
